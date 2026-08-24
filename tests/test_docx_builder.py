@@ -17,8 +17,10 @@ from core.db import execute, init_db
 from core.docx_builder import (
     ADAPTACIYA_OOP_TEXT,
     DRAFT_NOTICE_TEXT,
+    KRITERII_USPEHA_TITLE,
     MANDATORY_NOTICE_TEXT,
     PROVERENO_TEXT,
+    RAZDATOCHNYE_MATERIALY_TITLE,
     _FIELD_LABELS,
     build_docx,
     build_filename,
@@ -482,3 +484,66 @@ def test_mandatory_notice_and_oop_note_both_present_verbatim(db_with_builtins, t
     # порядок в документе — как в самом приказе: обязательность пунктов
     # плана раньше, примечание про ООП следом
     assert full_text.index(MANDATORY_NOTICE_TEXT) < full_text.index(ADAPTACIYA_OOP_TEXT)
+
+
+# --- Р3.2: раздаточные материалы — необязательный раздел ---
+
+
+def test_document_without_razdatochnye_materialy_looks_unchanged(db_with_builtins, tmp_path):
+    """КГ Р3.2: content без карточек — документ выглядит ровно как раньше,
+    без этого блока, а не с пустым заголовком раздела."""
+    official = next(
+        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
+        if t["is_official"] == 1
+    )
+    out_path = tmp_path / "no_cards.docx"
+    build_docx(SAMPLE_CONTENT, official, out_path)  # SAMPLE_CONTENT карточек не содержит
+
+    full_text = "\n".join(p.text for p in Document(str(out_path)).paragraphs)
+    assert RAZDATOCHNYE_MATERIALY_TITLE not in full_text
+    assert KRITERII_USPEHA_TITLE not in full_text
+
+
+def test_document_with_razdatochnye_materialy_renders_all_levels(db_with_builtins, tmp_path):
+    official = next(
+        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
+        if t["is_official"] == 1
+    )
+    content = dict(SAMPLE_CONTENT)
+    content["razdatochnye_materialy"] = [
+        {
+            "uroven": "Базовый уровень",
+            "metka": "зелёная метка",
+            "zadanie": "Тележка массой 2 кг движется со скоростью 3 м/с...",
+            "podskazka": "Используйте закон сохранения импульса: m1v1 = (m1+m2)v2",
+            "reshenie": "v2 = 2 м/с",
+        },
+        {
+            "uroven": "Продвинутый уровень",
+            "metka": "синяя метка",
+            "zadanie": "Создайте математическую модель движения двух шаров...",
+            # решения нет намеренно — творческое задание, это не баг
+        },
+    ]
+    content["kriterii_uspeha"] = [
+        "Создана математическая модель для обоих типов ударов",
+        "Проведён анализ распределения кинетической энергии",
+    ]
+
+    out_path = tmp_path / "with_cards.docx"
+    build_docx(content, official, out_path)  # не должно упасть — открывается ниже
+
+    full_text = "\n".join(p.text for p in Document(str(out_path)).paragraphs)
+    assert RAZDATOCHNYE_MATERIALY_TITLE in full_text
+    assert "Базовый уровень" in full_text
+    assert "зелёная метка" in full_text
+    assert "v2 = 2 м/с" in full_text
+    assert "Продвинутый уровень" in full_text
+    # у карточки без решения нет строки "Решение:" вообще — не выдумываем его
+    advanced_idx = full_text.index("Продвинутый уровень")
+    tail = full_text[advanced_idx:]
+    next_card_or_end = tail.find("Критерии успеха")
+    advanced_block = tail[: next_card_or_end if next_card_or_end != -1 else None]
+    assert "Решение:" not in advanced_block
+    assert KRITERII_USPEHA_TITLE in full_text
+    assert "Создана математическая модель для обоих типов ударов" in full_text

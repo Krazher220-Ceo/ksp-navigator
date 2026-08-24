@@ -82,6 +82,45 @@ TASK_EXTRA_COLUMNS_LABEL = (
     "Выбранный шаблон дополнительно требует заполнить в каждом этапе урока:"
 )
 
+# Р3.1: раздаточные материалы — необязательная часть ответа, включается
+# только по явному запросу учителя (include_razdatochnye_materialy=True;
+# сама галочка в форме бота появится в блоке Р5, здесь — только механизм).
+# НЕ входит в required схемы: документ без карточек остаётся законным по
+# приказу №130, это не часть его формы, а сервис сверх неё.
+TASK_RAZDATOCHNYE_MATERIALY_INSTRUCTION = (
+    "Дополнительно подготовь раздаточные материалы для урока: 2-3 "
+    "разноуровневые карточки с заданиями (уровни: базовый, основной, "
+    "продвинутый; у каждого своя цветная метка — зелёная/жёлтая/синяя). "
+    "У каждой карточки: условие задания, при уместности — подсказка "
+    "(формула, метод), и решение, если это расчётная задача (для "
+    "творческого/исследовательского задания решения может не быть — "
+    "тогда оставь его пустым, не выдумывай). Плюс отдельно — 2-4 общих "
+    "критерия успеха урока."
+)
+
+RAZDATOCHNYE_MATERIALY_RESPONSE_PROPERTIES = {
+    "razdatochnye_materialy": {
+        "type": "array",
+        "description": "Разноуровневые карточки с заданиями (Р3.1).",
+        "items": {
+            "type": "object",
+            "properties": {
+                "uroven": {"type": "string", "description": "базовый / основной / продвинутый"},
+                "metka": {"type": "string", "description": "цвет метки уровня"},
+                "zadanie": {"type": "string"},
+                "podskazka": {"type": "string"},
+                "reshenie": {"type": "string"},
+            },
+            "required": ["uroven", "zadanie"],
+        },
+    },
+    "kriterii_uspeha": {
+        "type": "array",
+        "items": {"type": "string"},
+        "description": "2-4 общих критерия успеха урока (Р3.1).",
+    },
+}
+
 REPAIR_HEADER = "Предыдущий ответ не прошёл проверку по следующим причинам:"
 REPAIR_INSTRUCTION = (
     "Исправь именно эти проблемы и верни полный корректный JSON заново, строго "
@@ -155,6 +194,18 @@ KSP_RESPONSE_SCHEMA = {
     },
     "required": ["tema_uroka", "razdel", "celi_obucheniya", "celi_uroka", "hod_uroka"],
 }
+
+def _build_response_schema(include_razdatochnye_materialy: bool) -> dict:
+    """Р3.1: базовая схема без изменений (include_razdatochnye_materialy=False —
+    подавляющее большинство запросов), либо её копия с добавленными
+    необязательными полями карточек. Копия, а не мутация KSP_RESPONSE_SCHEMA —
+    модуль-константу нельзя менять под конкретный вызов, её видят все."""
+    if not include_razdatochnye_materialy:
+        return KSP_RESPONSE_SCHEMA
+    schema = json.loads(json.dumps(KSP_RESPONSE_SCHEMA))
+    schema["properties"].update(RAZDATOCHNYE_MATERIALY_RESPONSE_PROPERTIES)
+    return schema
+
 
 _REQUIRED_TOP_LEVEL_KEYS = ["tema_uroka", "razdel", "celi_obucheniya", "celi_uroka", "hod_uroka"]
 _REQUIRED_HOD_UROKA_KEYS = [
@@ -288,11 +339,16 @@ def build_prompt(
     style_profile: dict | None = None,
     db_path=None,
     extra_columns: list[str] | None = None,
+    include_razdatochnye_materialy: bool = False,
 ) -> str:
     """КОНТЕКСТ (если есть профиль стиля) + ЗАДАЧА — ровно те два блока
     промпта из MASTER.md, раздел 1.6. Схема ответа сюда не встраивается
     текстом — её берёт на себя core.llm_client.LLMClient.complete_json
-    (параметр schema), чтобы не дублировать её в двух местах."""
+    (параметр schema), чтобы не дублировать её в двух местах.
+
+    include_razdatochnye_materialy — Р3.1: учитель попросил разноуровневые
+    карточки-раздатки. По умолчанию False — большинство запросов их не
+    просят, и лишняя инструкция в промпте не нужна."""
     objective_description = (
         _fetch_objective_description(objective_code, db_path=db_path) if objective_code else None
     )
@@ -312,6 +368,8 @@ def build_prompt(
             extra_columns=extra_columns,
         )
     )
+    if include_razdatochnye_materialy:
+        parts.append(TASK_RAZDATOCHNYE_MATERIALY_INSTRUCTION)
     return "\n\n".join(parts)
 
 
@@ -504,6 +562,7 @@ async def generate_ksp(
     llm_client: LLMClient | None = None,
     db_path=None,
     extra_columns: list[str] | None = None,
+    include_razdatochnye_materialy: bool = False,
 ) -> dict:
     """Генерирует и валидирует JSON-содержимое КСП (без сборки .docx —
     это отдельно, save_generated_ksp). Профиль стиля учителя (если
@@ -512,7 +571,9 @@ async def generate_ksp(
 
     При невалидном ответе — ровно один повторный запрос с указанием
     конкретных проблем; если и он не проходит — KSPValidationError.
-    Недостающие поля никогда не дописываются заглушками (Б6.2)."""
+    Недостающие поля никогда не дописываются заглушками (Б6.2).
+
+    include_razdatochnye_materialy — Р3.1, см. build_prompt."""
     style_profile = _fetch_style_profile(teacher_id, db_path=db_path)
     prompt = build_prompt(
         topic,
@@ -523,20 +584,20 @@ async def generate_ksp(
         style_profile,
         db_path=db_path,
         extra_columns=extra_columns,
+        include_razdatochnye_materialy=include_razdatochnye_materialy,
     )
+    schema = _build_response_schema(include_razdatochnye_materialy)
 
     client = llm_client or LLMClient()
     owns_client = llm_client is None
     try:
-        content = await client.complete_json(
-            system=SYSTEM_PROMPT, user=prompt, schema=KSP_RESPONSE_SCHEMA
-        )
+        content = await client.complete_json(system=SYSTEM_PROMPT, user=prompt, schema=schema)
         problems = _validate_ksp_content(content, duration_minutes)
 
         if problems:
             repair_prompt = _build_repair_prompt(prompt, problems)
             content = await client.complete_json(
-                system=SYSTEM_PROMPT, user=repair_prompt, schema=KSP_RESPONSE_SCHEMA
+                system=SYSTEM_PROMPT, user=repair_prompt, schema=schema
             )
             problems = _validate_ksp_content(content, duration_minutes)
             if problems:
@@ -669,11 +730,14 @@ async def generate_and_save_ksp(
     llm_client: LLMClient | None = None,
     db_path=None,
     output_dir: Path | str | None = None,
+    include_razdatochnye_materialy: bool = False,
 ) -> dict:
     """Полный конвейер: промпт -> LLM -> валидация -> .docx -> запись в
     generated_ksp. Удобный вызов для bot/handlers.py (блок Б8); тесты
     и другой код могут пользоваться generate_ksp/save_generated_ksp
-    по отдельности."""
+    по отдельности.
+
+    include_razdatochnye_materialy — Р3.1, см. build_prompt."""
     template = get_template(template_id, db_path=db_path)
     if template is None:
         raise KSPGenerationError(f"шаблон с id={template_id} не найден")
@@ -688,6 +752,7 @@ async def generate_and_save_ksp(
         llm_client=llm_client,
         db_path=db_path,
         extra_columns=_extra_columns_of_template(template),
+        include_razdatochnye_materialy=include_razdatochnye_materialy,
     )
 
     return save_generated_ksp(

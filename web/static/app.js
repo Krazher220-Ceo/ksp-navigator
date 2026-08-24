@@ -227,10 +227,65 @@
       }).join("") + "</tr>";
     }).join("");
 
+    renderRazdatochnyeMaterialy(content);
+
     if (tg) {
       tg.MainButton.setText("Скачать .docx");
       tg.MainButton.show();
       tg.MainButton.onClick(function () { downloadDocx(ksbId); });
+    }
+  }
+
+  // Р3.3: раздаточные материалы — необязательный блок, есть только если
+  // учитель их запросил при генерации (Р3.1). Только просмотр — как и
+  // весь экран «Предпросмотр» (MASTER.md, п.7.1 и п.11): нет ни одного
+  // элемента ввода, только текст из content.
+  const MATERIALY_CARD_FIELDS = [
+    { key: "zadanie", label: "Задание" },
+    { key: "podskazka", label: "Подсказка" },
+    { key: "reshenie", label: "Решение" },
+  ];
+
+  function renderRazdatochnyeMaterialy(content) {
+    const cardsSection = document.getElementById("preview-cards-section");
+    const kriteriiSection = document.getElementById("preview-kriterii-section");
+
+    const cards = Array.isArray(content.razdatochnye_materialy) ? content.razdatochnye_materialy : [];
+    const kriterii = Array.isArray(content.kriterii_uspeha) ? content.kriterii_uspeha : [];
+
+    if (cards.length) {
+      document.getElementById("preview-cards-list").innerHTML = cards.map(function (card) {
+        const titleBits = [card.uroven, card.metka ? "(" + card.metka + ")" : ""]
+          .filter(Boolean).map(escapeHtml).join(" ");
+        const fields = MATERIALY_CARD_FIELDS.map(function (f) {
+          const value = card[f.key];
+          if (!value) return ""; // решения может не быть у творческого задания — не выдумываем
+          return (
+            '<div class="materialy-card-field">' +
+              '<span class="materialy-card-field-label">' + escapeHtml(f.label) + ':</span> ' +
+              escapeHtml(value) +
+            "</div>"
+          );
+        }).join("");
+        return (
+          '<div class="materialy-card">' +
+            (titleBits ? '<div class="materialy-card-title">' + titleBits + "</div>" : "") +
+            fields +
+          "</div>"
+        );
+      }).join("");
+      cardsSection.hidden = false;
+    } else {
+      cardsSection.hidden = true;
+    }
+
+    if (kriterii.length) {
+      document.getElementById("preview-kriterii-list").innerHTML = kriterii
+        .map(function (item) { return "<li>" + escapeHtml(item) + "</li>"; })
+        .join("");
+      kriteriiSection.hidden = false;
+    } else {
+      kriteriiSection.hidden = true;
     }
   }
 

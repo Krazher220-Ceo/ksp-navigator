@@ -290,6 +290,63 @@ def _add_hod_uroka_section(
             row.cells[i].text = str(value) if value else ""
 
 
+# --- Р3.2: раздаточные материалы (необязательный раздел) ---
+
+RAZDATOCHNYE_MATERIALY_TITLE = "Готовые задания для урока"
+KRITERII_USPEHA_TITLE = "Критерии успеха"
+
+_CARD_FIELD_LABELS = [
+    ("zadanie", "Задание:"),
+    ("podskazka", "Подсказка:"),
+    ("reshenie", "Решение:"),
+]
+
+
+def _add_razdatochnye_materialy_section(
+    document: Document, cards: list[dict], kriterii_uspeha: list[str]
+) -> None:
+    """Раздел после "Хода урока" и примечания про ООП — необязателен и не
+    часть формы приказа №130 (Р3.1): нет карточек и критериев — раздела
+    просто нет, документ выглядит ровно как без этого блока (регрессии
+    для существующих документов быть не должно)."""
+    if not cards and not kriterii_uspeha:
+        return
+
+    heading = document.add_paragraph()
+    run = heading.add_run(RAZDATOCHNYE_MATERIALY_TITLE)
+    run.bold = True
+    run.font.size = Pt(13)
+
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        card_heading = document.add_paragraph()
+        title_bits = [str(card.get("uroven", "")).strip()]
+        metka = str(card.get("metka", "")).strip()
+        if metka:
+            title_bits.append(f"({metka})")
+        title_text = " ".join(b for b in title_bits if b)
+        if title_text:
+            run = card_heading.add_run(title_text)
+            run.bold = True
+
+        for field, label in _CARD_FIELD_LABELS:
+            value = str(card.get(field, "")).strip()
+            if not value:
+                continue
+            p = document.add_paragraph()
+            p.add_run(f"{label} ").bold = True
+            p.add_run(value)
+
+    if kriterii_uspeha:
+        kriterii_heading = document.add_paragraph()
+        kriterii_heading.add_run(KRITERII_USPEHA_TITLE).bold = True
+        for item in kriterii_uspeha:
+            text = str(item).strip()
+            if text:
+                document.add_paragraph(f"— {text}")
+
+
 # --- Б5.1: главная функция сборки ---
 
 
@@ -362,6 +419,12 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
         # новый ключ в structure_json ради одного абзаца заводить незачем.
         document.add_paragraph(MANDATORY_NOTICE_TEXT)
         document.add_paragraph(ADAPTACIYA_OOP_TEXT)
+
+    _add_razdatochnye_materialy_section(
+        document,
+        content.get("razdatochnye_materialy") or [],
+        content.get("kriterii_uspeha") or [],
+    )
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
