@@ -36,6 +36,14 @@ REAL_SEED_PATH = PROJECT_ROOT / "curriculum_seed.sql"
 
 DURATION = 40
 
+# Реплики и дескрипторы ниже намеренно "полновесные" — не для красоты, а
+# потому что core/ksp_generator.py, блок Р2.3, теперь отклоняет короткие
+# заглушки вместо реального содержания (deystviya_pedagoga короче 120
+# символов, ocenivanie из одного слова). VALID_CONTENT — это "хороший
+# ответ модели", который _validate_ksp_content обязан пропускать без
+# повтора; раньше здесь стояли короткие названия действий ("Объясняет
+# тему", "Устный опрос") — они и были тем самым образцом бедного
+# содержания, из-за которого блок Р2 писался.
 VALID_CONTENT = {
     "tema_uroka": "Закон сохранения импульса",
     "razdel": "Механика",
@@ -45,26 +53,40 @@ VALID_CONTENT = {
         {
             "etap": "Начало урока",
             "vremya": "0-5",
-            "deystviya_pedagoga": "Объясняет тему",
-            "deystviya_uchenika": "Слушают",
-            "resursy": "Учебник",
-            "ocenivanie": "Устный опрос",
+            "deystviya_pedagoga": (
+                '"Добрый день! Сегодня разберём закон сохранения импульса. '
+                'Представьте: вы стоите на льду с тяжёлым рюкзаком. Что '
+                'произойдёт, если резко бросить рюкзак вперёд? Обсудите в '
+                'парах и запишите предположение в тетрадь."'
+            ),
+            "deystviya_uchenika": "Слушают, обсуждают в парах, записывают предположение",
+            "resursy": "Интерактивная доска",
+            "ocenivanie": "Ученик формулирует предположение\nОбосновывает его физическим законом",
         },
         {
             "etap": "Основная часть",
             "vremya": "5-35",
-            "deystviya_pedagoga": "Ведёт урок, разбирает задачи",
-            "deystviya_uchenika": "Решают задачи в парах",
-            "resursy": "Доска, калькулятор",
-            "ocenivanie": "Взаимооценивание",
+            "deystviya_pedagoga": (
+                '"Разберём формулу m1v1 = m2v2 на примере тележки и груза. '
+                'Кто попробует объяснить, почему импульс системы сохраняется? '
+                'Теперь решите задачу на карточке самостоятельно, потом '
+                'сверим ответы вместе."'
+            ),
+            "deystviya_uchenika": "Решают задачи в парах, сверяют ответы",
+            "resursy": "Карточки с задачами, калькулятор",
+            "ocenivanie": "Верно применяет формулу сохранения импульса\nПолучает правильный числовой ответ",
         },
         {
             "etap": "Итог урока",
             "vremya": "35-40",
-            "deystviya_pedagoga": "Подводит итоги",
-            "deystviya_uchenika": "Формулируют вывод",
-            "resursy": "Дневник",
-            "ocenivanie": "Самооценивание",
+            "deystviya_pedagoga": (
+                '"Подведём итог: что мы узнали о законе сохранения импульса? '
+                'Поднимите зелёный кружок, если уверены в теме, жёлтый — '
+                'если остались вопросы."'
+            ),
+            "deystviya_uchenika": "Формулируют вывод, проводят самооценку кружками",
+            "resursy": "Цветные кружки",
+            "ocenivanie": "Формулирует вывод своими словами\nЧестно оценивает своё понимание темы",
         },
     ],
 }
@@ -264,6 +286,34 @@ async def test_generate_ksp_missing_hod_uroka_triggers_one_repair_then_succeeds(
     assert result == VALID_CONTENT
     assert len(fake.calls) == 2
     assert "hod_uroka" in fake.calls[1]["user"]  # причина провала попала в повторный промпт
+
+
+async def test_generate_ksp_placeholder_style_answer_triggers_one_repair_then_succeeds():
+    """Р2.3, КГ: короткая реплика вместо прямой речи педагога и
+    односложное 'Оценивание' — это заглушки, а не ошибка формата (все
+    обязательные ключи на месте, просто содержание бедное). Модель
+    получает ровно один шанс переписать это осмысленно."""
+    placeholder = json.loads(json.dumps(VALID_CONTENT))  # глубокая копия
+    placeholder["hod_uroka"][0]["deystviya_pedagoga"] = "Объясняет тему"  # < 120 симв.
+    placeholder["hod_uroka"][1]["ocenivanie"] = "Опрос"  # одно слово
+
+    fake = _ScriptedLLMClient([placeholder, VALID_CONTENT])
+
+    result = await generate_ksp(
+        teacher_id=1,
+        topic="Тема",
+        razdel="Раздел",
+        objective_code=None,
+        klass="10А",
+        duration_minutes=DURATION,
+        llm_client=fake,
+    )
+
+    assert result == VALID_CONTENT
+    assert len(fake.calls) == 2
+    repair_prompt = fake.calls[1]["user"]
+    assert "deystviya_pedagoga" in repair_prompt
+    assert "ocenivanie" in repair_prompt
 
 
 async def test_generate_ksp_second_failure_raises_validation_error():
