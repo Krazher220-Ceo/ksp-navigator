@@ -619,7 +619,12 @@ def make_generate_ksp_handler(bot: Bot):
 
         keyboard = None
         if settings.webapp_url:
-            preview_url = f"{settings.webapp_url.rstrip('/')}/preview/{result['id']}"
+            # ?preview=, не /preview/{id} как путь: web/static/ раздаётся
+            # StaticFiles(html=True) в web/api.py (блок Б9), она отдаёт
+            # index.html только на корне — путь /preview/{id} дал бы 404.
+            # Query-параметр читает сам index.html (блок Б10) и решает,
+            # какой из двух экранов показать, без правок бэкенда.
+            preview_url = f"{settings.webapp_url.rstrip('/')}/?preview={result['id']}"
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[[InlineKeyboardButton(text=texts.GENERATE_PREVIEW_BUTTON, web_app=WebAppInfo(url=preview_url))]]
             )

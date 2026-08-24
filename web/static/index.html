@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+  <title>Учебный навигатор</title>
+  <link rel="stylesheet" href="style.css">
+  <!-- Единственная разрешённая внешняя зависимость (PLAN_STAGE1.md, Б10.3) -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+
+  <!-- Экран «Шаблоны» (Б10.1). Только выбор — не редактирует и не
+       создаёт шаблоны (MASTER.md, п.7.1 и п.11). -->
+  <section id="screen-templates" class="screen">
+    <h1>Шаблоны КСП</h1>
+    <div id="templates-state" class="state-message">Загружаю…</div>
+    <div id="templates-list"></div>
+    <button type="button" id="upload-own-button" class="upload-own-link" hidden>
+      Загрузить свой шаблон
+    </button>
+  </section>
+
+  <!-- Экран «Предпросмотр» (Б10.2). Только просмотр и скачивание — не
+       редактирует текст, не сохраняет правки. Жёсткое ограничение
+       этапа 1. -->
+  <section id="screen-preview" class="screen">
+    <div id="preview-state" class="state-message">Загружаю…</div>
+    <div id="preview-content" hidden>
+      <div class="preview-header">
+        <div class="draft-notice">ЧЕРНОВИК. Требует проверки и утверждения педагогом.</div>
+        <div class="preview-topic" id="preview-topic"></div>
+      </div>
+      <div id="preview-fields"></div>
+      <div class="hod-uroka-title">Ход урока</div>
+      <div class="table-scroll">
+        <table class="hod-uroka">
+          <thead id="preview-table-head"></thead>
+          <tbody id="preview-table-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
