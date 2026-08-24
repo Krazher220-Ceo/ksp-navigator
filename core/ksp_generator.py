@@ -1,0 +1,517 @@
+"""
+core/ksp_generator.py — генератор КСП: тема + код цели + профиль стиля → JSON.
+
+Зачем модуль: единственное место, где реальные входные данные учителя
+(тема урока, код цели обучения, класс, продолжительность) и его профиль
+стиля (core/ksp_parser.py, блок Б3, опционально) превращаются в JSON,
+из которого core/docx_builder.py (блок Б5) строит файл.
+
+Что осознанно не делает: не выбирает шаблон и не форматирует документ —
+это ответственность вызывающего кода и core/docx_builder.py. Не
+подставляет заглушки вместо недостающих данных ни при валидации (Б6.2),
+ни при подборе кода цели (Б6.3, guess_objective_code) — там, где данных
+нет, возвращается честное None/исключение, а не выдумка.
+
+На что опирается: core.llm_client.LLMClient (блок Б2), core.db (блок
+Б1), core.docx_builder (блок Б5), core.templates.get_template (блок Б4).
+"""
+
+import json
+import re
+import uuid
+from datetime import date, datetime
+from pathlib import Path
+
+from core.config import settings
+from core.db import execute, query
+from core.docx_builder import build_docx, build_filename
+from core.llm_client import LLMClient
+from core.templates import get_template
+
+# =====================================================================
+# Тексты промптов — строго по MASTER.md, раздел 1.6. Ничего из этого
+# не вкраплено в код ниже: сборка промпта только компонует эти куски.
+# =====================================================================
+
+SYSTEM_PROMPT = (
+    "Ты помогаешь педагогу Республики Казахстан составить черновик "
+    "краткосрочного (поурочного) плана по форме, утверждённой приказом "
+    "МОН РК №130 от 06.04.2020.\n"
+    "Отвечай строго в формате JSON по заданной схеме, без пояснений."
+)
+
+CONTEXT_HEADER = "КОНТЕКСТ — стиль этого педагога (из его прошлых КСП):"
+CONTEXT_GOAL_PHRASING_LABEL = "- формулировки целей урока:"
+CONTEXT_STAGE_STRUCTURE_LABEL = "- типичная структура этапов:"
+CONTEXT_ASSESSMENT_METHODS_LABEL = "- методы оценивания:"
+CONTEXT_RESOURCES_USED_LABEL = "- используемые ресурсы:"
+
+TASK_HEADER = "ЗАДАЧА:"
+TASK_TOPIC_LABEL = "Тема урока:"
+TASK_RAZDEL_LABEL = "Раздел:"
+TASK_OBJECTIVE_LABEL = "Цель обучения по программе:"
+TASK_KLASS_LABEL = "Класс:"
+TASK_DURATION_LABEL = "Продолжительность:"
+
+REPAIR_HEADER = "Предыдущий ответ не прошёл проверку по следующим причинам:"
+REPAIR_INSTRUCTION = (
+    "Исправь именно эти проблемы и верни полный корректный JSON заново, строго "
+    "по той же схеме. Не оставляй пустые поля и не придумывай данные, которых "
+    "нет в задаче, — если чего-то не хватает, сформулируй содержательно на "
+    "основе темы и цели урока."
+)
+
+# Схема ответа — дословно структура из MASTER.md, раздел 1.6
+# (hod_uroka: "etap" и "vremya" отдельными полями, не объединённые —
+# так задано в MASTER.md; core/docx_builder.py уже умеет принимать
+# оба варианта, см. блок Б5).
+KSP_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tema_uroka": {"type": "string"},
+        "razdel": {"type": "string"},
+        "celi_obucheniya": {"type": "string"},
+        "celi_uroka": {"type": "array", "items": {"type": "string"}},
+        "hod_uroka": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "etap": {"type": "string"},
+                    "vremya": {"type": "string"},
+                    "deystviya_pedagoga": {"type": "string"},
+                    "deystviya_uchenika": {"type": "string"},
+                    "resursy": {"type": "string"},
+                    "ocenivanie": {"type": "string"},
+                },
+                "required": [
+                    "etap",
+                    "vremya",
+                    "deystviya_pedagoga",
+                    "deystviya_uchenika",
+                    "resursy",
+                    "ocenivanie",
+                ],
+            },
+        },
+    },
+    "required": ["tema_uroka", "razdel", "celi_obucheniya", "celi_uroka", "hod_uroka"],
+}
+
+_REQUIRED_TOP_LEVEL_KEYS = ["tema_uroka", "razdel", "celi_obucheniya", "celi_uroka", "hod_uroka"]
+_REQUIRED_HOD_UROKA_KEYS = [
+    "etap",
+    "vremya",
+    "deystviya_pedagoga",
+    "deystviya_uchenika",
+    "resursy",
+    "ocenivanie",
+]
+
+_MAX_TIMING_DEVIATION_MINUTES = 5
+
+
+class KSPGenerationError(Exception):
+    """Базовое исключение генератора КСП."""
+
+
+class KSPValidationError(KSPGenerationError):
+    """Ответ модели дважды подряд не прошёл валидацию (Б6.2)."""
+
+
+# =====================================================================
+# Б6.1 — сборка промпта
+# =====================================================================
+
+
+def _fetch_objective_description(objective_code: str, db_path=None) -> str | None:
+    rows = query(
+        "SELECT description FROM curriculum_objectives WHERE code = ?",
+        (objective_code,),
+        db_path=db_path,
+    )
+    return rows[0]["description"] if rows else None
+
+
+def _render_style_context(style_profile: dict | None) -> str:
+    """КОНТЕКСТ подставляется только если профиль реально есть и в нём
+    хоть что-то заполнено — иначе штатный режим без стилизации, а не
+    блок с пустыми списками (Б6.1: "нет профиля — не ошибка")."""
+    if not style_profile:
+        return ""
+
+    goal_phrasing = style_profile.get("goal_phrasing") or []
+    stage_structure = style_profile.get("stage_structure") or []
+    assessment_methods = style_profile.get("assessment_methods") or []
+    resources_used = style_profile.get("resources_used") or []
+
+    if not any([goal_phrasing, stage_structure, assessment_methods, resources_used]):
+        return ""
+
+    stage_lines = [
+        f"{s.get('stage', '')} ({s.get('timing', '')})".strip() for s in stage_structure
+    ]
+
+    return "\n".join(
+        [
+            CONTEXT_HEADER,
+            f"{CONTEXT_GOAL_PHRASING_LABEL} {'; '.join(goal_phrasing) or '—'}",
+            f"{CONTEXT_STAGE_STRUCTURE_LABEL} {'; '.join(stage_lines) or '—'}",
+            f"{CONTEXT_ASSESSMENT_METHODS_LABEL} {', '.join(assessment_methods) or '—'}",
+            f"{CONTEXT_RESOURCES_USED_LABEL} {', '.join(resources_used) or '—'}",
+        ]
+    )
+
+
+def _render_task_section(
+    topic: str,
+    razdel: str,
+    objective_code: str | None,
+    objective_description: str | None,
+    klass: str,
+    duration_minutes: int,
+) -> str:
+    if objective_code and objective_description:
+        objective_line = f"{objective_code} — {objective_description}"
+    elif objective_code:
+        objective_line = f"{objective_code} (описание не найдено в базе целей обучения)"
+    else:
+        objective_line = "не указан"
+
+    return "\n".join(
+        [
+            TASK_HEADER,
+            f"{TASK_TOPIC_LABEL} {topic}",
+            f"{TASK_RAZDEL_LABEL} {razdel}",
+            f"{TASK_OBJECTIVE_LABEL} {objective_line}",
+            f"{TASK_KLASS_LABEL} {klass}",
+            f"{TASK_DURATION_LABEL} {duration_minutes} мин",
+        ]
+    )
+
+
+def build_prompt(
+    topic: str,
+    razdel: str,
+    objective_code: str | None,
+    klass: str,
+    duration_minutes: int,
+    style_profile: dict | None = None,
+    db_path=None,
+) -> str:
+    """КОНТЕКСТ (если есть профиль стиля) + ЗАДАЧА — ровно те два блока
+    промпта из MASTER.md, раздел 1.6. Схема ответа сюда не встраивается
+    текстом — её берёт на себя core.llm_client.LLMClient.complete_json
+    (параметр schema), чтобы не дублировать её в двух местах."""
+    objective_description = (
+        _fetch_objective_description(objective_code, db_path=db_path) if objective_code else None
+    )
+
+    parts = []
+    context = _render_style_context(style_profile)
+    if context:
+        parts.append(context)
+    parts.append(
+        _render_task_section(topic, razdel, objective_code, objective_description, klass, duration_minutes)
+    )
+    return "\n\n".join(parts)
+
+
+def _build_repair_prompt(original_prompt: str, problems: list[str]) -> str:
+    problems_text = "\n".join(f"- {p}" for p in problems)
+    return f"{original_prompt}\n\n{REPAIR_HEADER}\n{problems_text}\n\n{REPAIR_INSTRUCTION}"
+
+
+# =====================================================================
+# Б6.2 — валидация ответа
+# =====================================================================
+
+_TIME_RANGE_RE = re.compile(r"(\d+)\s*[-–—]\s*(\d+)")
+_SINGLE_NUMBER_RE = re.compile(r"(\d+)")
+
+
+def _extract_minutes(vremya_text: str) -> int | None:
+    """Длительность этапа из текста вроде "0-5 мин" (диапазон — берём
+    разницу) или "10 мин" (одно число — берём как есть). Не смогли
+    распарсить — None: проверка суммы таймингов тогда пропускается,
+    а не ломает генерацию из-за формата строки."""
+    if not vremya_text:
+        return None
+    range_match = _TIME_RANGE_RE.search(vremya_text)
+    if range_match:
+        start, end = int(range_match.group(1)), int(range_match.group(2))
+        return max(0, end - start)
+    single_match = _SINGLE_NUMBER_RE.search(vremya_text)
+    if single_match:
+        return int(single_match.group(1))
+    return None
+
+
+def _validate_ksp_content(content: dict, duration_minutes: int) -> list[str]:
+    """Возвращает список найденных проблем (пустой = валидно). Сама
+    ничего не бросает и не чинит — решение (повтор/ошибка) принимает
+    вызывающий код. Ловушка Б6.2: недостающие поля здесь НЕ дописываются
+    заглушками — это только диагностика."""
+    problems: list[str] = []
+
+    for key in _REQUIRED_TOP_LEVEL_KEYS:
+        if key not in content:
+            problems.append(f"отсутствует обязательное поле '{key}'")
+    if problems:
+        return problems  # без обязательных ключей дальнейшие проверки бессмысленны
+
+    if not isinstance(content["hod_uroka"], list) or not content["hod_uroka"]:
+        problems.append("'hod_uroka' пустой или не список")
+
+    for field in ("tema_uroka", "razdel", "celi_obucheniya"):
+        value = content.get(field)
+        if not isinstance(value, str) or not value.strip():
+            problems.append(f"поле '{field}' пустое")
+
+    celi_uroka = content.get("celi_uroka") or []
+    if not any(str(item).strip() for item in celi_uroka):
+        problems.append("'celi_uroka' пустой список")
+
+    total_minutes = 0
+    timing_unparseable = False
+    for i, entry in enumerate(content.get("hod_uroka") or []):
+        if not isinstance(entry, dict):
+            problems.append(f"hod_uroka[{i}] не объект")
+            continue
+        for key in _REQUIRED_HOD_UROKA_KEYS:
+            value = entry.get(key)
+            if not isinstance(value, str) or not value.strip():
+                problems.append(f"hod_uroka[{i}].{key} пустое")
+
+        minutes = _extract_minutes(entry.get("vremya", ""))
+        if minutes is None:
+            timing_unparseable = True
+        else:
+            total_minutes += minutes
+
+    if not timing_unparseable and content.get("hod_uroka"):
+        deviation = abs(total_minutes - duration_minutes)
+        if deviation > _MAX_TIMING_DEVIATION_MINUTES:
+            problems.append(
+                f"сумма таймингов этапов ({total_minutes} мин) не укладывается в "
+                f"продолжительность урока {duration_minutes} мин "
+                f"(допуск ±{_MAX_TIMING_DEVIATION_MINUTES} мин)"
+            )
+
+    return problems
+
+
+# =====================================================================
+# Б6.3 — автоподстановка кода цели (F8, Should)
+# =====================================================================
+
+
+def guess_objective_code(teacher_id: int, topic: str, db_path=None) -> str | None:
+    """Поиск кода цели обучения по теме урока среди ktp_entries ЭТОГО
+    учителя: сначала точное совпадение темы (без учёта регистра и
+    лишних пробелов), потом — тема встречается подстрокой в topic
+    записи КТП. Никаких эмбеддингов и семантического поиска — это
+    этап 3 (MASTER.md, раздел 3.2), здесь только Should-удобство.
+
+    Сравнение сделано в Python, а не через SQL LIKE: LIKE в SQLite
+    регистронезависим только для ASCII-букв, для кириллицы — нет
+    (проверено отдельно на реальном примере из curriculum_seed.sql:
+    'Закон' и 'закона' LIKE не считает совпадением). Раз тема урока
+    почти всегда кириллица, буквальный LIKE здесь дал бы случайные
+    промахи по регистру — то есть был бы Should, который иногда молча
+    не работает без видимой причины."""
+    rows = query(
+        "SELECT topic, objective_code FROM ktp_entries "
+        "WHERE teacher_id = ? AND objective_code IS NOT NULL",
+        (teacher_id,),
+        db_path=db_path,
+    )
+    if not rows:
+        return None
+
+    topic_normalized = " ".join(topic.strip().lower().split())
+    if not topic_normalized:
+        return None
+
+    normalized_rows = [
+        (" ".join((row["topic"] or "").strip().lower().split()), row["objective_code"]) for row in rows
+    ]
+
+    for entry_topic, code in normalized_rows:
+        if entry_topic == topic_normalized:
+            return code
+
+    for entry_topic, code in normalized_rows:
+        if topic_normalized and topic_normalized in entry_topic:
+            return code
+
+    return None
+
+
+# =====================================================================
+# Основной конвейер: LLM-генерация (Б6.1+Б6.2) и сохранение (Б6.4)
+# =====================================================================
+
+
+def _fetch_style_profile(teacher_id: int, db_path=None) -> dict | None:
+    rows = query("SELECT * FROM style_profiles WHERE teacher_id = ?", (teacher_id,), db_path=db_path)
+    if not rows:
+        return None
+    row = rows[0]
+
+    def _load(field: str) -> list:
+        raw = row[field]
+        return json.loads(raw) if raw else []
+
+    return {
+        "goal_phrasing": _load("goal_phrasing"),
+        "stage_structure": _load("stage_structure"),
+        "assessment_methods": _load("assessment_methods"),
+        "resources_used": _load("resources_used"),
+        "raw_samples_count": row["raw_samples_count"],
+    }
+
+
+async def generate_ksp(
+    teacher_id: int,
+    topic: str,
+    razdel: str,
+    objective_code: str | None,
+    klass: str,
+    duration_minutes: int,
+    llm_client: LLMClient | None = None,
+    db_path=None,
+) -> dict:
+    """Генерирует и валидирует JSON-содержимое КСП (без сборки .docx —
+    это отдельно, save_generated_ksp). Профиль стиля учителя (если
+    есть) подставляется в промпт автоматически; нет профиля — штатный
+    режим без стилизации, а не ошибка (Б6.1).
+
+    При невалидном ответе — ровно один повторный запрос с указанием
+    конкретных проблем; если и он не проходит — KSPValidationError.
+    Недостающие поля никогда не дописываются заглушками (Б6.2)."""
+    style_profile = _fetch_style_profile(teacher_id, db_path=db_path)
+    prompt = build_prompt(
+        topic, razdel, objective_code, klass, duration_minutes, style_profile, db_path=db_path
+    )
+
+    client = llm_client or LLMClient()
+    owns_client = llm_client is None
+    try:
+        content = await client.complete_json(
+            system=SYSTEM_PROMPT, user=prompt, schema=KSP_RESPONSE_SCHEMA
+        )
+        problems = _validate_ksp_content(content, duration_minutes)
+
+        if problems:
+            repair_prompt = _build_repair_prompt(prompt, problems)
+            content = await client.complete_json(
+                system=SYSTEM_PROMPT, user=repair_prompt, schema=KSP_RESPONSE_SCHEMA
+            )
+            problems = _validate_ksp_content(content, duration_minutes)
+            if problems:
+                raise KSPValidationError(
+                    "ответ модели дважды не прошёл валидацию: " + "; ".join(problems)
+                )
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    return content
+
+
+def save_generated_ksp(
+    teacher_id: int,
+    template_id: int,
+    content: dict,
+    template: dict,
+    subject: str,
+    klass: str,
+    ktp_entry_id: int | None = None,
+    generated_at: date | None = None,
+    db_path=None,
+    output_dir: Path | str | None = None,
+) -> dict:
+    """Б6.4: строит .docx (core.docx_builder, блок Б5) в output_dir
+    (по умолчанию settings.generated_dir) и сохраняет строку в
+    generated_ksp. Путь в базе — тот же объект Path, что реально был
+    сохранён на диск (не пересобирается заново), поэтому расхождения
+    между базой и файловой системой здесь в принципе невозможны.
+    output_dir — параметр ради тестируемости (как db_path у core.db):
+    тесты не должны писать в реальную storage/generated/ проекта."""
+    generated_at = generated_at or datetime.now().date()
+    filename = build_filename(subject, klass, content.get("tema_uroka", ""), generated_at)
+    out_path = Path(output_dir or settings.generated_dir) / filename
+
+    saved_path = build_docx(content, template, out_path)
+
+    new_id = str(uuid.uuid4())
+    execute(
+        "INSERT INTO generated_ksp "
+        "(id, teacher_id, ktp_entry_id, template_id, content_json, docx_path) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            new_id,
+            teacher_id,
+            ktp_entry_id,
+            template_id,
+            json.dumps(content, ensure_ascii=False),
+            str(saved_path),
+        ),
+        db_path=db_path,
+    )
+
+    return {
+        "id": new_id,
+        "teacher_id": teacher_id,
+        "ktp_entry_id": ktp_entry_id,
+        "template_id": template_id,
+        "content_json": content,
+        "docx_path": str(saved_path),
+    }
+
+
+async def generate_and_save_ksp(
+    teacher_id: int,
+    template_id: int,
+    topic: str,
+    razdel: str,
+    subject: str,
+    klass: str,
+    duration_minutes: int,
+    objective_code: str | None = None,
+    ktp_entry_id: int | None = None,
+    llm_client: LLMClient | None = None,
+    db_path=None,
+    output_dir: Path | str | None = None,
+) -> dict:
+    """Полный конвейер: промпт -> LLM -> валидация -> .docx -> запись в
+    generated_ksp. Удобный вызов для bot/handlers.py (блок Б8); тесты
+    и другой код могут пользоваться generate_ksp/save_generated_ksp
+    по отдельности."""
+    template = get_template(template_id, db_path=db_path)
+    if template is None:
+        raise KSPGenerationError(f"шаблон с id={template_id} не найден")
+
+    content = await generate_ksp(
+        teacher_id,
+        topic,
+        razdel,
+        objective_code,
+        klass,
+        duration_minutes,
+        llm_client=llm_client,
+        db_path=db_path,
+    )
+
+    return save_generated_ksp(
+        teacher_id,
+        template_id,
+        content,
+        template,
+        subject,
+        klass,
+        output_dir=output_dir,
+        ktp_entry_id=ktp_entry_id,
+        db_path=db_path,
+    )
