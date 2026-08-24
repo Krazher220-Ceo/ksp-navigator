@@ -337,9 +337,24 @@ def _render_document_for_prompt(index: int, parsed: dict) -> str:
         lines.append("Текст вне таблиц:")
         lines.extend(f"  {p}" for p in parsed["paragraphs"])
 
+    # Все таблицы документа целиком, не только "Ход урока": в реальных
+    # КСП "Раздел", "Тема урока", "Цели обучения", "Цели урока" почти
+    # всегда лежат внутри таблиц (см. официальную форму, MASTER.md п.4),
+    # а не отдельными заголовками/абзацами. Без этого блока LLM физически
+    # не видит формулировки целей — найдено не в теории, а на реальном
+    # прогоне приёмки (Б12.2): goal_phrasing стабильно приходил пустым
+    # список, хотя цели в документах были, просто в ячейках таблицы.
+    if parsed.get("tables"):
+        lines.append("Таблицы документа (все строки, включая шапку):")
+        for table in parsed["tables"]:
+            for row in table:
+                row_text = " | ".join(cell for cell in row if cell)
+                if row_text:
+                    lines.append(f"  {row_text}")
+
     lesson_table = parsed.get("lesson_plan_table")
     if lesson_table and lesson_table.get("rows"):
-        lines.append("Ход урока (найденные этапы):")
+        lines.append("Ход урока (роли колонок распознаны явно):")
         for row in lesson_table["rows"]:
             row_text = "; ".join(f"{role}: {text}" for role, text in row.items() if text)
             if row_text:
