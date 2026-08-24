@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd/com.alikhan.webapi.plist — FastAPI-сервер Mini App (блок Б9,
+  web/api.py), слушает 127.0.0.1:8000. Cloudflare Tunnel (блок Б11.1)
+  проксирует туда внешний HTTPS-трафик.
+
+  Пропущен в первой версии блока Б11: были агенты на сам туннель
+  (ставит cloudflared service install) и на бота (kspbot), но ничего
+  не запускало сам web/api.py — поэтому туннель отвечал 530 (Cloudflare
+  достучался до cloudflared, а тот — нет ни до чего на localhost:8000,
+  порт пуст). Добавлено по факту реальной проверки, не в теории.
+
+  Тот же приём с "-m", что и в com.alikhan.kspbot.plist: "python -m
+  uvicorn web.api:app" запускается с WorkingDirectory = корень проекта,
+  тогда web/, core/ и bot/ видны как пакеты. Порт (8000) должен совпадать
+  с WEBAPP_PORT в .env и с "service: http://localhost:8000" в
+  ~/.cloudflared/config.yml.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.alikhan.webapi</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/kr220/Documents/Projects/ksp-navigator/venv/bin/python3.11</string>
+        <string>-m</string>
+        <string>uvicorn</string>
+        <string>web.api:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8000</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/kr220/Documents/Projects/ksp-navigator</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kr220/logs/webapi.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kr220/logs/webapi.err.log</string>
+</dict>
+</plist>
