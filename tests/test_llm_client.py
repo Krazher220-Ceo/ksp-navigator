@@ -236,7 +236,7 @@ def test_provider_without_api_key_is_skipped_silently():
     fake = _FakeSettings(
         order=("deepseek", "gemini"),
         providers={
-            "deepseek": {"api_key": None, "model": "deepseek-chat", "base_url": None},
+            "deepseek": {"api_key": None, "model": "deepseek-v4-flash", "base_url": None},
             "gemini": {"api_key": "real-key", "model": "gemini-test", "base_url": None},
         },
     )
