@@ -1,0 +1,13 @@
+{
+  "name": "Официальная форма (приказ №130)",
+  "description": "Минимальная официальная форма краткосрочного (поурочного) плана, обязательные поля по приказу МОН РК №130 от 06.04.2020. Дефолтный шаблон.",
+  "source": "приказ МОН РК №130 от 06.04.2020",
+  "is_official": 1,
+  "blocks": [
+    {"key": "shapka", "fields": ["organizaciya", "razdel", "fio_pedagoga", "data", "klass", "prisutstvuet", "otsutstvuet"]},
+    {"key": "tema", "fields": ["tema_uroka"]},
+    {"key": "celi", "fields": ["celi_obucheniya", "celi_uroka"]},
+    {"key": "hod_uroka", "columns": ["etap_vremya", "deystviya_pedagoga", "deystviya_uchenika", "resursy", "ocenivanie"]},
+    {"key": "primechanie", "fields": ["adaptaciya_oop"]}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "Развёрнутый образец (домашнее задание, доп. литература)",
+  "description": "Расширенный образец на основе найденного КТП (13 лабораторных, 17 практических, 5 контрольных работ) — та же официальная структура плюс колонки «домашнее задание» и «доп. литература» в ходе урока. Не является официальной формой, проверять и дополнять при необходимости.",
+  "source": "образец из интернета (найденный КТП)",
+  "is_official": 0,
+  "blocks": [
+    {"key": "shapka", "fields": ["organizaciya", "razdel", "fio_pedagoga", "data", "klass", "prisutstvuet", "otsutstvuet"]},
+    {"key": "tema", "fields": ["tema_uroka"]},
+    {"key": "celi", "fields": ["celi_obucheniya", "celi_uroka"]},
+    {"key": "hod_uroka", "columns": ["etap_vremya", "deystviya_pedagoga", "deystviya_uchenika", "resursy", "ocenivanie", "domashnee_zadanie", "dop_literatura"]},
+    {"key": "primechanie", "fields": ["adaptaciya_oop"]}
+  ]
+}
