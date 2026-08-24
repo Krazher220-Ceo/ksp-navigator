@@ -8,15 +8,17 @@ bot/handlers.py — все команды Telegram-бота (блок Б8).
 Что осознанно не делает: не содержит ни одной строки текста напрямую —
 все формулировки в bot/texts.py (PLAN_STAGE1.md, Б8.1), редактировать
 их можно не трогая логику. /upload_ktp обрабатывается СИНХРОННО (не
-через очередь): в tasks.type жёстко два значения (parse_ksp,
-generate_ksp, CHECK в schema.sql), а разбор КТП — быстрый и без LLM,
-третий тип задачи под него заводить незачем.
+через очередь): это быстрый разбор файла без LLM. /generate_ktp,
+наоборот, идёт через очередь (третий тип задачи, tasks.type, блок Р4.3,
+PLAN_STAGE1_EXT.md, миграция — scripts/migrate_add_generate_ktp_task_type.py) —
+это генерация через LLM, может занимать больше минуты, ей нужны ретраи
+и гарантия уведомления, тем же путём, что generate_ksp.
 
 На что опирается: aiogram 3 (Router, FSM), core.db, core.ksp_parser,
-core.ktp_parser, core.templates, core.ksp_generator, core.queue.
-Хендлеры задач очереди (parse_ksp/generate_ksp) — фабрики, которым
-нужен экземпляр Bot для отправки файлов/сообщений; создаются в
-bot/main.py, где Bot уже существует.
+core.ktp_parser, core.templates, core.ksp_generator, core.ktp_generator,
+core.queue. Хендлеры задач очереди (parse_ksp/generate_ksp/generate_ktp) —
+фабрики, которым нужен экземпляр Bot для отправки файлов/сообщений;
+создаются в bot/main.py, где Bot уже существует.
 """
 
 import asyncio
@@ -41,7 +43,7 @@ from aiogram.types import (
 )
 
 from bot import texts
-from bot.states import Generate, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
+from bot.states import Generate, GenerateKTP, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
 from core.config import settings
 from core.db import execute, query
 from core.ksp_generator import generate_and_save_ksp, guess_objective_code
@@ -52,6 +54,7 @@ from core.ksp_parser import (
     parse_ksp,
     save_style_profile,
 )
+from core.ktp_generator import generate_and_save_ktp
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMError
 from core.queue import MAX_RETRIES, enqueue
@@ -627,6 +630,124 @@ async def generate_confirmed(callback: CallbackQuery, state: FSMContext) -> None
 
 
 # =====================================================================
+# /generate_ktp — FSM: предмет -> класс -> часов в неделю -> часов в год
+#                 -> темы -> подтверждение -> очередь (блок Р4.3)
+#
+# Через очередь, не синхронно (в отличие от /upload_ktp): это генерация
+# через LLM, а не разбор файла — на реальном прогоне занимала от 30 до
+# больше 100 секунд для полного учебного года (ktp_generator.py). Держать
+# это внутри одного хендлера значило бы держать диалог пользователя
+# висящим без ретраев и без гарантии уведомления при сбое — то, ради чего
+# вообще существует core/queue.py.
+# =====================================================================
+
+
+@router.message(Command("generate_ktp"))
+async def cmd_generate_ktp(message: Message, state: FSMContext) -> None:
+    teacher = await _require_teacher(message)
+    if teacher is None:
+        return
+    await state.clear()
+    await state.set_state(GenerateKTP.waiting_for_predmet)
+    await state.update_data(teacher_id=teacher["id"])
+    await message.answer(texts.GENERATE_KTP_ASK_PREDMET)
+
+
+@router.message(GenerateKTP.waiting_for_predmet)
+async def generate_ktp_predmet_received(message: Message, state: FSMContext) -> None:
+    predmet = (message.text or "").strip()
+    if not predmet:
+        await message.answer(texts.GENERATE_KTP_ASK_PREDMET)
+        return
+    await state.update_data(predmet=predmet)
+    await state.set_state(GenerateKTP.waiting_for_klass)
+    await message.answer(texts.GENERATE_KTP_ASK_KLASS)
+
+
+@router.message(GenerateKTP.waiting_for_klass)
+async def generate_ktp_klass_received(message: Message, state: FSMContext) -> None:
+    klass = (message.text or "").strip()
+    if not klass:
+        await message.answer(texts.GENERATE_KTP_ASK_KLASS)
+        return
+    await state.update_data(klass=klass)
+    await state.set_state(GenerateKTP.waiting_for_hours_week)
+    await message.answer(texts.GENERATE_KTP_ASK_HOURS_WEEK)
+
+
+@router.message(GenerateKTP.waiting_for_hours_week)
+async def generate_ktp_hours_week_received(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer(texts.GENERATE_KTP_HOURS_NOT_A_NUMBER)
+        return
+    await state.update_data(chasov_v_nedelu=int(text))
+    await state.set_state(GenerateKTP.waiting_for_hours_year)
+    await message.answer(texts.GENERATE_KTP_ASK_HOURS_YEAR)
+
+
+@router.message(GenerateKTP.waiting_for_hours_year)
+async def generate_ktp_hours_year_received(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer(texts.GENERATE_KTP_HOURS_NOT_A_NUMBER)
+        return
+    await state.update_data(chasov_v_god=int(text))
+    await state.set_state(GenerateKTP.waiting_for_topics)
+    await message.answer(texts.GENERATE_KTP_ASK_TOPICS)
+
+
+@router.message(GenerateKTP.waiting_for_topics)
+async def generate_ktp_topics_received(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    topics = [] if text in ("-", "") else [line.strip() for line in text.splitlines() if line.strip()]
+    await state.update_data(topics=topics)
+
+    data = await state.get_data()
+    summary = texts.GENERATE_KTP_CONFIRM_SUMMARY.format(
+        predmet=data["predmet"],
+        klass=data["klass"],
+        hours_week=data["chasov_v_nedelu"],
+        hours_year=data["chasov_v_god"],
+        topics_count=len(topics) if topics else "не даны, составлю сам",
+    )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=texts.GENERATE_KTP_CONFIRM_BUTTON, callback_data="genktp_confirm"),
+                InlineKeyboardButton(text=texts.GENERATE_KTP_CANCEL_BUTTON, callback_data="genktp_cancel"),
+            ]
+        ]
+    )
+    await state.set_state(GenerateKTP.waiting_for_confirmation)
+    await message.answer(summary, reply_markup=keyboard)
+
+
+@router.callback_query(GenerateKTP.waiting_for_confirmation, F.data == "genktp_cancel")
+async def generate_ktp_cancelled(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.message.answer(texts.GENERATE_KTP_CANCELLED)
+    await callback.answer()
+
+
+@router.callback_query(GenerateKTP.waiting_for_confirmation, F.data == "genktp_confirm")
+async def generate_ktp_confirmed(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    payload = {
+        "teacher_id": data["teacher_id"],
+        "predmet": data["predmet"],
+        "klass": data["klass"],
+        "chasov_v_nedelu": data["chasov_v_nedelu"],
+        "chasov_v_god": data["chasov_v_god"],
+        "topics": data.get("topics") or None,
+    }
+    enqueue("generate_ktp", payload, chat_id=callback.message.chat.id)
+    await state.clear()
+    await callback.message.answer(texts.GENERATE_KTP_QUEUED)
+    await callback.answer()
+
+
+# =====================================================================
 # /status
 # =====================================================================
 
@@ -801,5 +922,37 @@ def make_generate_ksp_handler(bot: Bot):
 
         await bot.send_document(chat_id, FSInputFile(docx_path), caption=caption, reply_markup=keyboard)
         return {"generated_ksp_id": result["id"], "docx_path": str(docx_path)}
+
+    return handler
+
+
+def make_generate_ktp_handler(bot: Bot):
+    """Полный конвейер генерации КТП (core.ktp_generator.generate_and_save_ktp,
+    блок Р4) и отправка готового файла. Тем же путём, что generate_ksp:
+    любая ошибка уходит наверх как есть, core.queue решает про ретрай и
+    финальное уведомление."""
+
+    async def handler(task: dict) -> dict:
+        payload = task["payload"]
+        chat_id = task["telegram_chat_id"]
+
+        result = await generate_and_save_ktp(
+            teacher_id=payload["teacher_id"],
+            predmet=payload["predmet"],
+            klass=payload["klass"],
+            chasov_v_nedelu=payload["chasov_v_nedelu"],
+            chasov_v_god=payload["chasov_v_god"],
+            topics=payload.get("topics"),
+        )
+
+        docx_path = Path(result["docx_path"])
+        caption = texts.GENERATE_KTP_RESULT_CAPTION.format(
+            predmet=payload["predmet"], klass=payload["klass"]
+        )
+        if result["ktp_entries_inserted"]:
+            caption += texts.GENERATE_KTP_ENTRIES_NOTE.format(count=result["ktp_entries_inserted"])
+
+        await bot.send_document(chat_id, FSInputFile(docx_path), caption=caption)
+        return {"docx_path": str(docx_path), "ktp_entries_inserted": result["ktp_entries_inserted"]}
 
     return handler

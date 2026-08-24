@@ -23,7 +23,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ErrorEvent
 
 from bot import texts
-from bot.handlers import make_generate_ksp_handler, make_parse_ksp_handler, router
+from bot.handlers import (
+    make_generate_ksp_handler,
+    make_generate_ktp_handler,
+    make_parse_ksp_handler,
+    router,
+)
 from core.config import settings
 from core.queue import QueueWorker
 
@@ -124,6 +129,7 @@ async def run() -> None:
         handlers={
             "parse_ksp": make_parse_ksp_handler(bot),
             "generate_ksp": make_generate_ksp_handler(bot),
+            "generate_ktp": make_generate_ktp_handler(bot),
         },
         notify=lambda chat_id, text: _notify_user(bot, chat_id, text),
         failure_message=_failure_message,

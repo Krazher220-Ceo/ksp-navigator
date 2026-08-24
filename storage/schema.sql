@@ -74,7 +74,11 @@ CREATE TABLE IF NOT EXISTS generated_ksp (
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
-    type TEXT CHECK(type IN ('parse_ksp','generate_ksp')),
+    -- 'generate_ktp' добавлен блоком Р4.3 (PLAN_STAGE1_EXT.md). Для базы,
+    -- созданной ДО этого блока, одного перезапуска schema.sql недостаточно —
+    -- CREATE TABLE IF NOT EXISTS не трогает уже существующую таблицу с
+    -- другим CHECK. См. scripts/migrate_add_generate_ktp_task_type.py.
+    type TEXT CHECK(type IN ('parse_ksp','generate_ksp','generate_ktp')),
     status TEXT CHECK(status IN ('pending','processing','done','failed')) DEFAULT 'pending',
     payload TEXT,
     result TEXT,

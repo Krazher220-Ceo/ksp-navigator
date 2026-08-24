@@ -39,3 +39,14 @@ class Generate(StatesGroup):
     waiting_for_duration = State()
     waiting_for_template = State()
     waiting_for_confirmation = State()
+
+
+class GenerateKTP(StatesGroup):
+    """/generate_ktp — блок Р4.3 (PLAN_STAGE1_EXT.md)."""
+
+    waiting_for_predmet = State()
+    waiting_for_klass = State()
+    waiting_for_hours_week = State()
+    waiting_for_hours_year = State()
+    waiting_for_topics = State()
+    waiting_for_confirmation = State()

@@ -24,10 +24,11 @@ START = (
     "С чего начать:\n"
     "1. /teacher — завести профиль (ФИО, предмет)\n"
     "2. /upload_ksp — прислать 2-5 старых КСП, чтобы я уловил ваш стиль (не обязательно)\n"
-    "3. /upload_ktp — прислать КТП, чтобы код цели подставлялся сам\n"
+    "3. /upload_ktp — прислать КТП, чтобы код цели подставлялся сам "
+    "(или /generate_ktp — я соберу его сам)\n"
     "4. /generate — собрать черновик КСП\n\n"
-    "Все команды: /teacher /upload_ksp /upload_ktp /upload_template /templates "
-    "/generate /status /history"
+    "Все команды: /teacher /upload_ksp /upload_ktp /generate_ktp /upload_template "
+    "/templates /generate /status /history"
 )
 
 # --- /teacher ---
@@ -148,6 +149,42 @@ GENERATE_NO_STYLE_PROFILE_NOTE = (
 GENERATE_RESULT_CAPTION = "Готово: {topic}. Не забудьте: это черновик, проверьте перед сдачей."
 GENERATE_PREVIEW_BUTTON = "👁 Предпросмотр"
 
+# --- /generate_ktp (Р4.3) ---
+
+GENERATE_KTP_ASK_PREDMET = "Предмет? Например: физика"
+GENERATE_KTP_ASK_KLASS = "Класс? Например: 10А"
+GENERATE_KTP_ASK_HOURS_WEEK = "Часов в неделю по программе? Например: 2"
+GENERATE_KTP_HOURS_NOT_A_NUMBER = "Это не похоже на число часов. Введите целое число, например 2."
+GENERATE_KTP_ASK_HOURS_YEAR = "Часов в год по программе? Например: 68"
+GENERATE_KTP_ASK_TOPICS = (
+    "Список тем по разделам, если уже есть — по одной теме на строку.\n"
+    "Если списка нет — отправьте «-», я составлю план сам по типичной для "
+    "предмета и класса программе."
+)
+GENERATE_KTP_CONFIRM_SUMMARY = (
+    "Проверьте перед генерацией:\n"
+    "Предмет: {predmet}\n"
+    "Класс: {klass}\n"
+    "Часов в неделю: {hours_week}\n"
+    "Часов в год: {hours_year}\n"
+    "Тем в списке: {topics_count}\n"
+)
+GENERATE_KTP_CONFIRM_BUTTON = "✅ Сгенерировать"
+GENERATE_KTP_CANCEL_BUTTON = "❌ Отмена"
+GENERATE_KTP_CANCELLED = "Генерация отменена."
+GENERATE_KTP_QUEUED = (
+    "Принято, собираю КТП — это план на весь учебный год, займёт больше "
+    "минуты. Напишу, когда будет готово."
+)
+GENERATE_KTP_RESULT_CAPTION = (
+    "Готово: КТП по предмету «{predmet}», {klass} класс. "
+    "Это черновик, проверьте перед утверждением."
+)
+GENERATE_KTP_ENTRIES_NOTE = (
+    "\n\nЗаодно обновил вашу таблицу тем в базе ({count} уроков) — теперь "
+    "код цели при /generate будет подставляться по этому плану."
+)
+
 # --- /status ---
 
 STATUS_EMPTY = "У вас нет задач в очереди."
@@ -169,6 +206,7 @@ STATUS_EMOJI = {
 TASK_TYPE_LABELS = {
     "parse_ksp": "разбор стиля КСП",
     "generate_ksp": "генерация КСП",
+    "generate_ktp": "генерация КТП",
 }
 
 # --- /history ---

@@ -500,6 +500,116 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
     assert await state.get_state() is None
 
 
+async def test_generate_ktp_full_flow_enqueues_task_with_correct_payload(isolated_env):
+    from bot.handlers import (
+        cmd_generate_ktp,
+        generate_ktp_confirmed,
+        generate_ktp_hours_week_received,
+        generate_ktp_hours_year_received,
+        generate_ktp_klass_received,
+        generate_ktp_predmet_received,
+        generate_ktp_topics_received,
+    )
+    from bot.states import GenerateKTP
+
+    teacher_id = _create_teacher(1)
+    state = _state()
+    await cmd_generate_ktp(FakeMessage(text="/generate_ktp"), state)
+    assert await state.get_state() == GenerateKTP.waiting_for_predmet.state
+
+    await generate_ktp_predmet_received(FakeMessage(text="физика"), state)
+    await generate_ktp_klass_received(FakeMessage(text="10А"), state)
+    await generate_ktp_hours_week_received(FakeMessage(text="2"), state)
+    await generate_ktp_hours_year_received(FakeMessage(text="68"), state)
+    assert await state.get_state() == GenerateKTP.waiting_for_topics.state
+
+    message = FakeMessage(chat_id=777)
+    await generate_ktp_topics_received(FakeMessage(text="Тема 1\nТема 2"), state)
+    assert await state.get_state() == GenerateKTP.waiting_for_confirmation.state
+
+    confirm_callback = FakeCallbackQuery(data="genktp_confirm", message=message)
+    await generate_ktp_confirmed(confirm_callback, state)
+
+    tasks = query("SELECT * FROM tasks WHERE type = 'generate_ktp'")
+    assert len(tasks) == 1
+    assert tasks[0]["telegram_chat_id"] == 777
+    payload = json.loads(tasks[0]["payload"])
+    assert payload == {
+        "teacher_id": teacher_id,
+        "predmet": "физика",
+        "klass": "10А",
+        "chasov_v_nedelu": 2,
+        "chasov_v_god": 68,
+        "topics": ["Тема 1", "Тема 2"],
+    }
+    assert await state.get_state() is None
+
+
+async def test_generate_ktp_dash_means_no_topics(isolated_env):
+    from bot.handlers import generate_ktp_topics_received
+    from bot.states import GenerateKTP
+
+    state = _state()
+    await state.update_data(predmet="физика", klass="10А", chasov_v_nedelu=2, chasov_v_god=68)
+    await state.set_state(GenerateKTP.waiting_for_hours_year)
+
+    message = FakeMessage(text="-")
+    await generate_ktp_topics_received(message, state)
+
+    data = await state.get_data()
+    assert data["topics"] == []
+    assert "составлю сам" in message.sent[-1]["text"]
+
+
+async def test_generate_ktp_hours_week_rejects_non_numeric_input(isolated_env):
+    from bot.handlers import generate_ktp_hours_week_received
+    from bot.states import GenerateKTP
+
+    state = _state()
+    await state.set_state(GenerateKTP.waiting_for_hours_week)
+
+    message = FakeMessage(text="два")
+    await generate_ktp_hours_week_received(message, state)
+
+    assert message.sent[-1]["text"] == texts.GENERATE_KTP_HOURS_NOT_A_NUMBER
+    assert await state.get_state() == GenerateKTP.waiting_for_hours_week.state
+
+
+async def test_generate_ktp_task_handler_sends_document_and_notes_entries(isolated_env, monkeypatch):
+    from bot import handlers as handlers_module
+    from bot.handlers import make_generate_ktp_handler
+
+    async def fake_generate_and_save_ktp(**kwargs):
+        return {
+            "id": "ktp-xyz",
+            "docx_path": "/tmp/ktp_result.docx",
+            "content_json": {},
+            "ktp_entries_inserted": 34,
+            "ktp_entries_replaced": 0,
+        }
+
+    monkeypatch.setattr(handlers_module, "generate_and_save_ktp", fake_generate_and_save_ktp)
+
+    bot = FakeBot()
+    handler = make_generate_ktp_handler(bot)
+    task = {
+        "id": "t9",
+        "type": "generate_ktp",
+        "telegram_chat_id": 88,
+        "payload": {
+            "teacher_id": 1, "predmet": "физика", "klass": "10А",
+            "chasov_v_nedelu": 2, "chasov_v_god": 68, "topics": None,
+        },
+    }
+
+    result = await handler(task)
+
+    assert result == {"docx_path": "/tmp/ktp_result.docx", "ktp_entries_inserted": 34}
+    assert len(bot.sent_documents) == 1
+    assert bot.sent_documents[0]["chat_id"] == 88
+    assert "34" in bot.sent_documents[0]["caption"]
+
+
 async def test_generate_duration_rejects_non_numeric_input(isolated_env):
     _create_teacher(1)
     state = _state()
