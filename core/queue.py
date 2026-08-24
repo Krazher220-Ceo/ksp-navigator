@@ -212,11 +212,27 @@ class QueueWorker:
 
         self._running = True
         while self._running:
-            task = claim_next(db_path=self._db_path)
-            if task is None:
+            # Цикл не имеет права умереть: он единственный, кто вообще
+            # разбирает очередь. Любая ошибка опроса базы (транзиентная
+            # 'database is locked', ошибка ввода-вывода на спящем Mac)
+            # раньше выбрасывала исключение из run_forever, задача-воркер
+            # тихо умирала, а бот продолжал принимать команды и класть
+            # задачи в очередь, которую уже некому разбирать: ни одного
+            # уведомления, всё висит в pending навсегда. Это и есть
+            # нарушение KPI "задач без уведомления — ноль" (MASTER.md
+            # п.1.7), причём в худшем виде — задача даже до failed не
+            # доходит. Поэтому здесь ловится всё и цикл продолжается.
+            try:
+                task = claim_next(db_path=self._db_path)
+                if task is None:
+                    await asyncio.sleep(self._poll_interval)
+                    continue
+                await self._process_one(task)
+            except asyncio.CancelledError:
+                raise  # штатная остановка при выключении бота — не ошибка
+            except Exception:
+                logger.exception("сбой цикла воркера очереди, продолжаю работу")
                 await asyncio.sleep(self._poll_interval)
-                continue
-            await self._process_one(task)
 
     def stop(self) -> None:
         self._running = False
@@ -237,8 +253,18 @@ class QueueWorker:
         return processed
 
     async def _process_one(self, task: dict) -> None:
-        parsed_task = dict(task)
-        parsed_task["payload"] = json.loads(task["payload"]) if task["payload"] else {}
+        # Разбор payload — тоже под защитой: битая строка в поле payload
+        # (ручная правка базы, обрыв записи) раньше роняла весь воркер
+        # ещё до входа в try, то есть одна испорченная задача убивала
+        # обработку всех остальных. Теперь это обычный провал ОДНОЙ
+        # задачи, с ретраями и финальным уведомлением, как любой другой.
+        try:
+            parsed_task = dict(task)
+            parsed_task["payload"] = json.loads(task["payload"]) if task["payload"] else {}
+        except (ValueError, TypeError) as exc:
+            logger.exception("не удалось разобрать payload задачи %s", task["id"])
+            await self._fail_and_maybe_notify(task, f"повреждённый payload задачи: {exc}")
+            return
 
         handler = self._handlers.get(task["type"])
         if handler is None:
@@ -254,7 +280,15 @@ class QueueWorker:
             await self._fail_and_maybe_notify(task, str(exc))
             return
 
-        complete(task["id"], result, db_path=self._db_path)
+        # Запись результата тоже может не удаться (база занята, диск).
+        # Работа при этом уже сделана, но пометить задачу done не вышло —
+        # честно проводим это как провал задачи, а не как смерть воркера:
+        # задача останется в очереди и будет повторена.
+        try:
+            complete(task["id"], result, db_path=self._db_path)
+        except Exception as exc:
+            logger.exception("не удалось записать результат задачи %s", task["id"])
+            await self._fail_and_maybe_notify(task, f"не удалось сохранить результат: {exc}")
 
     async def _fail_and_maybe_notify(self, task: dict, error_text: str) -> None:
         status = fail(task["id"], error_text, db_path=self._db_path)
@@ -271,4 +305,17 @@ class QueueWorker:
             return
 
         message = self._failure_message(task, error_text)
-        await self._notify(chat_id, message)
+        try:
+            await self._notify(chat_id, message)
+        except Exception:
+            # Задача уже помечена failed, а сказать об этом не вышло —
+            # ровно тот случай, который KPI запрещает (MASTER.md п.1.7).
+            # Гасить молча нельзя, ронять воркер из-за одного
+            # неотправленного сообщения — тоже: остальные задачи в
+            # очереди не виноваты. Поэтому громкий ERROR в лог, по
+            # которому это видно грепом.
+            logger.exception(
+                "KPI: задача %s ушла в failed, но уведомить чат %s не удалось",
+                task["id"],
+                chat_id,
+            )

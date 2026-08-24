@@ -53,6 +53,18 @@ TASK_OBJECTIVE_LABEL = "Цель обучения по программе:"
 TASK_KLASS_LABEL = "Класс:"
 TASK_DURATION_LABEL = "Продолжительность:"
 
+# Колонки "Хода урока", которых нет в официальной форме №130, но которые
+# может просить выбранный шаблон (core/templates.py). Модель узнаёт о них
+# из промпта — иначе она просто не знает, что документ их ждёт, и они
+# выходят пустыми.
+EXTRA_COLUMN_LABELS = {
+    "domashnee_zadanie": "домашнее задание",
+    "dop_literatura": "дополнительная литература",
+}
+TASK_EXTRA_COLUMNS_LABEL = (
+    "Выбранный шаблон дополнительно требует заполнить в каждом этапе урока:"
+)
+
 REPAIR_HEADER = "Предыдущий ответ не прошёл проверку по следующим причинам:"
 REPAIR_INSTRUCTION = (
     "Исправь именно эти проблемы и верни полный корректный JSON заново, строго "
@@ -83,6 +95,17 @@ KSP_RESPONSE_SCHEMA = {
                     "deystviya_uchenika": {"type": "string"},
                     "resursy": {"type": "string"},
                     "ocenivanie": {"type": "string"},
+                    # Колонки сверх официальной формы: их просит шаблон
+                    # "Развёрнутый образец" (storage/builtin_templates/
+                    # extended_ktp.json). В required их нет намеренно —
+                    # официальной форме №130 они не нужны, и требовать их
+                    # от модели всегда значило бы заставлять её выдумывать
+                    # домашнее задание там, где шаблон его не спрашивает.
+                    # Но и не знать о них нельзя: пока их не было в схеме,
+                    # по этому шаблону две колонки из семи выходили
+                    # пустыми при любой генерации.
+                    "domashnee_zadanie": {"type": "string"},
+                    "dop_literatura": {"type": "string"},
                 },
                 "required": [
                     "etap",
@@ -170,6 +193,7 @@ def _render_task_section(
     objective_description: str | None,
     klass: str,
     duration_minutes: int,
+    extra_columns: list[str] | None = None,
 ) -> str:
     if objective_code and objective_description:
         objective_line = f"{objective_code} — {objective_description}"
@@ -178,16 +202,40 @@ def _render_task_section(
     else:
         objective_line = "не указан"
 
-    return "\n".join(
-        [
-            TASK_HEADER,
-            f"{TASK_TOPIC_LABEL} {topic}",
-            f"{TASK_RAZDEL_LABEL} {razdel}",
-            f"{TASK_OBJECTIVE_LABEL} {objective_line}",
-            f"{TASK_KLASS_LABEL} {klass}",
-            f"{TASK_DURATION_LABEL} {duration_minutes} мин",
-        ]
-    )
+    lines = [
+        TASK_HEADER,
+        f"{TASK_TOPIC_LABEL} {topic}",
+        f"{TASK_RAZDEL_LABEL} {razdel}",
+        f"{TASK_OBJECTIVE_LABEL} {objective_line}",
+        f"{TASK_KLASS_LABEL} {klass}",
+        f"{TASK_DURATION_LABEL} {duration_minutes} мин",
+    ]
+
+    known_extra = [c for c in (extra_columns or []) if c in EXTRA_COLUMN_LABELS]
+    if known_extra:
+        described = ", ".join(f"{c} ({EXTRA_COLUMN_LABELS[c]})" for c in known_extra)
+        lines.append(f"{TASK_EXTRA_COLUMNS_LABEL} {described}")
+
+    return "\n".join(lines)
+
+
+def _extra_columns_of_template(template: dict | None) -> list[str]:
+    """Колонки "Хода урока" выбранного шаблона, которых нет в официальной
+    форме. Нужны, чтобы промпт попросил модель их заполнить: без этого
+    шаблон "Развёрнутый образец" давал две гарантированно пустые колонки
+    из семи в каждом сгенерированном документе."""
+    if not template:
+        return []
+    structure = template.get("structure_json")
+    if isinstance(structure, str):
+        structure = json.loads(structure)
+    if not isinstance(structure, dict):
+        return []
+
+    for block in structure.get("blocks", []):
+        if block.get("key") == "hod_uroka":
+            return [c for c in (block.get("columns") or []) if c in EXTRA_COLUMN_LABELS]
+    return []
 
 
 def build_prompt(
@@ -198,6 +246,7 @@ def build_prompt(
     duration_minutes: int,
     style_profile: dict | None = None,
     db_path=None,
+    extra_columns: list[str] | None = None,
 ) -> str:
     """КОНТЕКСТ (если есть профиль стиля) + ЗАДАЧА — ровно те два блока
     промпта из MASTER.md, раздел 1.6. Схема ответа сюда не встраивается
@@ -212,7 +261,15 @@ def build_prompt(
     if context:
         parts.append(context)
     parts.append(
-        _render_task_section(topic, razdel, objective_code, objective_description, klass, duration_minutes)
+        _render_task_section(
+            topic,
+            razdel,
+            objective_code,
+            objective_description,
+            klass,
+            duration_minutes,
+            extra_columns=extra_columns,
+        )
     )
     return "\n\n".join(parts)
 
@@ -381,6 +438,7 @@ async def generate_ksp(
     duration_minutes: int,
     llm_client: LLMClient | None = None,
     db_path=None,
+    extra_columns: list[str] | None = None,
 ) -> dict:
     """Генерирует и валидирует JSON-содержимое КСП (без сборки .docx —
     это отдельно, save_generated_ksp). Профиль стиля учителя (если
@@ -392,7 +450,14 @@ async def generate_ksp(
     Недостающие поля никогда не дописываются заглушками (Б6.2)."""
     style_profile = _fetch_style_profile(teacher_id, db_path=db_path)
     prompt = build_prompt(
-        topic, razdel, objective_code, klass, duration_minutes, style_profile, db_path=db_path
+        topic,
+        razdel,
+        objective_code,
+        klass,
+        duration_minutes,
+        style_profile,
+        db_path=db_path,
+        extra_columns=extra_columns,
     )
 
     client = llm_client or LLMClient()
@@ -420,6 +485,53 @@ async def generate_ksp(
     return content
 
 
+def _fill_header_fields(
+    content: dict,
+    teacher_id: int,
+    klass: str,
+    generated_at: date,
+    db_path=None,
+) -> dict:
+    """Дописывает в content поля шапки формы №130, которые LLM не
+    возвращает и вернуть не может: их неоткуда взять из темы урока, они
+    известны самой системе.
+
+    fio_pedagoga — из teachers.name (учитель назвал его в /teacher),
+    klass — из аргумента (учитель назвал его в /generate),
+    data — дата генерации.
+
+    Это НЕ заглушки в смысле ловушки Б6.2: там запрещено выдумывать
+    содержательные поля КСП вместо модели. Здесь наоборот — реальные
+    известные данные, без которых обязательные поля приказа №130
+    остаются пустыми (шапка шаблона объявляет 7 полей, схема ответа
+    модели покрывает только razdel).
+
+    Уже заполненные значения не перетираются: если content почему-то
+    пришёл с этими полями, приоритет у него.
+    """
+    filled = dict(content)
+
+    if not filled.get("klass") and klass:
+        filled["klass"] = klass
+
+    if not filled.get("data"):
+        # generated_at может прийти строкой — build_filename такое тоже
+        # допускает ("для тестов с фиксированной датой"), не расходимся.
+        filled["data"] = (
+            generated_at.strftime("%d.%m.%Y")
+            if hasattr(generated_at, "strftime")
+            else str(generated_at)
+        )
+
+    if not filled.get("fio_pedagoga"):
+        rows = query("SELECT name FROM teachers WHERE id = ?", (teacher_id,), db_path=db_path)
+        teacher_name = rows[0]["name"] if rows else None
+        if teacher_name:
+            filled["fio_pedagoga"] = teacher_name
+
+    return filled
+
+
 def save_generated_ksp(
     teacher_id: int,
     template_id: int,
@@ -438,8 +550,16 @@ def save_generated_ksp(
     сохранён на диск (не пересобирается заново), поэтому расхождения
     между базой и файловой системой здесь в принципе невозможны.
     output_dir — параметр ради тестируемости (как db_path у core.db):
-    тесты не должны писать в реальную storage/generated/ проекта."""
+    тесты не должны писать в реальную storage/generated/ проекта.
+
+    Перед сборкой .docx content дополняется полями шапки, которых нет в
+    ответе модели (_fill_header_fields) — иначе ФИО педагога, дата и
+    класс в готовом документе остаются пустыми. В content_json пишется
+    тот же дополненный словарь, что ушёл в файл, чтобы предпросмотр в
+    Mini App показывал ровно то же, что лежит в .docx."""
     generated_at = generated_at or datetime.now().date()
+    content = _fill_header_fields(content, teacher_id, klass, generated_at, db_path=db_path)
+
     filename = build_filename(subject, klass, content.get("tema_uroka", ""), generated_at)
     out_path = Path(output_dir or settings.generated_dir) / filename
 
@@ -502,6 +622,7 @@ async def generate_and_save_ksp(
         duration_minutes,
         llm_client=llm_client,
         db_path=db_path,
+        extra_columns=_extra_columns_of_template(template),
     )
 
     return save_generated_ksp(

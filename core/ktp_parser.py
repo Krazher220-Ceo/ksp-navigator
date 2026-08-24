@@ -30,7 +30,7 @@ from pathlib import Path
 from docx import Document
 from openpyxl import load_workbook
 
-from core.db import execute, query
+from core.db import query, transaction
 
 
 class KTPParseError(Exception):
@@ -180,29 +180,40 @@ def parse_ktp_file(path: Path | str) -> list[dict]:
 
 
 def save_ktp_entries(teacher_id: int, entries: list[dict], db_path=None) -> dict:
-    """Вставляет разобранные записи в ktp_entries этого учителя.
+    """Заменяет КТП этого учителя разобранными записями.
+
+    Именно ЗАМЕНЯЕТ, а не дописывает: КТП — один документ на учебный год
+    (MASTER.md, п.4), а не журнал приращений. Повторная загрузка — это
+    "я прислал исправленный файл", и старые строки после неё должны
+    исчезнуть. Пока их не удаляли, вторая загрузка давала две версии КТП
+    в одной таблице, а guess_objective_code (core/ksp_generator.py, F8)
+    перебирает записи в произвольном порядке и мог вернуть код из старой,
+    уже исправленной версии.
+
+    Удаление и вставка — одной транзакцией: оборвись процесс посередине,
+    учитель не должен остаться вообще без КТП.
 
     objective_code, которого нет в curriculum_objectives, обнуляется
     перед вставкой — иначе внешний ключ ktp_entries.objective_code
     уронит INSERT (реальный загруженный КТП почти наверняка ссылается
     на коды, которых нет в seed-данных физики 10 класса).
 
-    Возвращает {"inserted": N, "codes_not_found": M} — M нужен, чтобы
-    честно сказать учителю в чате, что часть кодов не распозналась,
-    а не молча их потерять."""
+    Возвращает {"inserted": N, "replaced": K, "codes_not_found": M} —
+    M нужен, чтобы честно сказать учителю в чате, что часть кодов не
+    распозналась, а не молча их потерять; K — сколько прошлых записей
+    заменено, чтобы повторная загрузка не выглядела как "ничего не
+    произошло"."""
     known_codes = {row["code"] for row in query("SELECT code FROM curriculum_objectives", db_path=db_path)}
 
     codes_not_found = 0
+    rows_to_insert = []
     for entry in entries:
         code = entry.get("objective_code")
         if code and code not in known_codes:
             code = None
             codes_not_found += 1
 
-        execute(
-            "INSERT INTO ktp_entries "
-            "(teacher_id, lesson_number, section, topic, objective_code, hours, planned_date, quarter) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        rows_to_insert.append(
             (
                 teacher_id,
                 entry.get("lesson_number"),
@@ -212,8 +223,17 @@ def save_ktp_entries(teacher_id: int, entries: list[dict], db_path=None) -> dict
                 entry.get("hours"),
                 entry.get("planned_date"),
                 entry.get("quarter"),
-            ),
-            db_path=db_path,
+            )
         )
 
-    return {"inserted": len(entries), "codes_not_found": codes_not_found}
+    with transaction(db_path) as conn:
+        cursor = conn.execute("DELETE FROM ktp_entries WHERE teacher_id = ?", (teacher_id,))
+        replaced = cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        conn.executemany(
+            "INSERT INTO ktp_entries "
+            "(teacher_id, lesson_number, section, topic, objective_code, hours, planned_date, quarter) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            rows_to_insert,
+        )
+
+    return {"inserted": len(entries), "replaced": replaced, "codes_not_found": codes_not_found}

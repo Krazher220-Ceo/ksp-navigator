@@ -362,8 +362,32 @@ class LLMClient:
             duration_ms = (time.monotonic() - started) * 1000
 
             if response.status_code == 200:
-                data = response.json()
-                text, tokens = parse(data)
+                # 200 ещё не значит, что тело — то, чего мы ждём. Провайдер
+                # может вернуть успех с телом другой формы: у Gemini это
+                # штатный ответ с finishReason=SAFETY и без parts, у
+                # OpenAI-совместимых — пустой choices, у любого — HTML
+                # страницы прокси вместо JSON. Адаптеры разбирают тело
+                # прямым индексированием, поэтому такой ответ давал
+                # KeyError/IndexError, а он НЕ httpx.HTTPError: исключение
+                # улетало мимо _ProviderFailed прямо наружу из
+                # complete_json, и остальные провайдеры в цепочке даже не
+                # пробовались — ровно тот отказ, ради защиты от которого
+                # весь фоллбэк и написан. Теперь это обычный отказ
+                # провайдера: переходим к следующему.
+                try:
+                    data = response.json()
+                    text, tokens = parse(data)
+                except (ValueError, KeyError, IndexError, TypeError) as exc:
+                    logger.warning(
+                        "провайдер=%s модель=%s попытка=%d/%d длительность=%.0fмс "
+                        "исход=неожиданный_формат_ответа: %s",
+                        provider.name, provider.model, attempt, max_retries, duration_ms, exc,
+                    )
+                    raise _ProviderFailed(
+                        f"{provider.name}: ответ 200, но тело не разобралось "
+                        f"({type(exc).__name__}: {exc})"
+                    ) from exc
+
                 logger.info(
                     "провайдер=%s модель=%s попытка=%d/%d токены=%s длительность=%.0fмс исход=успех",
                     provider.name, provider.model, attempt, max_retries, tokens, duration_ms,

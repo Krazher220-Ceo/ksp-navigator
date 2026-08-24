@@ -427,11 +427,74 @@ def test_save_generated_ksp_writes_file_and_matching_db_row(db_with_official_tem
     assert row["docx_path"] == str(docx_path)
     assert row["teacher_id"] == 1
     assert row["template_id"] == template_id
-    assert json.loads(row["content_json"]) == VALID_CONTENT
+
+    # Ответ модели сохраняется полностью и без искажений...
+    saved_content = json.loads(row["content_json"])
+    for key, value in VALID_CONTENT.items():
+        assert saved_content[key] == value
+    # ...а сверх него дописываются поля шапки формы №130, которых в
+    # ответе модели нет и быть не может (ФИО педагога, дата, класс).
+    # Раньше здесь стояло строгое равенство с VALID_CONTENT — оно и
+    # закрепляло баг: в документ уходил только ответ модели, и шапка
+    # приказа №130 оставалась пустой.
+    assert saved_content["fio_pedagoga"] == "Т"  # teachers.name из фикстуры
+    assert saved_content["klass"] == "10А"
+    assert saved_content["data"]
 
     # файл реально валиден
     document = Document(str(docx_path))
     assert len(document.tables) == 1
+
+
+async def test_generated_document_has_no_empty_mandatory_header_cells(
+    db_with_official_template, tmp_path
+):
+    """Стык Б6 -> Б5: то, что реально доезжает до документа.
+
+    Раньше такого теста не было, и это позволило багу дожить до приёмки:
+    test_official_form_contains_all_required_fields проверяет ЛЕЙБЛЫ и
+    кормит docx_builder рукописным SAMPLE_CONTENT, где заполнено всё.
+    Но генератор возвращает только 5 полей (схема ответа модели), а
+    шапка формы №130 требует больше — и ФИО педагога, дата и класс
+    выходили пустыми при каждой генерации. Здесь проверяются ЗНАЧЕНИЯ,
+    и вход берётся ровно тот, что даёт настоящий конвейер."""
+    db_path, template_id = db_with_official_template
+    fake = _ScriptedLLMClient([VALID_CONTENT])
+
+    result = await generate_and_save_ksp(
+        teacher_id=1,
+        template_id=template_id,
+        topic="Закон сохранения импульса",
+        razdel="Механика",
+        subject="физика",
+        klass="10А",
+        duration_minutes=DURATION,
+        llm_client=fake,
+        db_path=db_path,
+        output_dir=tmp_path / "generated",
+    )
+
+    table = Document(result["docx_path"]).tables[0]
+    filled = {}
+    for row in table.rows:
+        text = row.cells[0].text
+        if ":" in text:
+            label, _, value = text.partition(":")
+            filled.setdefault(label.strip(), value.strip())
+
+    # Обязательные поля приказа №130, которые система знает сама и
+    # обязана подставить: пустыми они остаться не могут.
+    assert filled["ФИО педагога"] == "Т"  # teachers.name
+    assert filled["Класс"] == "10А"
+    assert filled["Дата"]
+    # ...и поля из ответа модели — на своих местах.
+    assert filled["Тема урока"] == VALID_CONTENT["tema_uroka"]
+    assert filled["Раздел"] == VALID_CONTENT["razdel"]
+
+    # Кол-во присутствующих/отсутствующих ПУСТЫЕ намеренно: их вписывает
+    # учитель на уроке, выдумывать их система не должна.
+    klass_row = next(r for r in table.rows if r.cells[0].text.startswith("Класс:"))
+    assert klass_row.cells[1].text.strip() == "Кол-во присутствующих:"
 
 
 async def test_generate_and_save_ksp_full_pipeline(db_with_official_template, tmp_path):

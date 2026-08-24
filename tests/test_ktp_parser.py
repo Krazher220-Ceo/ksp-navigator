@@ -155,7 +155,8 @@ def test_save_ktp_entries_nulls_unknown_objective_codes(db_with_teacher_and_one_
     ]
     result = save_ktp_entries(1, entries, db_path=db_with_teacher_and_one_code)
 
-    assert result == {"inserted": 2, "codes_not_found": 1}
+    # replaced=0 — у учителя не было прошлого КТП, заменять было нечего
+    assert result == {"inserted": 2, "replaced": 0, "codes_not_found": 1}
 
     rows = query("SELECT topic, objective_code FROM ktp_entries WHERE teacher_id = 1 ORDER BY topic", db_path=db_with_teacher_and_one_code)
     by_topic = {r["topic"]: r["objective_code"] for r in rows}
@@ -166,4 +167,36 @@ def test_save_ktp_entries_nulls_unknown_objective_codes(db_with_teacher_and_one_
 def test_save_ktp_entries_no_codes_at_all(db_with_teacher_and_one_code):
     entries = [{"lesson_number": 1, "section": "S", "topic": "T", "objective_code": None, "hours": 1, "planned_date": None, "quarter": 1}]
     result = save_ktp_entries(1, entries, db_path=db_with_teacher_and_one_code)
-    assert result == {"inserted": 1, "codes_not_found": 0}
+    assert result == {"inserted": 1, "replaced": 0, "codes_not_found": 0}
+
+
+def test_save_ktp_entries_replaces_previous_ktp_instead_of_duplicating(
+    db_with_teacher_and_one_code,
+):
+    """КТП один на учебный год: повторная загрузка — это исправленный
+    файл, а не второй КТП. Раньше записи просто дописывались, и после
+    второй загрузки в базе лежали две версии сразу."""
+    db_path = db_with_teacher_and_one_code
+    first = [{"lesson_number": 1, "section": "Механика", "topic": "Старая тема", "objective_code": None, "hours": 1, "planned_date": None, "quarter": 1}]
+    second = [{"lesson_number": 1, "section": "Механика", "topic": "Исправленная тема", "objective_code": None, "hours": 1, "planned_date": None, "quarter": 1}]
+
+    save_ktp_entries(1, first, db_path=db_path)
+    result = save_ktp_entries(1, second, db_path=db_path)
+
+    assert result["replaced"] == 1
+    rows = query("SELECT topic FROM ktp_entries WHERE teacher_id = 1", db_path=db_path)
+    assert [r["topic"] for r in rows] == ["Исправленная тема"]
+
+
+def test_save_ktp_entries_does_not_touch_other_teachers_ktp(db_with_teacher_and_one_code):
+    """Замена КТП ограничена своим учителем — чужие записи не трогаются."""
+    db_path = db_with_teacher_and_one_code
+    execute("INSERT INTO teachers (id, name, subject) VALUES (2, 'Другой', 'химия')", db_path=db_path)
+    entry = [{"lesson_number": 1, "section": "S", "topic": "Чужая тема", "objective_code": None, "hours": 1, "planned_date": None, "quarter": 1}]
+    save_ktp_entries(2, entry, db_path=db_path)
+
+    save_ktp_entries(1, entry, db_path=db_path)
+    save_ktp_entries(1, entry, db_path=db_path)
+
+    rows = query("SELECT topic FROM ktp_entries WHERE teacher_id = 2", db_path=db_path)
+    assert [r["topic"] for r in rows] == ["Чужая тема"]

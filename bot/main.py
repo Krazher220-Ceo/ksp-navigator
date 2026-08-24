@@ -78,6 +78,30 @@ async def _global_error_handler(event: ErrorEvent, bot: Bot) -> bool:
     return True  # исключение обработано, aiogram не должен пробрасывать его дальше
 
 
+def _log_worker_death(worker_task: asyncio.Task) -> None:
+    """Воркер очереди живёт в отдельной asyncio-задаче. Если она умрёт,
+    исключение осядет внутри Task и не всплывёт никуда: бот продолжит
+    отвечать на команды и класть задачи в очередь, которую уже некому
+    разбирать. Снаружи это выглядит как «бот работает, но /generate
+    ничего не присылает», а watchdog (scripts/watchdog.sh) такого не
+    видит — процесс-то жив.
+
+    Сам цикл воркера теперь ловит свои ошибки и не умирает (core/queue.py),
+    так что сюда мы попадаем либо при штатной остановке, либо при чём-то
+    совсем неожиданном. Во втором случае это должно быть видно в логе
+    сразу, а не выясняться через неделю по молчащей очереди.
+    """
+    if worker_task.cancelled():
+        return
+    exception = worker_task.exception()
+    if exception is not None:
+        logger.critical(
+            "воркер очереди остановился с ошибкой — очередь больше не разбирается, "
+            "нужен перезапуск бота",
+            exc_info=exception,
+        )
+
+
 async def run() -> None:
     bot = Bot(
         token=settings.telegram_bot_token,
@@ -97,6 +121,7 @@ async def run() -> None:
     )
 
     worker_task = asyncio.create_task(worker.run_forever())
+    worker_task.add_done_callback(_log_worker_death)
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)

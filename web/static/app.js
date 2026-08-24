@@ -148,12 +148,18 @@
       tg.MainButton.onClick(sendSelectedTemplate);
     }
 
+    // Загрузка файла — в боте, не здесь (Б10.1: кнопка закрывает Mini App
+    // и подсказывает команду). Mini App файлы не принимает и не должен.
     document.getElementById("upload-own-button").addEventListener("click", function () {
-      if (tg && typeof tg.showAlert === "function") {
+      if (!tg) return;
+      if (typeof tg.showAlert === "function") {
         tg.showAlert(
-          "Загрузка своего шаблона через Mini App пока не подключена. " +
-          "Пришлите файл шаблона прямо в чат с ботом — он подскажет, что делать дальше."
+          "Отправьте боту команду /upload_template и приложите файл образца " +
+          "(.doc или .docx) — он появится в этом списке.",
+          function () { tg.close(); }
         );
+      } else {
+        tg.close();
       }
     });
 

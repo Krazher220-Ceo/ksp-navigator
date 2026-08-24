@@ -27,6 +27,10 @@ class UploadKTP(StatesGroup):
     waiting_for_file = State()
 
 
+class UploadTemplate(StatesGroup):
+    waiting_for_file = State()
+
+
 class Generate(StatesGroup):
     waiting_for_topic = State()
     waiting_for_objective_code = State()

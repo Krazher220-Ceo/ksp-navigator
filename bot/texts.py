@@ -22,7 +22,8 @@ START = (
     "2. /upload_ksp — прислать 2-5 старых КСП, чтобы я уловил ваш стиль (не обязательно)\n"
     "3. /upload_ktp — прислать КТП, чтобы код цели подставлялся сам\n"
     "4. /generate — собрать черновик КСП\n\n"
-    "Все команды: /teacher /upload_ksp /upload_ktp /templates /generate /status /history"
+    "Все команды: /teacher /upload_ksp /upload_ktp /upload_template /templates "
+    "/generate /status /history"
 )
 
 # --- /teacher ---
@@ -64,7 +65,12 @@ UPLOAD_KSP_DONE_FAILED = (
 UPLOAD_KTP_PROMPT = "Пришлите файл КТП — .docx или .xlsx. Отменить: /cancel"
 UPLOAD_KTP_SUCCESS = (
     "Загружено {inserted} записей КТП."
+    "{replaced_note}"
     "{codes_warning}"
+)
+UPLOAD_KTP_REPLACED = (
+    " Прошлый КТП ({n} записей) заменён — КТП один на учебный год, "
+    "поэтому новая загрузка заменяет старую, а не добавляется к ней."
 )
 UPLOAD_KTP_CODES_NOT_FOUND = (
     " У {n} из них код цели не найден в базе целей обучения — "
@@ -79,6 +85,30 @@ TEMPLATES_BUTTON = "📄 Шаблоны"
 TEMPLATES_NOT_CONFIGURED = (
     "Mini App пока не настроен (нет WEBAPP_URL в .env) — эта функция появится позже."
 )
+TEMPLATES_CHOSEN = (
+    "Шаблон выбран: {template_name}.\n"
+    "Собираю по нему черновик — осталось ответить на несколько вопросов.\n"
+    "Отменить: /cancel"
+)
+TEMPLATES_CHOSEN_UNKNOWN = (
+    "Не нашёл такой шаблон — возможно, он был удалён. Откройте /templates заново."
+)
+
+# --- /upload_template ---
+
+UPLOAD_TEMPLATE_PROMPT = (
+    "Пришлите файл образца КСП (.doc или .docx), оформление которого хотите "
+    "использовать как шаблон.\n\n"
+    "⚠️ Это именно образец ФОРМЫ — из него берутся только блоки и колонки "
+    "«Хода урока». На ваш стиль формулировок он не влияет и с ним не "
+    "смешивается: для стиля есть отдельная команда /upload_ksp.\n"
+    "Отменить: /cancel"
+)
+UPLOAD_TEMPLATE_SUCCESS = (
+    "Шаблон сохранён: {template_name}.\n"
+    "Он виден только вам и появится в списке при /generate и в /templates."
+)
+UPLOAD_TEMPLATE_PARSE_ERROR = "Не смог разобрать файл как образец КСП: {error}"
 
 # --- /generate ---
 

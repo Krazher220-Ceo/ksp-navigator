@@ -19,6 +19,7 @@ core.ktp_parser, core.templates, core.ksp_generator, core.queue.
 bot/main.py, где Bot уже существует.
 """
 
+import asyncio
 import json
 import logging
 import uuid
@@ -32,20 +33,29 @@ from aiogram.types import (
     FSInputFile,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    KeyboardButton,
     Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     WebAppInfo,
 )
 
 from bot import texts
-from bot.states import Generate, TeacherProfile, UploadKSP, UploadKTP
+from bot.states import Generate, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
 from core.config import settings
 from core.db import execute, query
 from core.ksp_generator import generate_and_save_ksp, guess_objective_code
-from core.ksp_parser import build_style_profile, parse_ksp, save_style_profile
+from core.ksp_parser import (
+    KSPConversionError,
+    KSPParseError,
+    build_style_profile,
+    parse_ksp,
+    save_style_profile,
+)
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMError
 from core.queue import MAX_RETRIES, enqueue
-from core.templates import get_template, list_templates
+from core.templates import get_template, list_templates, save_user_template
 
 logger = logging.getLogger(__name__)
 
@@ -292,7 +302,14 @@ async def upload_ktp_file_received(message: Message, state: FSMContext, bot: Bot
     warning = ""
     if result["codes_not_found"]:
         warning = texts.UPLOAD_KTP_CODES_NOT_FOUND.format(n=result["codes_not_found"])
-    await message.answer(texts.UPLOAD_KTP_SUCCESS.format(inserted=result["inserted"], codes_warning=warning))
+    replaced_note = ""
+    if result["replaced"]:
+        replaced_note = texts.UPLOAD_KTP_REPLACED.format(n=result["replaced"])
+    await message.answer(
+        texts.UPLOAD_KTP_SUCCESS.format(
+            inserted=result["inserted"], replaced_note=replaced_note, codes_warning=warning
+        )
+    )
     await state.clear()
 
 
@@ -311,10 +328,121 @@ async def cmd_templates(message: Message) -> None:
     if not settings.webapp_url:
         await message.answer(texts.TEMPLATES_NOT_CONFIGURED)
         return
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text=texts.TEMPLATES_BUTTON, web_app=WebAppInfo(url=settings.webapp_url))]]
+    # Клавиатура именно reply, а не inline: Mini App возвращает выбор
+    # шаблона через tg.sendData (web/static/app.js), а этот метод
+    # Telegram работает ТОЛЬКО для Mini App, открытых кнопкой reply-
+    # клавиатуры. С inline-кнопкой (как было) sendData молча ничего не
+    # делает, и выбор шаблона никуда не доходил.
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=texts.TEMPLATES_BUTTON, web_app=WebAppInfo(url=settings.webapp_url))]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
     )
     await message.answer(texts.TEMPLATES_MESSAGE, reply_markup=keyboard)
+
+
+@router.message(F.web_app_data)
+async def templates_web_app_choice(message: Message, state: FSMContext) -> None:
+    """Приём выбора шаблона из Mini App (экран «Шаблоны», блок Б10.1).
+
+    Mini App присылает {"template_id": N} через tg.sendData. Раньше этого
+    хендлера не было вообще: пользователь выбирал шаблон, Mini App
+    закрывался — и на этом всё заканчивалось. Теперь выбор запускает
+    обычный диалог /generate с уже выбранным шаблоном, то есть ведёт
+    туда же, куда и выбор шаблона внутри бота."""
+    teacher = await _require_teacher(message)
+    if teacher is None:
+        return
+
+    try:
+        payload = json.loads(message.web_app_data.data)
+        template_id = int(payload["template_id"])
+    except (ValueError, TypeError, KeyError):
+        await message.answer(texts.TEMPLATES_CHOSEN_UNKNOWN, reply_markup=ReplyKeyboardRemove())
+        return
+
+    # Шаблон должен быть доступен именно этому учителю: id приходит с
+    # клиента, а значит доверять ему как своему нельзя.
+    available = {t["id"]: t for t in list_templates(teacher["id"])}
+    template = available.get(template_id)
+    if template is None:
+        await message.answer(texts.TEMPLATES_CHOSEN_UNKNOWN, reply_markup=ReplyKeyboardRemove())
+        return
+
+    await state.clear()
+    await state.set_state(Generate.waiting_for_topic)
+    await state.update_data(
+        teacher_id=teacher["id"], subject=teacher["subject"], template_id=template_id
+    )
+    await message.answer(
+        texts.TEMPLATES_CHOSEN.format(template_name=template["name"]),
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await message.answer(texts.GENERATE_ASK_TOPIC)
+
+
+# =====================================================================
+# /upload_template — свой образец оформления (F10, MASTER.md п.1.1.1)
+#
+# Шаблон и профиль стиля — разные сущности и не смешиваются: сюда идут
+# образцы ФОРМЫ (в том числе найденные в интернете), в /upload_ksp —
+# реальные КСП самого учителя, из которых строится манера письма.
+# =====================================================================
+
+
+@router.message(Command("upload_template"))
+async def cmd_upload_template(message: Message, state: FSMContext) -> None:
+    teacher = await _require_teacher(message)
+    if teacher is None:
+        return
+    await state.set_state(UploadTemplate.waiting_for_file)
+    await state.update_data(teacher_id=teacher["id"])
+    await message.answer(texts.UPLOAD_TEMPLATE_PROMPT)
+
+
+@router.message(UploadTemplate.waiting_for_file, F.document)
+async def upload_template_file_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    document = message.document
+
+    size_error = _check_file_size(document)
+    if size_error:
+        await message.answer(size_error)
+        return
+
+    filename = document.file_name or "file"
+    ext = Path(filename).suffix.lower()
+    if ext not in SUPPORTED_KSP_EXTENSIONS:
+        await message.answer(
+            texts.ERROR_UNSUPPORTED_FORMAT.format(
+                extension=ext or "(без расширения)",
+                supported=", ".join(sorted(SUPPORTED_KSP_EXTENSIONS)),
+            )
+        )
+        return
+
+    data = await state.get_data()
+    dest = settings.uploads_dir / f"{uuid.uuid4()}{ext}"
+    await bot.download(document, destination=dest)
+
+    try:
+        # Разбор .doc зовёт LibreOffice через subprocess — это блокирующая
+        # операция, в отдельный поток, чтобы не морозить бот (см. правку
+        # той же природы в make_parse_ksp_handler).
+        template = await asyncio.to_thread(
+            save_user_template, data["teacher_id"], dest, Path(filename).stem
+        )
+    except (KSPConversionError, KSPParseError) as exc:
+        await message.answer(texts.UPLOAD_TEMPLATE_PARSE_ERROR.format(error=str(exc)))
+        await state.clear()
+        return
+
+    await message.answer(texts.UPLOAD_TEMPLATE_SUCCESS.format(template_name=template["name"]))
+    await state.clear()
+
+
+@router.message(UploadTemplate.waiting_for_file)
+async def upload_template_wrong_input(message: Message) -> None:
+    await message.answer(texts.UPLOAD_TEMPLATE_PROMPT)
 
 
 # =====================================================================
@@ -402,6 +530,13 @@ async def generate_duration_received(message: Message, state: FSMContext) -> Non
     await state.update_data(duration_minutes=duration)
 
     data = await state.get_data()
+
+    # Шаблон мог быть выбран заранее в Mini App (templates_web_app_choice) —
+    # тогда спрашивать его второй раз незачем, сразу к подтверждению.
+    if data.get("template_id"):
+        await _ask_generate_confirmation(message, state, data["template_id"])
+        return
+
     templates_list = list_templates(data["teacher_id"])
     if not templates_list:
         await message.answer(texts.GENERATE_NO_TEMPLATES)
@@ -418,13 +553,13 @@ async def generate_duration_received(message: Message, state: FSMContext) -> Non
     await message.answer(texts.GENERATE_ASK_TEMPLATE, reply_markup=keyboard)
 
 
-@router.callback_query(Generate.waiting_for_template, F.data.startswith("gen_tpl:"))
-async def generate_template_chosen(callback: CallbackQuery, state: FSMContext) -> None:
-    template_id = int(callback.data.split(":", 1)[1])
+async def _ask_generate_confirmation(message: Message, state: FSMContext, template_id: int) -> bool:
+    """Показывает сводку перед генерацией и кнопки да/нет. Общий шаг для
+    двух путей выбора шаблона: инлайн-кнопкой в боте и заранее — в Mini
+    App. Возвращает False, если шаблон за это время исчез."""
     template = get_template(template_id)
     if template is None:
-        await callback.answer("Такого шаблона больше нет, попробуйте /generate заново", show_alert=True)
-        return
+        return False
 
     await state.update_data(template_id=template_id)
     data = await state.get_data()
@@ -449,7 +584,19 @@ async def generate_template_chosen(callback: CallbackQuery, state: FSMContext) -
         ]
     )
     await state.set_state(Generate.waiting_for_confirmation)
-    await callback.message.answer(summary, reply_markup=keyboard)
+    await message.answer(summary, reply_markup=keyboard)
+    return True
+
+
+@router.callback_query(Generate.waiting_for_template, F.data.startswith("gen_tpl:"))
+async def generate_template_chosen(callback: CallbackQuery, state: FSMContext) -> None:
+    template_id = int(callback.data.split(":", 1)[1])
+
+    shown = await _ask_generate_confirmation(callback.message, state, template_id)
+    if not shown:
+        await callback.answer("Такого шаблона больше нет, попробуйте /generate заново", show_alert=True)
+        return
+
     await callback.answer()
 
 
@@ -544,13 +691,30 @@ async def cmd_history(message: Message) -> None:
 @router.callback_query(F.data.startswith("hist:"))
 async def history_resend(callback: CallbackQuery, bot: Bot) -> None:
     generated_id = callback.data.split(":", 1)[1]
-    rows = query("SELECT docx_path FROM generated_ksp WHERE id = ?", (generated_id,))
 
-    if not rows or not Path(rows[0]["docx_path"]).exists():
+    # Владение проверяется здесь, а не только тем, что кнопку прислал сам
+    # бот: в групповом чате нажать её может любой участник, а web/api.py
+    # ту же проверку делает честно (чужой ksp_id -> 404). Расходиться в
+    # правилах доступа между ботом и API нельзя — этап 6 сделает такую
+    # щель настоящей дырой.
+    teacher = _get_teacher(callback.from_user.id)
+    if teacher is None:
         await callback.answer(texts.HISTORY_FILE_MISSING, show_alert=True)
         return
 
-    await callback.message.answer_document(FSInputFile(rows[0]["docx_path"]))
+    rows = query(
+        "SELECT docx_path FROM generated_ksp WHERE id = ? AND teacher_id = ?",
+        (generated_id, teacher["id"]),
+    )
+
+    # Отсутствие файла на диске и чужой/несуществующий id намеренно дают
+    # один и тот же ответ — не подтверждаем существование чужой записи.
+    docx_path = rows[0]["docx_path"] if rows else None
+    if not docx_path or not Path(docx_path).exists():
+        await callback.answer(texts.HISTORY_FILE_MISSING, show_alert=True)
+        return
+
+    await callback.message.answer_document(FSInputFile(docx_path))
     await callback.answer()
 
 
@@ -576,7 +740,13 @@ def make_parse_ksp_handler(bot: Bot):
         file_paths = payload["file_paths"]
         chat_id = task["telegram_chat_id"]
 
-        parsed_list = [parse_ksp(p) for p in file_paths]
+        # parse_ksp — синхронная блокирующая работа: для .doc она зовёт
+        # LibreOffice через subprocess.run с таймаутом 60 секунд
+        # (core/ksp_parser.ensure_docx). Вызванная прямо здесь, она
+        # останавливала весь event loop, а в нём же крутится long polling
+        # бота: на пяти .doc-файлах бот замолкал целиком и не отвечал даже
+        # на /cancel — до нескольких минут. В отдельный поток.
+        parsed_list = [await asyncio.to_thread(parse_ksp, p) for p in file_paths]
 
         try:
             profile = await build_style_profile(parsed_list)
