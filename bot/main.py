@@ -19,7 +19,6 @@ import logging
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ErrorEvent
 
@@ -103,9 +102,19 @@ def _log_worker_death(worker_task: asyncio.Task) -> None:
 
 
 async def run() -> None:
+    # parse_mode=None — намеренно, не забытая настройка. С Markdown (как
+    # было раньше) любое сообщение с сырым текстом пользователя —
+    # темой урока, разделом, классом, именем файла, текстом исключения —
+    # падало с TelegramBadRequest "can't find end of the entity" на
+    # первом же непарном _, *, ` или [ в этом тексте (обнаружено вживую
+    # на реальном прогоне: сообщение с подтверждением /generate не
+    # уходило вообще). Ни один текст в bot/texts.py фактически не
+    # использует bold/code-разметку — Markdown-парсинг был чистым риском
+    # без пользы, отключён целиком, а не заэкранирован по каждому месту
+    # подстановки (мест много, и одно из них уже пропустили).
     bot = Bot(
         token=settings.telegram_bot_token,
-        default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN),
+        default=DefaultBotProperties(parse_mode=None),
     )
     dp = Dispatcher(storage=MemoryStorage())
     dp.include_router(router)
