@@ -1,0 +1,28 @@
+# Секреты
+.env
+
+# База данных (SQLite, режим WAL — см. core/db.py, блок Б1)
+storage/app.db
+storage/app.db-journal
+storage/app.db-wal
+storage/app.db-shm
+
+# Загруженные и сгенерированные файлы пользователей
+storage/uploads/
+storage/generated/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Логи
+*.log
+logs/
+
+# Тесты
+.pytest_cache/
+
+# macOS
+.DS_Store
