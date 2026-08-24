@@ -7,7 +7,7 @@
     {"key": "shapka", "fields": ["organizaciya", "razdel", "fio_pedagoga", "data", "klass", "prisutstvuet", "otsutstvuet"]},
     {"key": "tema", "fields": ["tema_uroka"]},
     {"key": "celi", "fields": ["celi_obucheniya", "celi_uroka"]},
-    {"key": "hod_uroka", "columns": ["etap_vremya", "deystviya_pedagoga", "deystviya_uchenika", "resursy", "ocenivanie", "domashnee_zadanie", "dop_literatura"]},
+    {"key": "hod_uroka", "columns": ["etap_vremya", "deystviya_pedagoga", "deystviya_uchenika", "ocenivanie", "resursy", "domashnee_zadanie", "dop_literatura"]},
     {"key": "primechanie", "fields": ["adaptaciya_oop"]}
   ]
 }

@@ -34,8 +34,26 @@ DRAFT_NOTICE_TEXT = "ЧЕРНОВИК. Требует проверки и утв
 
 TITLE_TEXT = "Краткосрочный (поурочный) план"
 
+# Оба абзаца — дословно из приложения 4 приказа МОН РК №130 в редакции от
+# 30.04.2025 № 98, идут в документе именно в этом порядке, сразу после
+# таблицы "Ход урока" (PLAN_STAGE1_EXT.md, блок Р1.4). MANDATORY_NOTICE_TEXT
+# раньше в документе не было вообще — не хватало целого абзаца.
+MANDATORY_NOTICE_TEXT = (
+    "Данные пункты плана урока являются обязательными. Согласно подпункту 1) "
+    "пункта 1 статьи 7 Закона Республики Казахстан \"О статусе педагога\" "
+    "педагог выбирает способы и формы организации профессиональной "
+    "деятельности при условии соблюдения требований государственного "
+    "общеобязательного стандарта соответствующего уровня образования, "
+    "утвержденного приказом Министра просвещения Республики Казахстан от 3 "
+    "августа 2022 года № 348 \"Об утверждении государственных "
+    "общеобязательных стандартов дошкольного воспитания и обучения, "
+    "начального, основного среднего и общего среднего, технического и "
+    "профессионального, послесреднего образования\" (зарегистрирован в "
+    "Реестре государственной регистрации нормативных правовых актов "
+    "Республики Казахстан под № 29031)."
+)
 ADAPTACIYA_OOP_TEXT = (
-    "Примечание: при наличии обучающихся с особыми образовательными потребностями "
+    "При наличии в классе обучающихся с особыми образовательными потребностями "
     "предусматриваются действия по адаптации и реализации индивидуальных программ, "
     "одобренных методическими объединениями."
 )
@@ -47,11 +65,13 @@ TABLE_WIDTH_CM = PAGE_WIDTH_CM - 2 * MARGIN_CM  # 17 см содержатель
 
 _FIELD_LABELS = {
     "razdel": "Раздел:",
-    "fio_pedagoga": "ФИО педагога:",
+    # Дословно по приложению 4 приказа МОН РК №130 в редакции от 30.04.2025
+    # № 98 (PLAN_STAGE1_EXT.md, блок Р1.2) — не "ФИО педагога".
+    "fio_pedagoga": "Фамилия, имя, отчество (при его наличии) педагога:",
     "data": "Дата:",
     "klass": "Класс:",
-    "prisutstvuet": "Кол-во присутствующих:",
-    "otsutstvuet": "Кол-во отсутствующих:",
+    "prisutstvuet": "Количество присутствующих:",
+    "otsutstvuet": "Количество отсутствующих:",
     "tema_uroka": "Тема урока:",
     "celi_obucheniya": "Цели обучения в соответствии с учебной программой:",
     "celi_uroka": "Цели урока:",
@@ -59,11 +79,12 @@ _FIELD_LABELS = {
 }
 
 _COLUMN_LABELS = {
-    "etap_vremya": "Этап урока / время",
+    # "Этап урока/ Время" — ровно так, с пробелом после "/", как в приказе.
+    "etap_vremya": "Этап урока/ Время",
     "deystviya_pedagoga": "Действия педагога",
     "deystviya_uchenika": "Действия ученика",
-    "resursy": "Ресурсы",
     "ocenivanie": "Оценивание",
+    "resursy": "Ресурсы",
     "domashnee_zadanie": "Домашнее задание",
     "dop_literatura": "Доп. литература",
 }
@@ -83,11 +104,14 @@ _COLUMN_WEIGHTS = {
 _DEFAULT_COLUMN_WEIGHT = 1.0
 
 _CANONICAL_HOD_UROKA_COLUMNS = [
+    # Порядок — дословно по приложению 4 приказа МОН РК №130 в редакции от
+    # 30.04.2025 № 98: Оценивание идёт ПЕРЕД Ресурсами (было перепутано,
+    # PLAN_STAGE1_EXT.md, блок Р1.1).
     "etap_vremya",
     "deystviya_pedagoga",
     "deystviya_uchenika",
-    "resursy",
     "ocenivanie",
+    "resursy",
 ]
 
 # Порядок полей шапки, который задаёт официальная форма (MASTER.md, п.4).
@@ -122,6 +146,20 @@ def _add_draft_notice(document: Document) -> None:
     run.bold = True
     run.font.size = Pt(12)
     run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+
+
+PROVERENO_TEXT = "ПРОВЕРЕНО _____________"
+
+
+def _add_provereno_line(document: Document) -> None:
+    """Строка для подписи завуча — не часть текста приказа №130, но
+    встречается в реальных КСП, которые сдают в школе (PLAN_STAGE1_EXT.md,
+    блок Р1.3). Управляется полем шаблона "provereno" в блоке "shapka" —
+    нет поля, нет строки; ни один из трёх встроенных шаблонов пока её не
+    объявляет, это опция для тех школ, где она нужна."""
+    paragraph = document.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    paragraph.add_run(PROVERENO_TEXT)
 
 
 def _add_title(document: Document) -> None:
@@ -274,6 +312,8 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
     _add_draft_notice(document)  # F7 — первая строка документа, всегда
 
     shapka_fields = blocks.get("shapka", {}).get("fields", [])
+    if "provereno" in shapka_fields:
+        _add_provereno_line(document)
     tema_fields = blocks.get("tema", {}).get("fields", [])
     celi_fields = blocks.get("celi", {}).get("fields", [])
     hod_uroka_columns = blocks.get("hod_uroka", {}).get("columns") or list(_CANONICAL_HOD_UROKA_COLUMNS)
@@ -299,7 +339,9 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
     if klass_group_present:
         _add_klass_row(table, content, klass_group_present)
 
-    known_shapka_fields = {"organizaciya", *_SHAPKA_STANDALONE_ORDER, *_SHAPKA_KLASS_GROUP}
+    # "provereno" уже отрисован отдельной строкой над документом (выше,
+    # до таблицы) — не поле таблицы, значит не строка "label: value".
+    known_shapka_fields = {"organizaciya", "provereno", *_SHAPKA_STANDALONE_ORDER, *_SHAPKA_KLASS_GROUP}
     for field in shapka_fields:
         if field not in known_shapka_fields:
             label = _FIELD_LABELS.get(field, f"{field.capitalize()}:")
@@ -315,6 +357,10 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
     _add_hod_uroka_section(table, hod_uroka_columns, widths, content.get("hod_uroka", []))
 
     if "adaptaciya_oop" in primechanie_fields:
+        # Оба абзаца идут парой в самом приказе, сразу после "Ход урока" —
+        # рендерим на том же условии, что и раньше (block "primechanie"),
+        # новый ключ в structure_json ради одного абзаца заводить незачем.
+        document.add_paragraph(MANDATORY_NOTICE_TEXT)
         document.add_paragraph(ADAPTACIYA_OOP_TEXT)
 
     out_path = Path(out_path)

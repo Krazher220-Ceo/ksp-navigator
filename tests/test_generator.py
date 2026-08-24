@@ -483,18 +483,20 @@ async def test_generated_document_has_no_empty_mandatory_header_cells(
             filled.setdefault(label.strip(), value.strip())
 
     # Обязательные поля приказа №130, которые система знает сама и
-    # обязана подставить: пустыми они остаться не могут.
-    assert filled["ФИО педагога"] == "Т"  # teachers.name
+    # обязана подставить: пустыми они остаться не могут. Лейбл — дословно
+    # по приложению 4 приказа в редакции от 30.04.2025 № 98 (не "ФИО
+    # педагога", PLAN_STAGE1_EXT.md, блок Р1.2).
+    assert filled["Фамилия, имя, отчество (при его наличии) педагога"] == "Т"  # teachers.name
     assert filled["Класс"] == "10А"
     assert filled["Дата"]
     # ...и поля из ответа модели — на своих местах.
     assert filled["Тема урока"] == VALID_CONTENT["tema_uroka"]
     assert filled["Раздел"] == VALID_CONTENT["razdel"]
 
-    # Кол-во присутствующих/отсутствующих ПУСТЫЕ намеренно: их вписывает
+    # Количество присутствующих/отсутствующих ПУСТЫЕ намеренно: их вписывает
     # учитель на уроке, выдумывать их система не должна.
     klass_row = next(r for r in table.rows if r.cells[0].text.startswith("Класс:"))
-    assert klass_row.cells[1].text.strip() == "Кол-во присутствующих:"
+    assert klass_row.cells[1].text.strip() == "Количество присутствующих:"
 
 
 async def test_generate_and_save_ksp_full_pipeline(db_with_official_template, tmp_path):

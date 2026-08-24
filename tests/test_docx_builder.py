@@ -5,6 +5,7 @@ tests/test_docx_builder.py — тесты core/docx_builder.py.
 не придуманные структуры, а те самые три, что попадут в бота.
 """
 
+import json
 import re
 from datetime import date
 from pathlib import Path
@@ -14,7 +15,11 @@ from docx import Document
 
 from core.db import execute, init_db
 from core.docx_builder import (
+    ADAPTACIYA_OOP_TEXT,
     DRAFT_NOTICE_TEXT,
+    MANDATORY_NOTICE_TEXT,
+    PROVERENO_TEXT,
+    _FIELD_LABELS,
     build_docx,
     build_filename,
 )
@@ -183,7 +188,7 @@ def test_column_headers_are_bold(db_with_builtins, tmp_path):
     document = Document(str(out_path))
     table = document.tables[0]
     # официальный шаблон: строка 8 - заголовки колонок (после 7 строк шапки+целей + "Ход урока")
-    header_row = next(r for r in table.rows if r.cells[0].text.strip() == "Этап урока / время")
+    header_row = next(r for r in table.rows if r.cells[0].text.strip() == "Этап урока/ Время")
     for cell in header_row.cells:
         assert cell.paragraphs[0].runs[0].bold is True
 
@@ -203,18 +208,23 @@ def test_official_form_contains_all_required_fields(db_with_builtins, tmp_path):
     full_text = "\n".join(p.text for p in document.paragraphs)
     full_text += "\n" + "\n".join(cell.text for table in document.tables for row in table.rows for cell in row.cells)
 
+    # Формулировки — дословно по приложению 4 приказа МОН РК №130 в редакции
+    # от 30.04.2025 № 98 (PLAN_STAGE1_EXT.md, блок Р1.2). Раньше здесь стояли
+    # сокращения ("ФИО педагога:", "Кол-во присутствующих:") — они читались
+    # нормально человеком, но приказ формулирует иначе, а это утверждённый
+    # документ, не вольный пересказ.
     required_labels = [
         "Раздел:",
-        "ФИО педагога:",
+        "Фамилия, имя, отчество (при его наличии) педагога:",
         "Дата:",
         "Класс:",
-        "Кол-во присутствующих:",
-        "Кол-во отсутствующих:",
+        "Количество присутствующих:",
+        "Количество отсутствующих:",
         "Тема урока:",
         "Цели обучения в соответствии с учебной программой:",
         "Цели урока:",
         "Ход урока",
-        "Этап урока / время",
+        "Этап урока/ Время",
         "Действия педагога",
         "Действия ученика",
         "Ресурсы",
@@ -275,7 +285,7 @@ def test_empty_hod_uroka_produces_one_placeholder_row_not_crash(db_with_builtins
 
     document = Document(str(out_path))
     header_row_idx = next(
-        i for i, r in enumerate(document.tables[0].rows) if r.cells[0].text.strip() == "Этап урока / время"
+        i for i, r in enumerate(document.tables[0].rows) if r.cells[0].text.strip() == "Этап урока/ Время"
     )
     assert len(document.tables[0].rows) == header_row_idx + 2  # заголовок + 1 пустая строка-заглушка
 
@@ -356,3 +366,119 @@ def test_topic_with_quotes_slashes_colons_does_not_break_actual_save(
     document = Document(str(result))
     full_text = "\n".join(p.text for p in document.paragraphs)
     assert tricky_topic in full_text
+
+
+# --- Р1.1: порядок колонок "Ход урока" — дословно приложение 4 приказа
+# №130 в редакции от 30.04.2025 № 98. До этого блока Ресурсы и Оценивание
+# были перепутаны местами — расхождение с утверждённой формой. Читаем
+# порядок из JSON-файлов НА ДИСКЕ, а не из константы в docx_builder.py:
+# именно расхождение между константой и JSON-шаблонами и было причиной
+# исходного бага (поправить надо было в двух местах, поправили в одном).
+
+BUILTIN_TEMPLATES_DIR = PROJECT_ROOT / "storage" / "builtin_templates"
+
+# Официальные 5 колонок обязаны идти именно в этом порядке в НАЧАЛЕ списка
+# колонок любого встроенного шаблона (у "Развёрнутого образца" после них
+# могут идти свои, неофициальные, домашнее задание/доп. литература — это
+# нормально, они не часть приказа).
+_OFFICIAL_COLUMN_ORDER = [
+    "etap_vremya",
+    "deystviya_pedagoga",
+    "deystviya_uchenika",
+    "ocenivanie",
+    "resursy",
+]
+
+
+@pytest.mark.parametrize(
+    "template_path", sorted(BUILTIN_TEMPLATES_DIR.glob("*.json")), ids=lambda p: p.name
+)
+def test_hod_uroka_column_order_matches_order_130_appendix_4(template_path):
+    data = json.loads(template_path.read_text(encoding="utf-8"))
+    hod_uroka_block = next(b for b in data["blocks"] if b["key"] == "hod_uroka")
+    columns = hod_uroka_block["columns"]
+
+    official_columns_present = [c for c in columns if c in _OFFICIAL_COLUMN_ORDER]
+    assert official_columns_present == _OFFICIAL_COLUMN_ORDER, (
+        f"{template_path.name}: порядок официальных колонок {official_columns_present} "
+        f"не совпадает с приложением 4 приказа №130 {_OFFICIAL_COLUMN_ORDER}"
+    )
+
+
+# --- Р1.2: формулировки полей шапки — дословно приложение 4 приказа №130
+# в редакции от 30.04.2025 № 98. Список-эталон выписан прямо здесь, а не
+# импортирован из docx_builder.py: тест должен уметь поймать расхождение
+# кода с приказом, а не сверять код сам с собой.
+
+_ORDER_130_FIELD_LABELS = {
+    "razdel": "Раздел:",
+    "fio_pedagoga": "Фамилия, имя, отчество (при его наличии) педагога:",
+    "data": "Дата:",
+    "klass": "Класс:",
+    "prisutstvuet": "Количество присутствующих:",
+    "otsutstvuet": "Количество отсутствующих:",
+    "tema_uroka": "Тема урока:",
+    "celi_obucheniya": "Цели обучения в соответствии с учебной программой:",
+    "celi_uroka": "Цели урока:",
+}
+
+
+def test_field_labels_match_order_130_appendix_4_verbatim():
+    for field, official_label in _ORDER_130_FIELD_LABELS.items():
+        assert _FIELD_LABELS[field] == official_label, (
+            f"поле {field!r}: у нас {_FIELD_LABELS[field]!r}, "
+            f"в приказе {official_label!r}"
+        )
+
+
+# --- Р1.3: строка "ПРОВЕРЕНО" — только у шаблонов, объявивших её ---
+
+
+def test_provereno_line_appears_only_when_template_declares_it(db_with_builtins, tmp_path):
+    official = next(
+        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
+        if t["is_official"] == 1
+    )
+
+    # ни один встроенный шаблон пока не объявляет "provereno" — строки нет
+    out_path = tmp_path / "no_provereno.docx"
+    build_docx(SAMPLE_CONTENT, official, out_path)
+    full_text = "\n".join(p.text for p in Document(str(out_path)).paragraphs)
+    assert PROVERENO_TEXT not in full_text
+
+    # шаблон, который её объявил, — строка появляется
+    template_with_provereno = dict(official)
+    structure = dict(template_with_provereno["structure_json"])
+    structure["blocks"] = [
+        dict(b, fields=[*b.get("fields", []), "provereno"]) if b["key"] == "shapka" else b
+        for b in structure["blocks"]
+    ]
+    template_with_provereno["structure_json"] = structure
+
+    out_path2 = tmp_path / "with_provereno.docx"
+    build_docx(SAMPLE_CONTENT, template_with_provereno, out_path2)
+    full_text2 = "\n".join(p.text for p in Document(str(out_path2)).paragraphs)
+    assert PROVERENO_TEXT in full_text2
+
+    # и не создаёт лишней строки "Provereno:" в самой таблице
+    table = Document(str(out_path2)).tables[0]
+    assert not any("provereno" in row.cells[0].text.lower() for row in table.rows)
+
+
+# --- Р1.4: оба абзаца после "Ход урока" присутствуют дословно ---
+
+
+def test_mandatory_notice_and_oop_note_both_present_verbatim(db_with_builtins, tmp_path):
+    official = next(
+        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
+        if t["is_official"] == 1
+    )
+    out_path = tmp_path / "notices.docx"
+    build_docx(SAMPLE_CONTENT, official, out_path)
+
+    full_text = "\n".join(p.text for p in Document(str(out_path)).paragraphs)
+    assert MANDATORY_NOTICE_TEXT in full_text
+    assert ADAPTACIYA_OOP_TEXT in full_text
+    # порядок в документе — как в самом приказе: обязательность пунктов
+    # плана раньше, примечание про ООП следом
+    assert full_text.index(MANDATORY_NOTICE_TEXT) < full_text.index(ADAPTACIYA_OOP_TEXT)

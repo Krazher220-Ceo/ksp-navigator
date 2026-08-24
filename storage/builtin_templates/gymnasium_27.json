@@ -7,7 +7,7 @@
     {"key": "shapka", "fields": ["razdel", "chasy", "data"]},
     {"key": "tema", "fields": ["tema_uroka"]},
     {"key": "celi", "fields": ["celi_obucheniya"]},
-    {"key": "hod_uroka", "columns": ["etap_vremya", "deystviya_pedagoga", "deystviya_uchenika", "resursy", "ocenivanie"]},
+    {"key": "hod_uroka", "columns": ["etap_vremya", "deystviya_pedagoga", "deystviya_uchenika", "ocenivanie", "resursy"]},
     {"key": "primechanie", "fields": ["adaptaciya_oop"]}
   ]
 }
