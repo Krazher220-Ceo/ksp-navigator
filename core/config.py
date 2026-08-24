@@ -56,12 +56,12 @@ class Settings:
     db_path: Path
 
     telegram_bot_token: str
-    anthropic_api_key: str | None
-    openai_api_key: str | None
-    llm_primary: str
-    llm_fallback: str
-    llm_model_primary: str | None
-    llm_model_fallback: str | None
+
+    # Цепочка провайдеров LLM, в порядке попыток (core/llm_client.py, блок Б2).
+    # llm_providers[имя] = {"api_key": ..., "model": ..., "base_url": ...}.
+    # base_url может быть None — тогда llm_client.py берёт свой дефолт.
+    llm_provider_order: tuple[str, ...]
+    llm_providers: dict[str, dict[str, str | None]]
 
     webapp_url: str | None
     webapp_port: int
@@ -72,6 +72,39 @@ class Settings:
 def _resolve_db_path(raw: str) -> Path:
     path = Path(raw)
     return path if path.is_absolute() else (BASE_DIR / path).resolve()
+
+
+DEFAULT_LLM_PROVIDER_ORDER = ("deepseek", "gemini", "grok", "openai", "anthropic")
+
+
+def _parse_provider_order(raw: str | None) -> tuple[str, ...]:
+    """Разбирает LLM_PROVIDERS ("deepseek,gemini,...") в кортеж имён.
+
+    Пустая или отсутствующая переменная — не ошибка, просто дефолтный
+    порядок. Список расширяемый: новое имя здесь не требует правки этого
+    модуля, только core/llm_client.py должен знать протокол этого имени.
+    """
+    if not raw:
+        return DEFAULT_LLM_PROVIDER_ORDER
+    names = [part.strip().lower() for part in raw.split(",")]
+    return tuple(name for name in names if name)
+
+
+def _build_provider_settings(order: tuple[str, ...]) -> dict[str, dict[str, str | None]]:
+    """Для каждого провайдера из цепочки читает {ИМЯ}_API_KEY/{ИМЯ}_MODEL/{ИМЯ}_BASE_URL.
+
+    Провайдер без api_key не считается ошибкой конфигурации — core/llm_client.py
+    просто пропускает его в цепочке (не настроен, это штатно).
+    """
+    providers: dict[str, dict[str, str | None]] = {}
+    for name in order:
+        prefix = name.upper()
+        providers[name] = {
+            "api_key": _env(f"{prefix}_API_KEY"),
+            "model": _env(f"{prefix}_MODEL"),
+            "base_url": _env(f"{prefix}_BASE_URL"),
+        }
+    return providers
 
 
 def _build_settings() -> Settings:
@@ -97,6 +130,8 @@ def _build_settings() -> Settings:
     except ValueError:
         _fail(f"WEBAPP_PORT должен быть целым числом, получено: {webapp_port_raw!r}")
 
+    llm_provider_order = _parse_provider_order(_env("LLM_PROVIDERS"))
+
     return Settings(
         base_dir=BASE_DIR,
         storage_dir=storage_dir,
@@ -106,12 +141,8 @@ def _build_settings() -> Settings:
         logs_dir=logs_dir,
         db_path=_resolve_db_path(_env("DB_PATH", "storage/app.db")),
         telegram_bot_token=telegram_bot_token,
-        anthropic_api_key=_env("ANTHROPIC_API_KEY"),
-        openai_api_key=_env("OPENAI_API_KEY"),
-        llm_primary=_env("LLM_PRIMARY", "anthropic"),
-        llm_fallback=_env("LLM_FALLBACK", "openai"),
-        llm_model_primary=_env("LLM_MODEL_PRIMARY"),
-        llm_model_fallback=_env("LLM_MODEL_FALLBACK"),
+        llm_provider_order=llm_provider_order,
+        llm_providers=_build_provider_settings(llm_provider_order),
         webapp_url=_env("WEBAPP_URL"),
         webapp_port=webapp_port,
         log_level=_env("LOG_LEVEL", "INFO"),
