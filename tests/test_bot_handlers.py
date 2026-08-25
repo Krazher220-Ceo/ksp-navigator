@@ -115,12 +115,19 @@ class FakeDocument:
         self.file_size = file_size
 
 
+class FakePhotoSize:
+    def __init__(self, file_id="photo-fid", file_size=1000):
+        self.file_id = file_id
+        self.file_size = file_size
+
+
 class FakeMessage:
-    def __init__(self, text=None, user_id=1, chat_id=1, document=None):
+    def __init__(self, text=None, user_id=1, chat_id=1, document=None, photo=None):
         self.text = text
         self.from_user = FakeUser(user_id)
         self.chat = FakeChat(chat_id)
         self.document = document
+        self.photo = photo  # список FakePhotoSize (крупнейший — последний), как у Telegram
         self.sent: list[dict] = []
 
     async def answer(self, text, reply_markup=None, **kwargs):
@@ -472,9 +479,12 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
     await generate_razdel_received(FakeMessage(text="Механика"), state)
     await generate_klass_received(FakeMessage(text="10А"), state)
     await generate_duration_received(FakeMessage(text="40"), state)
-    assert await state.get_state() == Generate.waiting_for_extra_options.state
+    assert await state.get_state() == Generate.waiting_for_textbook_photos.state
 
-    from bot.handlers import generate_extra_options_received
+    from bot.handlers import generate_extra_options_received, generate_textbook_photos_skipped
+
+    await generate_textbook_photos_skipped(FakeMessage(text="/skip"), state)  # пропущено, Р6
+    assert await state.get_state() == Generate.waiting_for_extra_options.state
 
     await generate_extra_options_received(FakeMessage(text="-"), state)  # пропущено, Р5
     assert await state.get_state() == Generate.waiting_for_template.state
@@ -518,6 +528,7 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
             "mezhpredmetnye_svyazi": [],
             "page_orientation": "book",
         },
+        "textbook_photo_paths": [],  # /skip на шаге Р6.1 -> пустой список
     }
     assert await state.get_state() is None
 
@@ -581,6 +592,113 @@ async def test_generate_ktp_dash_means_no_topics(isolated_env):
     data = await state.get_data()
     assert data["topics"] == []
     assert "составлю сам" in message.sent[-1]["text"]
+
+
+# =====================================================================
+# Р6.1: сбор фото учебника в /generate
+# =====================================================================
+
+
+async def test_textbook_photo_accepted_and_counted(isolated_env):
+    from bot.handlers import generate_textbook_photo_received
+    from bot.states import Generate as GenerateStates
+
+    state = _state()
+    await state.update_data(textbook_photo_paths=[])
+    await state.set_state(GenerateStates.waiting_for_textbook_photos)
+
+    bot = FakeBot()
+    message = FakeMessage(photo=[FakePhotoSize(file_size=2000)])
+    await generate_textbook_photo_received(message, state, bot)
+
+    data = await state.get_data()
+    assert len(data["textbook_photo_paths"]) == 1
+    assert "1 из 3" in message.sent[-1]["text"]
+    assert len(bot.downloaded) == 1
+
+
+async def test_textbook_photo_document_accepted_for_png(isolated_env):
+    from bot.handlers import generate_textbook_photo_document_received
+    from bot.states import Generate as GenerateStates
+
+    state = _state()
+    await state.update_data(textbook_photo_paths=[])
+    await state.set_state(GenerateStates.waiting_for_textbook_photos)
+
+    bot = FakeBot()
+    message = FakeMessage(document=FakeDocument(file_name="page.png", file_size=2000))
+    await generate_textbook_photo_document_received(message, state, bot)
+
+    data = await state.get_data()
+    assert len(data["textbook_photo_paths"]) == 1
+    assert data["textbook_photo_paths"][0].endswith(".png")
+
+
+async def test_textbook_photo_document_rejects_non_image_extension(isolated_env):
+    from bot.handlers import generate_textbook_photo_document_received
+    from bot.states import Generate as GenerateStates
+
+    state = _state()
+    await state.update_data(textbook_photo_paths=[])
+    await state.set_state(GenerateStates.waiting_for_textbook_photos)
+
+    bot = FakeBot()
+    message = FakeMessage(document=FakeDocument(file_name="page.pdf", file_size=2000))
+    await generate_textbook_photo_document_received(message, state, bot)
+
+    data = await state.get_data()
+    assert data["textbook_photo_paths"] == []
+    assert len(bot.downloaded) == 0
+    assert message.sent[-1]["text"] == texts.GENERATE_TEXTBOOK_PHOTO_UNSUPPORTED_FORMAT
+
+
+async def test_textbook_photo_stops_at_max_three(isolated_env):
+    from bot.handlers import generate_textbook_photo_received
+    from bot.states import Generate as GenerateStates
+
+    state = _state()
+    await state.update_data(textbook_photo_paths=["a.jpg", "b.jpg", "c.jpg"])  # уже 3
+    await state.set_state(GenerateStates.waiting_for_textbook_photos)
+
+    bot = FakeBot()
+    message = FakeMessage(photo=[FakePhotoSize(file_size=2000)])
+    await generate_textbook_photo_received(message, state, bot)
+
+    data = await state.get_data()
+    assert len(data["textbook_photo_paths"]) == 3  # не выросло до 4
+    assert len(bot.downloaded) == 0  # 4-е фото даже не скачивалось
+    assert message.sent[-1]["text"] == texts.GENERATE_TEXTBOOK_PHOTOS_MAX_REACHED
+
+
+async def test_textbook_photos_done_moves_to_extra_options_with_photos_kept(isolated_env):
+    from bot.handlers import generate_textbook_photos_done
+    from bot.states import Generate as GenerateStates
+
+    state = _state()
+    await state.update_data(textbook_photo_paths=["a.jpg"])
+    await state.set_state(GenerateStates.waiting_for_textbook_photos)
+
+    await generate_textbook_photos_done(FakeMessage(text="/done"), state)
+
+    data = await state.get_data()
+    assert data["textbook_photo_paths"] == ["a.jpg"]  # не очищено, только шаг сменился
+    assert await state.get_state() == GenerateStates.waiting_for_extra_options.state
+
+
+async def test_textbook_photos_skip_clears_any_collected_photos(isolated_env):
+    """/skip — явный отказ от фото целиком, даже если что-то уже прислали."""
+    from bot.handlers import generate_textbook_photos_skipped
+    from bot.states import Generate as GenerateStates
+
+    state = _state()
+    await state.update_data(textbook_photo_paths=["a.jpg"])
+    await state.set_state(GenerateStates.waiting_for_textbook_photos)
+
+    await generate_textbook_photos_skipped(FakeMessage(text="/skip"), state)
+
+    data = await state.get_data()
+    assert data["textbook_photo_paths"] == []
+    assert await state.get_state() == GenerateStates.waiting_for_extra_options.state
 
 
 # =====================================================================
@@ -895,6 +1013,159 @@ async def test_generate_ksp_task_handler_sends_document(isolated_env, monkeypatc
     assert result == {"generated_ksp_id": "gen-xyz", "docx_path": "/tmp/result.docx"}
     assert len(bot.sent_documents) == 1
     assert bot.sent_documents[0]["chat_id"] == 42
+
+
+# =====================================================================
+# Р6.1/Р6.2: распознавание фото учебника внутри обработчика очереди
+# =====================================================================
+
+
+async def test_generate_ksp_task_handler_passes_recognized_textbook_text(isolated_env, monkeypatch, tmp_path):
+    from bot import handlers as handlers_module
+
+    photo1 = tmp_path / "p1.jpg"
+    photo1.write_bytes(b"fake photo 1")
+    photo2 = tmp_path / "p2.jpg"
+    photo2.write_bytes(b"fake photo 2")
+
+    async def fake_recognize(image_bytes, image_mime):
+        return "текст с фото: " + image_bytes.decode()
+
+    captured = {}
+
+    async def fake_generate_and_save_ksp(**kwargs):
+        captured.update(kwargs)
+        return {"id": "gen-1", "docx_path": "/tmp/result.docx"}
+
+    monkeypatch.setattr(handlers_module, "recognize_textbook_page", fake_recognize)
+    monkeypatch.setattr(handlers_module, "generate_and_save_ksp", fake_generate_and_save_ksp)
+
+    bot = FakeBot()
+    handler = make_generate_ksp_handler(bot)
+    task = {
+        "id": "t3", "type": "generate_ksp", "telegram_chat_id": 42,
+        "payload": {
+            "teacher_id": 1, "template_id": 1, "topic": "Тема", "razdel": "Раздел",
+            "subject": "физика", "klass": "10А", "duration_minutes": 40, "objective_code": None,
+            "textbook_photo_paths": [str(photo1), str(photo2)],
+        },
+    }
+
+    await handler(task)
+
+    assert captured["textbook_text"] == "текст с фото: fake photo 1\n\nтекст с фото: fake photo 2"
+    assert texts.GENERATE_TEXTBOOK_OCR_FAILED_NOTE not in bot.sent_documents[0]["caption"]
+
+
+async def test_generate_ksp_task_handler_notes_when_all_textbook_photos_fail(isolated_env, monkeypatch, tmp_path):
+    """КГ Р6: одно неудачное фото не должно ронять всю задачу генерации,
+    но учитель должен честно узнать, что урок собран без опоры на фото."""
+    from bot import handlers as handlers_module
+    from core.textbook_ocr import TextbookOCRError
+
+    photo = tmp_path / "p1.jpg"
+    photo.write_bytes(b"unreadable photo")
+
+    async def fake_recognize(image_bytes, image_mime):
+        raise TextbookOCRError("не удалось распознать")
+
+    async def fake_generate_and_save_ksp(**kwargs):
+        assert kwargs["textbook_text"] is None
+        return {"id": "gen-2", "docx_path": "/tmp/result.docx"}
+
+    monkeypatch.setattr(handlers_module, "recognize_textbook_page", fake_recognize)
+    monkeypatch.setattr(handlers_module, "generate_and_save_ksp", fake_generate_and_save_ksp)
+
+    bot = FakeBot()
+    handler = make_generate_ksp_handler(bot)
+    task = {
+        "id": "t4", "type": "generate_ksp", "telegram_chat_id": 42,
+        "payload": {
+            "teacher_id": 1, "template_id": 1, "topic": "Тема", "razdel": "Раздел",
+            "subject": "физика", "klass": "10А", "duration_minutes": 40, "objective_code": None,
+            "textbook_photo_paths": [str(photo)],
+        },
+    }
+
+    await handler(task)
+
+    assert texts.GENERATE_TEXTBOOK_OCR_FAILED_NOTE in bot.sent_documents[0]["caption"]
+
+
+async def test_generate_ksp_task_handler_partial_ocr_failure_uses_successful_text(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Одно фото не распозналось, другое — да: генерация опирается на то,
+    что реально распозналось, без предупреждения (не ВСЕ фото отказали)."""
+    from bot import handlers as handlers_module
+    from core.textbook_ocr import TextbookOCRError
+
+    good_photo = tmp_path / "good.jpg"
+    good_photo.write_bytes(b"readable")
+    bad_photo = tmp_path / "bad.jpg"
+    bad_photo.write_bytes(b"unreadable")
+
+    async def fake_recognize(image_bytes, image_mime):
+        if image_bytes == b"unreadable":
+            raise TextbookOCRError("плохое качество")
+        return "хороший текст"
+
+    captured = {}
+
+    async def fake_generate_and_save_ksp(**kwargs):
+        captured.update(kwargs)
+        return {"id": "gen-3", "docx_path": "/tmp/result.docx"}
+
+    monkeypatch.setattr(handlers_module, "recognize_textbook_page", fake_recognize)
+    monkeypatch.setattr(handlers_module, "generate_and_save_ksp", fake_generate_and_save_ksp)
+
+    bot = FakeBot()
+    handler = make_generate_ksp_handler(bot)
+    task = {
+        "id": "t5", "type": "generate_ksp", "telegram_chat_id": 42,
+        "payload": {
+            "teacher_id": 1, "template_id": 1, "topic": "Тема", "razdel": "Раздел",
+            "subject": "физика", "klass": "10А", "duration_minutes": 40, "objective_code": None,
+            "textbook_photo_paths": [str(bad_photo), str(good_photo)],
+        },
+    }
+
+    await handler(task)
+
+    assert captured["textbook_text"] == "хороший текст"
+    assert texts.GENERATE_TEXTBOOK_OCR_FAILED_NOTE not in bot.sent_documents[0]["caption"]
+
+
+async def test_generate_ksp_task_handler_without_photos_skips_ocr_entirely(isolated_env, monkeypatch):
+    """Без фото — OCR вообще не вызывается, тем же путём, что и раньше
+    (не должно быть регрессии для запросов без Р6.1)."""
+    from bot import handlers as handlers_module
+
+    ocr_called = []
+
+    async def fake_recognize(image_bytes, image_mime):
+        ocr_called.append(True)
+        return "не должно вызваться"
+
+    async def fake_generate_and_save_ksp(**kwargs):
+        assert kwargs["textbook_text"] is None
+        return {"id": "gen-4", "docx_path": "/tmp/result.docx"}
+
+    monkeypatch.setattr(handlers_module, "recognize_textbook_page", fake_recognize)
+    monkeypatch.setattr(handlers_module, "generate_and_save_ksp", fake_generate_and_save_ksp)
+
+    bot = FakeBot()
+    handler = make_generate_ksp_handler(bot)
+    task = {
+        "id": "t6", "type": "generate_ksp", "telegram_chat_id": 42,
+        "payload": {
+            "teacher_id": 1, "template_id": 1, "topic": "Тема", "razdel": "Раздел",
+            "subject": "физика", "klass": "10А", "duration_minutes": 40, "objective_code": None,
+        },
+    }
+
+    await handler(task)
+    assert ocr_called == []
 
 
 # =====================================================================

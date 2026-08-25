@@ -190,6 +190,12 @@ TASK_FIZKULTMINUTKA_INSTRUCTION = (
 TASK_TIP_UROKA_LABEL = "Тип урока:"
 TASK_MEZHPREDMETNYE_SVYAZI_LABEL = "Учти межпредметные связи с предметами:"
 
+# Р6.2: текст страницы учебника, распознанный по фото (core.textbook_ocr).
+TASK_TEXTBOOK_HEADER = (
+    "Текст со страницы учебника, распознанный по фото — урок должен "
+    "реально опираться на это содержание, не только на тему:"
+)
+
 
 def _render_lesson_options(options: "LessonOptions | None") -> str:
     """Рендерит инструкции по опциям Р5.2/Р5.3 в промпт. Пустая строка,
@@ -473,6 +479,7 @@ def build_prompt(
     extra_columns: list[str] | None = None,
     include_razdatochnye_materialy: bool = False,
     options: "LessonOptions | None" = None,
+    textbook_text: str | None = None,
 ) -> str:
     """КОНТЕКСТ (если есть профиль стиля) + ЗАДАЧА — ровно те два блока
     промпта из MASTER.md, раздел 1.6. Схема ответа сюда не встраивается
@@ -484,7 +491,11 @@ def build_prompt(
     просят, и лишняя инструкция в промпте не нужна.
 
     options — Р5.2/Р5.3: необязательные опции урока (LessonOptions).
-    None или пустой LessonOptions() не меняют промпт вообще."""
+    None или пустой LessonOptions() не меняют промпт вообще.
+
+    textbook_text — Р6.2: текст со страницы учебника, распознанный по
+    фото (core.textbook_ocr). Урок должен опираться на него, а не только
+    на тему — модель прямо просят использовать его содержание."""
     objective_description = (
         _fetch_objective_description(objective_code, db_path=db_path) if objective_code else None
     )
@@ -510,6 +521,9 @@ def build_prompt(
     options_text = _render_lesson_options(options)
     if options_text:
         parts.append(options_text)
+
+    if textbook_text and textbook_text.strip():
+        parts.append(f"{TASK_TEXTBOOK_HEADER}\n{textbook_text.strip()}")
 
     return "\n\n".join(parts)
 
@@ -705,6 +719,7 @@ async def generate_ksp(
     extra_columns: list[str] | None = None,
     include_razdatochnye_materialy: bool = False,
     options: "LessonOptions | None" = None,
+    textbook_text: str | None = None,
 ) -> dict:
     """Генерирует и валидирует JSON-содержимое КСП (без сборки .docx —
     это отдельно, save_generated_ksp). Профиль стиля учителя (если
@@ -715,7 +730,8 @@ async def generate_ksp(
     конкретных проблем; если и он не проходит — KSPValidationError.
     Недостающие поля никогда не дописываются заглушками (Б6.2).
 
-    include_razdatochnye_materialy — Р3.1, options — Р5.2/Р5.3, см. build_prompt."""
+    include_razdatochnye_materialy — Р3.1, options — Р5.2/Р5.3,
+    textbook_text — Р6.2, см. build_prompt."""
     style_profile = _fetch_style_profile(teacher_id, db_path=db_path)
     prompt = build_prompt(
         topic,
@@ -728,6 +744,7 @@ async def generate_ksp(
         extra_columns=extra_columns,
         include_razdatochnye_materialy=include_razdatochnye_materialy,
         options=options,
+        textbook_text=textbook_text,
     )
     schema = _build_response_schema(include_razdatochnye_materialy)
 
@@ -897,6 +914,7 @@ async def generate_and_save_ksp(
     output_dir: Path | str | None = None,
     include_razdatochnye_materialy: bool = False,
     options: "LessonOptions | None" = None,
+    textbook_text: str | None = None,
 ) -> dict:
     """Полный конвейер: промпт -> LLM -> валидация -> .docx -> запись в
     generated_ksp. Удобный вызов для bot/handlers.py (блок Б8); тесты
@@ -904,7 +922,7 @@ async def generate_and_save_ksp(
     по отдельности.
 
     include_razdatochnye_materialy — Р3.1, options — Р5.1/Р5.2/Р5.3,
-    см. build_prompt / _fill_header_fields."""
+    textbook_text — Р6.2, см. build_prompt / _fill_header_fields."""
     template = get_template(template_id, db_path=db_path)
     if template is None:
         raise KSPGenerationError(f"шаблон с id={template_id} не найден")
@@ -921,6 +939,7 @@ async def generate_and_save_ksp(
         extra_columns=_extra_columns_of_template(template),
         include_razdatochnye_materialy=include_razdatochnye_materialy,
         options=options,
+        textbook_text=textbook_text,
     )
 
     return save_generated_ksp(

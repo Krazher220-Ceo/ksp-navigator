@@ -27,6 +27,8 @@ openai → anthropic (резервные, на бесплатных дневны
 """
 
 import asyncio
+import base64
+import functools
 import json
 import logging
 import random
@@ -183,6 +185,75 @@ _ADAPTERS: dict[str, tuple[Callable, Callable]] = {
 }
 
 
+# --- Р6.2: адаптеры запроса с изображением ---
+#
+# Только сборка запроса другая (текст промпта + картинка вместо только
+# текста) — разбор ответа тот же самый _parse_openai_compatible/_parse_gemini
+# (ответ приходит в том же поле, vision тут влияет только на то, что
+# модель "видела" при генерации текста, не на форму самого ответа).
+#
+# Ловушка плана (Р6.2): никакого tesseract, никаких локальных ML-моделей —
+# только уже подключённые провайдеры по HTTP через httpx, тем же клиентом,
+# что и текстовые запросы.
+
+
+def _build_openai_compatible_vision(
+    base_url: str, api_key: str, model: str, system: str, user: str, image_base64: str, image_mime: str
+):
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user},
+                    {"type": "image_url", "image_url": {"url": f"data:{image_mime};base64,{image_base64}"}},
+                ],
+            },
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    return url, headers, body
+
+
+def _build_gemini_vision(
+    base_url: str, api_key: str, model: str, system: str, user: str, image_base64: str, image_mime: str
+):
+    url = f"{base_url.rstrip('/')}/v1beta/models/{model}:generateContent?key={api_key}"
+    headers = {"Content-Type": "application/json"}
+    body = {
+        "system_instruction": {"parts": [{"text": system}]},
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": user},
+                    {"inline_data": {"mime_type": image_mime, "data": image_base64}},
+                ],
+            }
+        ],
+        "generationConfig": {"responseMimeType": "application/json"},
+    }
+    return url, headers, body
+
+
+# Ключ — provider.kind (тот же протокол, что и в _ADAPTERS), значение —
+# только build-функция с изображением; parse переиспускается из _ADAPTERS.
+VISION_ADAPTERS: dict[str, Callable] = {
+    "openai_compatible": _build_openai_compatible_vision,
+    "gemini": _build_gemini_vision,
+}
+
+# Из провайдеров нашей цепочки эти умеют vision (план Р6.2, дословно:
+# "Gemini и OpenAI в нашей цепочке это умеют"). deepseek/grok/anthropic —
+# не проверялись, не включены; провайдер без vision пропускается молча,
+# тем же способом, что провайдер без API-ключа (см. complete_json_with_image).
+VISION_CAPABLE_PROVIDERS = {"gemini", "openai"}
+
+
 @dataclass(frozen=True)
 class ProviderConfig:
     name: str
@@ -251,9 +322,11 @@ def _try_parse_json(text: str) -> dict | None:
 
 
 class LLMClient:
-    """Клиент LLM с цепочкой провайдеров. Единственный публичный метод —
-    complete_json. Провайдеры и http-клиент можно передать явно (нужно
-    для тестов — httpx мокается через transport=httpx.MockTransport)."""
+    """Клиент LLM с цепочкой провайдеров. Два публичных метода:
+    complete_json (текст) и complete_json_with_image (Р6.2, с фото —
+    только провайдеры из VISION_CAPABLE_PROVIDERS). Провайдеры и
+    http-клиент можно передать явно (нужно для тестов — httpx мокается
+    через transport=httpx.MockTransport)."""
 
     def __init__(
         self,
@@ -305,6 +378,64 @@ class LLMClient:
 
         raise LLMUnavailable(f"все провайдеры LLM отказали: {last_error}")
 
+    async def complete_json_with_image(
+        self,
+        system: str,
+        user: str,
+        schema: dict,
+        image_bytes: bytes,
+        image_mime: str,
+        max_retries: int = 3,
+    ) -> dict:
+        """Р6.2: то же, что complete_json, но запрос дополнен изображением.
+        Пробует ТОЛЬКО провайдеров с поддержкой vision (VISION_CAPABLE_PROVIDERS),
+        в том же относительном порядке, что и общая цепочка LLM_PROVIDERS —
+        провайдер без vision пропускается молча, тем же способом, что и
+        провайдер без API-ключа в complete_json."""
+        if max_retries < 1:
+            raise LLMConfigError(f"max_retries должен быть >= 1, получено {max_retries}")
+
+        vision_providers = [p for p in self._providers if p.name in VISION_CAPABLE_PROVIDERS]
+        if not vision_providers:
+            raise LLMUnavailable(
+                "ни один провайдер с поддержкой изображений не настроен — "
+                "нужен действующий ключ GEMINI_API_KEY или OPENAI_API_KEY в .env"
+            )
+
+        image_base64 = base64.b64encode(image_bytes).decode("ascii")
+        prompt = self._with_schema(user, schema)
+        last_error: Exception | None = None
+
+        for provider in vision_providers:
+            vision_build = VISION_ADAPTERS.get(provider.kind)
+            if vision_build is None:
+                # Защитная ветка: провайдер попал в VISION_CAPABLE_PROVIDERS,
+                # но для его протокола нет vision-адаптера. Не должно
+                # случаться при текущем составе списка (gemini, openai —
+                # оба openai_compatible/gemini уже есть в VISION_ADAPTERS),
+                # но не роняем всю цепочку из-за одной несостыковки конфигурации.
+                logger.warning(
+                    "провайдер %s заявлен как vision-способный, но адаптера для '%s' нет — пропускаю",
+                    provider.name, provider.kind,
+                )
+                continue
+
+            build_override = functools.partial(
+                vision_build, image_base64=image_base64, image_mime=image_mime
+            )
+            try:
+                return await self._call_with_json_guarantee(
+                    provider, system, prompt, max_retries, build_override=build_override
+                )
+            except _ProviderFailed as exc:
+                logger.warning(
+                    "провайдер %s (vision) отказал, перехожу к следующему: %s", provider.name, exc
+                )
+                last_error = exc
+                continue
+
+        raise LLMUnavailable(f"все провайдеры с поддержкой изображений отказали: {last_error}")
+
     @staticmethod
     def _with_schema(user: str, schema: dict) -> str:
         schema_text = json.dumps(schema, ensure_ascii=False, indent=2)
@@ -320,18 +451,28 @@ class LLMClient:
         system: str,
         user: str,
         max_retries: int,
+        build_override: Callable | None = None,
     ) -> dict:
         """Один вызов провайдера (с его собственными ретраями на 429/5xx),
         и при невалидном JSON — ровно один повторный запрос тому же
-        провайдеру с явной просьбой вернуть строгий JSON (задача Б2.2)."""
-        raw_text = await self._call_provider_with_retries(provider, system, user, max_retries)
+        провайдеру с явной просьбой вернуть строгий JSON (задача Б2.2).
+
+        build_override — Р6.2: для запроса с изображением используется
+        vision-сборщик тела запроса вместо текстового из _ADAPTERS; при
+        повторном запросе (ниже) картинка тоже переотправляется — модели
+        нужно снова её увидеть, чтобы разобрать текст на ней заново."""
+        raw_text = await self._call_provider_with_retries(
+            provider, system, user, max_retries, build_override=build_override
+        )
         parsed = _try_parse_json(raw_text)
         if parsed is not None:
             return parsed
 
         logger.warning("провайдер %s вернул невалидный JSON, повторяю запрос один раз", provider.name)
         repaired_user = user + JSON_REPAIR_SUFFIX
-        raw_text_retry = await self._call_provider_with_retries(provider, system, repaired_user, max_retries)
+        raw_text_retry = await self._call_provider_with_retries(
+            provider, system, repaired_user, max_retries, build_override=build_override
+        )
         parsed = _try_parse_json(raw_text_retry)
         if parsed is not None:
             return parsed
@@ -344,11 +485,13 @@ class LLMClient:
         system: str,
         user: str,
         max_retries: int,
+        build_override: Callable | None = None,
     ) -> str:
         """HTTP-вызов одного провайдера с ретраями на 429/5xx (растущая
         пауза с джиттером) и немедленным отказом на всём остальном
         (400/401 и т.п. — повтор бессмысленен)."""
-        build, parse = _ADAPTERS[provider.kind]
+        _, parse = _ADAPTERS[provider.kind]
+        build = build_override or _ADAPTERS[provider.kind][0]
         url, headers, body = build(provider.base_url, provider.api_key, provider.model, system, user)
 
         for attempt in range(1, max_retries + 1):

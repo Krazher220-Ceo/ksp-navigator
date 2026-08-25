@@ -16,9 +16,12 @@ PLAN_STAGE1_EXT.md, миграция — scripts/migrate_add_generate_ktp_task_t
 
 На что опирается: aiogram 3 (Router, FSM), core.db, core.ksp_parser,
 core.ktp_parser, core.templates, core.ksp_generator, core.ktp_generator,
-core.queue. Хендлеры задач очереди (parse_ksp/generate_ksp/generate_ktp) —
-фабрики, которым нужен экземпляр Bot для отправки файлов/сообщений;
-создаются в bot/main.py, где Bot уже существует.
+core.textbook_ocr, core.queue. Хендлеры задач очереди
+(parse_ksp/generate_ksp/generate_ktp) — фабрики, которым нужен экземпляр
+Bot для отправки файлов/сообщений; создаются в bot/main.py, где Bot уже
+существует. Распознавание фото учебника (Р6.1) — тоже внутри хендлера
+задачи generate_ksp, не отдельным типом задачи: это подготовительный шаг
+перед генерацией, а не самостоятельная работа.
 """
 
 import asyncio
@@ -65,6 +68,7 @@ from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMError
 from core.queue import MAX_RETRIES, enqueue
 from core.templates import get_template, list_templates, save_user_template
+from core.textbook_ocr import TextbookOCRError, recognize_textbook_page
 from core.values import find_value_key_by_name, get_value
 
 logger = logging.getLogger(__name__)
@@ -640,8 +644,91 @@ async def generate_duration_received(message: Message, state: FSMContext) -> Non
         return
 
     await state.update_data(duration_minutes=int(text))
+    await state.set_state(Generate.waiting_for_textbook_photos)
+    await state.update_data(textbook_photo_paths=[])
+    await message.answer(texts.GENERATE_ASK_TEXTBOOK_PHOTOS)
+
+
+_TEXTBOOK_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+_TEXTBOOK_PHOTO_MIME_BY_EXT = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+}
+MAX_TEXTBOOK_PHOTOS = 3
+
+
+@router.message(Generate.waiting_for_textbook_photos, Command("skip"))
+async def generate_textbook_photos_skipped(message: Message, state: FSMContext) -> None:
+    await state.update_data(textbook_photo_paths=[])
     await state.set_state(Generate.waiting_for_extra_options)
     await message.answer(texts.GENERATE_ASK_EXTRA_OPTIONS)
+
+
+@router.message(Generate.waiting_for_textbook_photos, Command("done"))
+async def generate_textbook_photos_done(message: Message, state: FSMContext) -> None:
+    await state.set_state(Generate.waiting_for_extra_options)
+    await message.answer(texts.GENERATE_ASK_EXTRA_OPTIONS)
+
+
+@router.message(Generate.waiting_for_textbook_photos, F.photo)
+async def generate_textbook_photo_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Р6.1: сжатое фото Telegram (message.photo) — самый частый случай,
+    когда учитель просто фотографирует страницу и отправляет как обычно.
+    Telegram сам пережимает такие фото в JPEG независимо от исходного
+    формата, поэтому расширение всегда .jpg."""
+    data = await state.get_data()
+    paths = data.get("textbook_photo_paths", [])
+    if len(paths) >= MAX_TEXTBOOK_PHOTOS:
+        await message.answer(texts.GENERATE_TEXTBOOK_PHOTOS_MAX_REACHED)
+        return
+
+    largest = message.photo[-1]
+    size_error = _check_file_size(largest)
+    if size_error:
+        await message.answer(size_error)
+        return
+
+    dest = settings.uploads_dir / f"{uuid.uuid4()}.jpg"
+    await bot.download(largest, destination=dest)
+    paths.append(str(dest))
+    await state.update_data(textbook_photo_paths=paths)
+    await message.answer(texts.GENERATE_TEXTBOOK_PHOTO_ACCEPTED.format(n=len(paths)))
+
+
+@router.message(Generate.waiting_for_textbook_photos, F.document)
+async def generate_textbook_photo_document_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    """Фото, присланное файлом (не сжатым Telegram-фото) — так учитель
+    сохраняет реальный PNG/WebP без пережатия в JPEG (Р6.1: "JPG/PNG/WebP")."""
+    document = message.document
+    filename = document.file_name or ""
+    ext = Path(filename).suffix.lower()
+    if ext not in _TEXTBOOK_PHOTO_EXTENSIONS:
+        await message.answer(texts.GENERATE_TEXTBOOK_PHOTO_UNSUPPORTED_FORMAT)
+        return
+
+    data = await state.get_data()
+    paths = data.get("textbook_photo_paths", [])
+    if len(paths) >= MAX_TEXTBOOK_PHOTOS:
+        await message.answer(texts.GENERATE_TEXTBOOK_PHOTOS_MAX_REACHED)
+        return
+
+    size_error = _check_file_size(document)
+    if size_error:
+        await message.answer(size_error)
+        return
+
+    dest = settings.uploads_dir / f"{uuid.uuid4()}{ext}"
+    await bot.download(document, destination=dest)
+    paths.append(str(dest))
+    await state.update_data(textbook_photo_paths=paths)
+    await message.answer(texts.GENERATE_TEXTBOOK_PHOTO_ACCEPTED.format(n=len(paths)))
+
+
+@router.message(Generate.waiting_for_textbook_photos)
+async def generate_textbook_photos_wrong_input(message: Message) -> None:
+    await message.answer(texts.GENERATE_TEXTBOOK_PHOTO_UNSUPPORTED_FORMAT)
 
 
 @router.message(Generate.waiting_for_extra_options)
@@ -697,6 +784,7 @@ async def _ask_generate_confirmation(message: Message, state: FSMContext, templa
     await state.update_data(template_id=template_id)
     data = await state.get_data()
 
+    photo_paths = data.get("textbook_photo_paths") or []
     summary = texts.GENERATE_CONFIRM_SUMMARY.format(
         topic=data["topic"],
         razdel=data["razdel"],
@@ -704,6 +792,7 @@ async def _ask_generate_confirmation(message: Message, state: FSMContext, templa
         klass=data["klass"],
         duration=data["duration_minutes"],
         template_name=template["name"],
+        textbook_photos_line=texts.GENERATE_TEXTBOOK_PHOTOS_LINE.format(count=len(photo_paths)) if photo_paths else "",
         extra_options_line=_format_extra_options_summary(data.get("options")),
     )
     if not _has_style_profile(data["teacher_id"]):
@@ -754,6 +843,7 @@ async def generate_confirmed(callback: CallbackQuery, state: FSMContext) -> None
         "duration_minutes": data["duration_minutes"],
         "objective_code": data.get("objective_code"),
         "options": data.get("options"),  # Р5.2/Р5.3, словарь полей LessonOptions или None
+        "textbook_photo_paths": data.get("textbook_photo_paths") or [],  # Р6.1
     }
     enqueue("generate_ksp", payload, chat_id=callback.message.chat.id)
     await state.clear()
@@ -1015,11 +1105,47 @@ def make_parse_ksp_handler(bot: Bot):
     return handler
 
 
+async def _recognize_textbook_photos(photo_paths: list[str]) -> tuple[str | None, bool]:
+    """Р6.1/Р6.2: распознаёт и объединяет текст со всех присланных фото
+    учебника. Одно неудачное фото (плохое качество, отказ провайдера) не
+    должно ронять всю задачу генерации КСП целиком — тем же принципом,
+    что make_parse_ksp_handler мягко переживает недоступность LLM при
+    построении профиля стиля: КСП всё равно нужен, просто без этой опоры.
+
+    Возвращает (объединённый текст или None, "фото были, но ни одно не
+    распозналось") — второе нужно вызывающему коду, чтобы честно
+    предупредить учителя в подписи к файлу, а не промолчать."""
+    if not photo_paths:
+        return None, False
+
+    recognized_parts = []
+    for path_str in photo_paths:
+        path = Path(path_str)
+        mime = _TEXTBOOK_PHOTO_MIME_BY_EXT.get(path.suffix.lower(), "image/jpeg")
+        try:
+            image_bytes = path.read_bytes()
+            text = await recognize_textbook_page(image_bytes, mime)
+            recognized_parts.append(text)
+        except (TextbookOCRError, LLMError, OSError) as exc:
+            logger.warning("не удалось распознать фото учебника %s: %s", path, exc)
+            continue
+
+    if not recognized_parts:
+        return None, True  # фото были, но ни одно не распозналось
+
+    return "\n\n".join(recognized_parts), False
+
+
 def make_generate_ksp_handler(bot: Bot):
     """Полный конвейер генерации (core.ksp_generator.generate_and_save_ksp,
     блок Б6) и отправка готового файла. Любая ошибка (LLM недоступен,
     невалидный ответ) уходит наверх как есть — это настоящий провал,
-    core.queue сам решит про ретрай/финальное уведомление."""
+    core.queue сам решит про ретрай/финальное уведомление.
+
+    Распознавание фото учебника (Р6.1/Р6.2) — тоже вызов LLM, поэтому
+    здесь, а не синхронно в диалоге бота: собирать фото быстро, а
+    распознавать их (может занять минуту на фото) — задача очереди,
+    с её же ретраями и гарантией уведомления, а не блокировка диалога."""
 
     async def handler(task: dict) -> dict:
         payload = task["payload"]
@@ -1027,6 +1153,10 @@ def make_generate_ksp_handler(bot: Bot):
 
         options_dict = payload.get("options")
         options = LessonOptions(**options_dict) if options_dict else None
+
+        textbook_text, ocr_failed = await _recognize_textbook_photos(
+            payload.get("textbook_photo_paths") or []
+        )
 
         result = await generate_and_save_ksp(
             teacher_id=payload["teacher_id"],
@@ -1039,10 +1169,13 @@ def make_generate_ksp_handler(bot: Bot):
             objective_code=payload.get("objective_code"),
             ktp_entry_id=payload.get("ktp_entry_id"),
             options=options,
+            textbook_text=textbook_text,
         )
 
         docx_path = Path(result["docx_path"])
         caption = texts.GENERATE_RESULT_CAPTION.format(topic=payload["topic"])
+        if ocr_failed:
+            caption += texts.GENERATE_TEXTBOOK_OCR_FAILED_NOTE
 
         keyboard = None
         if settings.webapp_url:

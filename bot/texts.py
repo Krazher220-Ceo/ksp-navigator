@@ -127,6 +127,16 @@ GENERATE_ASK_RAZDEL = "Раздел программы?"
 GENERATE_ASK_KLASS = "Класс? Например: 10А"
 GENERATE_ASK_DURATION = "Продолжительность урока в минутах? Например: 40"
 GENERATE_DURATION_NOT_A_NUMBER = "Это не похоже на число минут. Введите, например, 40."
+GENERATE_ASK_TEXTBOOK_PHOTOS = (
+    "Пришлите до 3 фото страницы учебника, если хотите, чтобы урок "
+    "опирался на её содержание (JPG/PNG/WebP, до 10 МБ каждое). Когда "
+    "закончите — отправьте /done. Если фото не нужны — /skip."
+)
+GENERATE_TEXTBOOK_PHOTO_ACCEPTED = "Принял фото {n} из 3. Ещё, или /done."
+GENERATE_TEXTBOOK_PHOTOS_MAX_REACHED = "Это уже 3-е фото, больше не приму. Отправьте /done."
+GENERATE_TEXTBOOK_PHOTO_UNSUPPORTED_FORMAT = (
+    "Это не похоже на фото или изображение (JPG/PNG/WebP). Пришлите фото, /done или /skip."
+)
 GENERATE_ASK_EXTRA_OPTIONS = (
     "Дополнительные настройки урока — необязательно, отправьте «-», если "
     "не нужны.\n\n"
@@ -159,9 +169,11 @@ GENERATE_CONFIRM_SUMMARY = (
     "Класс: {klass}\n"
     "Продолжительность: {duration} мин\n"
     "Шаблон: {template_name}\n"
+    "{textbook_photos_line}"
     "{extra_options_line}"
 )
 GENERATE_EXTRA_OPTIONS_LINE = "Доп. настройки: {summary}\n"
+GENERATE_TEXTBOOK_PHOTOS_LINE = "Фото учебника: {count}\n"
 GENERATE_CONFIRM_BUTTON = "✅ Сгенерировать"
 GENERATE_CANCEL_BUTTON = "❌ Отмена"
 GENERATE_CANCELLED = "Генерация отменена."
@@ -171,6 +183,10 @@ GENERATE_NO_STYLE_PROFILE_NOTE = (
     "черновик будет по форме, но без учёта вашей манеры письма. Это нормально, не ошибка."
 )
 GENERATE_RESULT_CAPTION = "Готово: {topic}. Не забудьте: это черновик, проверьте перед сдачей."
+GENERATE_TEXTBOOK_OCR_FAILED_NOTE = (
+    "\n\n⚠️ Не удалось распознать текст на присланных фото учебника — "
+    "черновик собран без опоры на них, только по теме."
+)
 GENERATE_PREVIEW_BUTTON = "👁 Предпросмотр"
 
 # --- /generate_ktp (Р4.3) ---

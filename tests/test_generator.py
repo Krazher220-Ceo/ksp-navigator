@@ -180,6 +180,24 @@ def test_build_prompt_empty_style_profile_is_treated_as_no_profile():
     assert "КОНТЕКСТ" not in prompt
 
 
+# --- Р6.2: текст со страницы учебника в промпте ---
+
+
+def test_build_prompt_includes_textbook_text_when_given():
+    prompt = build_prompt(
+        "Тема", "Раздел", None, "10А", DURATION,
+        textbook_text="Закон сохранения импульса гласит: суммарный импульс замкнутой системы...",
+    )
+    assert "Закон сохранения импульса гласит" in prompt
+
+
+def test_build_prompt_without_textbook_text_unchanged():
+    without = build_prompt("Тема", "Раздел", None, "10А", DURATION)
+    with_empty = build_prompt("Тема", "Раздел", None, "10А", DURATION, textbook_text=None)
+    with_blank = build_prompt("Тема", "Раздел", None, "10А", DURATION, textbook_text="   ")
+    assert without == with_empty == with_blank
+
+
 # --- Р5.1/Р5.2/Р5.3: LessonOptions ---
 
 

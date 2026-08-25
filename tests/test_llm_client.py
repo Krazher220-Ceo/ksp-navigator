@@ -27,6 +27,11 @@ from core.llm_client import (
     _load_providers_from_settings,
 )
 
+# Содержимое неважно — в тестах ниже httpx замокан, реального декодирования
+# изображения не происходит нигде, байты просто уходят в base64 в теле
+# запроса. Не настоящий PNG, и не должен им быть для этих тестов.
+FAKE_IMAGE_BYTES = b"fake-image-bytes-for-tests"
+
 SCHEMA = {"type": "object", "properties": {"answer": {"type": "string"}}}
 
 
@@ -268,3 +273,119 @@ def test_unknown_provider_name_raises_config_error():
     with patch("core.llm_client.settings", fake):
         with pytest.raises(LLMConfigError):
             _load_providers_from_settings()
+
+
+# =====================================================================
+# Р6.2: complete_json_with_image — vision-запросы
+# =====================================================================
+
+
+def make_named_provider(name: str, kind: str, base_url: str) -> ProviderConfig:
+    """Как make_provider, но с настоящим именем провайдера — vision-фильтр
+    (VISION_CAPABLE_PROVIDERS) проверяет именно имя, не kind."""
+    return ProviderConfig(name=name, kind=kind, api_key=f"test-key-{name}", model="test-model", base_url=base_url)
+
+
+async def test_non_vision_provider_is_skipped_vision_provider_answers(no_real_sleep):
+    """КГ Р6.2, дословно из плана: провайдер без vision пропущен, следующий
+    ответил, текст попал в промпт генерации."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        return openai_compatible_response('{"text": "распознанный текст со страницы"}')
+
+    providers = [
+        make_named_provider("deepseek", "openai_compatible", "https://deepseek.test"),  # не vision
+        make_named_provider("openai", "openai_compatible", "https://openai.test"),  # vision
+    ]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LLMClient(providers=providers, http_client=http)
+        result = await client.complete_json_with_image(
+            "система", "распознай текст", SCHEMA, image_bytes=FAKE_IMAGE_BYTES, image_mime="image/jpeg"
+        )
+
+    assert result == {"text": "распознанный текст со страницы"}
+    # deepseek вообще не должен быть вызван — он не в VISION_CAPABLE_PROVIDERS,
+    # не "первая попытка, которая упала", а полностью пропущен.
+    assert "deepseek.test" not in calls
+    assert calls == ["openai.test"]
+
+
+async def test_vision_request_includes_image_in_body(no_real_sleep):
+    """Тело запроса реально содержит картинку, не просто текст — иначе
+    это не vision-запрос, а обычный текстовый с лишним параметром."""
+    captured_body = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content))
+        return openai_compatible_response('{"text": "ok"}')
+
+    providers = [make_named_provider("openai", "openai_compatible", "https://openai.test")]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LLMClient(providers=providers, http_client=http)
+        await client.complete_json_with_image(
+            "система", "распознай текст", SCHEMA, image_bytes=FAKE_IMAGE_BYTES, image_mime="image/png"
+        )
+
+    user_content = captured_body["messages"][1]["content"]
+    assert isinstance(user_content, list)
+    image_blocks = [b for b in user_content if b.get("type") == "image_url"]
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+async def test_gemini_vision_request_uses_inline_data(no_real_sleep):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        parts = body["contents"][0]["parts"]
+        assert any("inline_data" in p for p in parts)
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"text": "ok"}'}]}}]},
+        )
+
+    providers = [make_named_provider("gemini", "gemini", "https://gemini.test")]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LLMClient(providers=providers, http_client=http)
+        result = await client.complete_json_with_image(
+            "система", "распознай текст", SCHEMA, image_bytes=FAKE_IMAGE_BYTES, image_mime="image/jpeg"
+        )
+
+    assert result == {"text": "ok"}
+
+
+async def test_complete_json_with_image_raises_when_no_vision_provider_configured(no_real_sleep):
+    """Только текстовые провайдеры настроены — честная ошибка, не молчаливый
+    провал и не попытка отправить картинку туда, где её не разберут."""
+    providers = [make_named_provider("deepseek", "openai_compatible", "https://deepseek.test")]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: openai_compatible_response("{}"))) as http:
+        client = LLMClient(providers=providers, http_client=http)
+        with pytest.raises(LLMUnavailable):
+            await client.complete_json_with_image(
+                "система", "текст", SCHEMA, image_bytes=FAKE_IMAGE_BYTES, image_mime="image/jpeg"
+            )
+
+
+async def test_vision_provider_500_falls_back_to_next_vision_provider(no_real_sleep):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.host)
+        if request.url.host == "gemini.test":
+            return httpx.Response(500, text="upstream error")
+        return openai_compatible_response('{"text": "from openai"}')
+
+    providers = [
+        make_named_provider("gemini", "gemini", "https://gemini.test"),
+        make_named_provider("openai", "openai_compatible", "https://openai.test"),
+    ]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LLMClient(providers=providers, http_client=http)
+        result = await client.complete_json_with_image(
+            "система", "текст", SCHEMA, image_bytes=FAKE_IMAGE_BYTES, image_mime="image/jpeg"
+        )
+
+    assert result == {"text": "from openai"}
+    assert calls.count("gemini.test") == 3  # свои ретраи, потом фоллбэк
+    assert calls.count("openai.test") == 1
