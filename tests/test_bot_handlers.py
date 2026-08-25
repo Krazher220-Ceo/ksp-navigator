@@ -871,7 +871,9 @@ async def test_generate_ktp_task_handler_sends_document_and_notes_entries(isolat
 
     result = await handler(task)
 
-    assert result == {"docx_path": "/tmp/ktp_result.docx", "ktp_entries_inserted": 34}
+    assert result == {"docx_path": "/tmp/ktp_result.docx", "ktp_entries_inserted": 34, "pdf_path": None}
+    # /tmp/ktp_result.docx не существует - PDF-конвертация мягко проваливается
+    # (Р10), .docx уже отправлен и этого достаточно
     assert len(bot.sent_documents) == 1
     assert bot.sent_documents[0]["chat_id"] == 88
     assert "34" in bot.sent_documents[0]["caption"]
@@ -1015,9 +1017,42 @@ async def test_generate_ksp_task_handler_sends_document(isolated_env, monkeypatc
 
     result = await handler(task)
 
-    assert result == {"generated_ksp_id": "gen-xyz", "docx_path": "/tmp/result.docx"}
+    assert result == {"generated_ksp_id": "gen-xyz", "docx_path": "/tmp/result.docx", "pdf_path": None}
+    # /tmp/result.docx не существует - PDF-конвертация мягко проваливается
+    # (Р10), .docx уже отправлен и этого достаточно
     assert len(bot.sent_documents) == 1
     assert bot.sent_documents[0]["chat_id"] == 42
+
+
+async def test_generate_ksp_task_handler_sends_pdf_alongside_docx(isolated_env, monkeypatch):
+    """Р10: настоящая конвертация (не /tmp/result.docx, а реальный файл
+    из фикстур) — PDF должен уйти вторым документом в тот же чат."""
+    real_docx = str(FIXTURES_DIR / "ksp_sample_1_single_table.docx")
+
+    async def fake_generate_and_save_ksp(**kwargs):
+        return {"id": "gen-pdf", "docx_path": real_docx}
+
+    monkeypatch.setattr("bot.handlers.generate_and_save_ksp", fake_generate_and_save_ksp)
+
+    bot = FakeBot()
+    handler = make_generate_ksp_handler(bot)
+    task = {
+        "id": "t2b",
+        "type": "generate_ksp",
+        "telegram_chat_id": 42,
+        "payload": {
+            "teacher_id": 1, "template_id": 1, "topic": "Тема", "razdel": "Раздел",
+            "subject": "физика", "klass": "10А", "duration_minutes": 40, "objective_code": None,
+        },
+    }
+
+    result = await handler(task)
+
+    assert result["pdf_path"] is not None
+    assert result["pdf_path"].endswith(".pdf")
+    assert len(bot.sent_documents) == 2
+    assert bot.sent_documents[1]["chat_id"] == 42
+    assert bot.sent_documents[1]["caption"] == texts.GENERATE_PDF_CAPTION
 
 
 # =====================================================================

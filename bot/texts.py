@@ -193,6 +193,7 @@ GENERATE_TEXTBOOK_OCR_FAILED_NOTE = (
     "черновик собран без опоры на них, только по теме."
 )
 GENERATE_PREVIEW_BUTTON = "👁 Предпросмотр"
+GENERATE_PDF_CAPTION = "То же самое, в PDF — приказ №130 принимает оба формата."
 
 # --- /generate_ktp (Р4.3) ---
 
@@ -229,6 +230,7 @@ GENERATE_KTP_ENTRIES_NOTE = (
     "\n\nЗаодно обновил вашу таблицу тем в базе ({count} уроков) — теперь "
     "код цели при /generate будет подставляться по этому плану."
 )
+GENERATE_KTP_PDF_CAPTION = "То же самое, в PDF."
 
 # --- /status ---
 

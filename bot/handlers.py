@@ -66,6 +66,7 @@ from core.ksp_parser import (
 from core.ktp_generator import generate_and_save_ktp
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMError
+from core.pdf_export import PdfExportError, convert_docx_to_pdf
 from core.queue import MAX_RETRIES, enqueue
 from core.templates import get_template, list_templates, save_user_template
 from core.textbook_ocr import TextbookOCRError, recognize_textbook_page
@@ -1155,6 +1156,26 @@ async def _recognize_textbook_photos(photo_paths: list[str]) -> tuple[str | None
     return "\n\n".join(recognized_parts), False
 
 
+async def _try_send_pdf(bot: Bot, chat_id: int, docx_path: Path, caption: str) -> Path | None:
+    """Конвертирует готовый .docx в .pdf и отправляет вторым файлом
+    (блок Р10 — приказ №130 принимает оба формата). Конвертация через
+    LibreOffice блокирующая — обязательно asyncio.to_thread, иначе
+    заморозим бот на время конвертации (та же ловушка, что уже была у
+    core.ksp_parser.ensure_docx).
+
+    Мягкий отказ: .docx уже отправлен и сам по себе достаточен для
+    сдачи — если LibreOffice недоступен или упал, просто не шлём PDF,
+    не роняя всю генерацию."""
+    try:
+        pdf_path = await asyncio.to_thread(convert_docx_to_pdf, docx_path)
+    except PdfExportError as exc:
+        logger.warning("не удалось собрать PDF для %s: %s", docx_path, exc)
+        return None
+
+    await bot.send_document(chat_id, FSInputFile(pdf_path), caption=caption)
+    return pdf_path
+
+
 def make_generate_ksp_handler(bot: Bot):
     """Полный конвейер генерации (core.ksp_generator.generate_and_save_ksp,
     блок Б6) и отправка готового файла. Любая ошибка (LLM недоступен,
@@ -1209,7 +1230,14 @@ def make_generate_ksp_handler(bot: Bot):
             )
 
         await bot.send_document(chat_id, FSInputFile(docx_path), caption=caption, reply_markup=keyboard)
-        return {"generated_ksp_id": result["id"], "docx_path": str(docx_path)}
+
+        pdf_path = await _try_send_pdf(bot, chat_id, docx_path, texts.GENERATE_PDF_CAPTION)
+
+        return {
+            "generated_ksp_id": result["id"],
+            "docx_path": str(docx_path),
+            "pdf_path": str(pdf_path) if pdf_path else None,
+        }
 
     return handler
 
@@ -1241,6 +1269,13 @@ def make_generate_ktp_handler(bot: Bot):
             caption += texts.GENERATE_KTP_ENTRIES_NOTE.format(count=result["ktp_entries_inserted"])
 
         await bot.send_document(chat_id, FSInputFile(docx_path), caption=caption)
-        return {"docx_path": str(docx_path), "ktp_entries_inserted": result["ktp_entries_inserted"]}
+
+        pdf_path = await _try_send_pdf(bot, chat_id, docx_path, texts.GENERATE_KTP_PDF_CAPTION)
+
+        return {
+            "docx_path": str(docx_path),
+            "ktp_entries_inserted": result["ktp_entries_inserted"],
+            "pdf_path": str(pdf_path) if pdf_path else None,
+        }
 
     return handler
