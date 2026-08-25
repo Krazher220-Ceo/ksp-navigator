@@ -19,6 +19,9 @@ from core.docx_builder import (
     DRAFT_NOTICE_TEXT,
     KRITERII_USPEHA_TITLE,
     MANDATORY_NOTICE_TEXT,
+    MARGIN_CM,
+    PAGE_HEIGHT_CM,
+    PAGE_WIDTH_CM,
     PROVERENO_TEXT,
     RAZDATOCHNYE_MATERIALY_TITLE,
     _FIELD_LABELS,
@@ -547,3 +550,131 @@ def test_document_with_razdatochnye_materialy_renders_all_levels(db_with_builtin
     assert "Решение:" not in advanced_block
     assert KRITERII_USPEHA_TITLE in full_text
     assert "Создана математическая модель для обоих типов ударов" in full_text
+
+
+# --- Р5.1: ценность для интеграции и предварительные знания ---
+
+
+def test_cennost_and_predznaniya_appear_only_when_present(db_with_builtins, tmp_path):
+    official = next(
+        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
+        if t["is_official"] == 1
+    )
+
+    def _full_text(path):
+        # "Ценность для интеграции" и "Предварительные знания" — строки
+        # ТАБЛИЦЫ (Р5.1), не отдельные параграфы: document.paragraphs не
+        # заходит внутрь ячеек таблицы, нужно явно добавлять их текст —
+        # тот же паттерн, что в test_official_form_contains_all_required_fields.
+        doc = Document(str(path))
+        text = "\n".join(p.text for p in doc.paragraphs)
+        text += "\n" + "\n".join(cell.text for table in doc.tables for row in table.rows for cell in row.cells)
+        return text
+
+    without = build_docx(SAMPLE_CONTENT, official, tmp_path / "without.docx")
+    full_text_without = _full_text(tmp_path / "without.docx")
+    assert _FIELD_LABELS["cennost_integracii"] not in full_text_without
+    assert _FIELD_LABELS["predvaritelnye_znaniya"] not in full_text_without
+
+    content = dict(SAMPLE_CONTENT)
+    content["cennost_integracii"] = "Созидание и новаторство"
+    content["predvaritelnye_znaniya"] = "Основы кинематики"
+    with_values = build_docx(content, official, tmp_path / "with.docx")
+    full_text_with = _full_text(tmp_path / "with.docx")
+    assert "Созидание и новаторство" in full_text_with
+    assert "Основы кинематики" in full_text_with
+
+
+# --- Р5.3: колонка "Дифференциация/ООП" и альбомная ориентация ---
+
+
+def test_oop_column_appears_only_when_flag_set(db_with_builtins, tmp_path):
+    official = next(
+        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
+        if t["is_official"] == 1
+    )
+
+    without = build_docx(SAMPLE_CONTENT, official, tmp_path / "no_oop.docx")
+    header_row_without = next(
+        r for r in Document(str(without)).tables[0].rows if r.cells[0].text.startswith("Этап")
+    )
+    assert "Дифференциация/ООП" not in [c.text for c in header_row_without.cells]
+
+    content = dict(SAMPLE_CONTENT)
+    content["ima_oop"] = True
+    content["hod_uroka"] = [
+        {**row, "differenciaciya_oop": "Карточка с укрупнённым шрифтом"} for row in SAMPLE_CONTENT["hod_uroka"]
+    ]
+    with_oop = build_docx(content, official, tmp_path / "with_oop.docx")
+    table = Document(str(with_oop)).tables[0]
+    header_row = next(r for r in table.rows if r.cells[0].text.startswith("Этап"))
+    header_texts = [c.text for c in header_row.cells]
+    assert "Дифференциация/ООП" in header_texts
+    assert len(header_texts) == 6  # было 5 официальных колонок, теперь 6
+
+    full_text = "\n".join(c.text for row in table.rows for c in row.cells)
+    assert "Карточка с укрупнённым шрифтом" in full_text
+
+
+def test_six_columns_widths_sum_to_table_width_in_book_orientation(db_with_builtins, tmp_path):
+    """Р5.3, явная ловушка из плана: колонка ООП увеличивает таблицу до
+    шести колонок — ширины обязаны пересчитаться и уложиться в печатную
+    область A4, не уехать за поля."""
+    official = next(
+        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
+        if t["is_official"] == 1
+    )
+    content = dict(SAMPLE_CONTENT)
+    content["ima_oop"] = True
+    out_path = tmp_path / "oop_book.docx"
+    build_docx(content, official, out_path)
+
+    document = Document(str(out_path))
+    table = document.tables[0]
+    header_row = next(r for r in table.rows if r.cells[0].text.startswith("Этап"))
+    tcs = header_row._tr.findall(f".//{W_NS}tc")
+    assert len(tcs) == 6
+
+    section = document.sections[0]
+    expected_table_width_cm = (section.page_width.cm) - 2 * MARGIN_CM
+    # w:tcW хранит ширину в "dxa" (твипы, 1/20 пункта), не в EMU — проверено
+    # напрямую на реальном .docx перед тем, как доверять числу в тесте.
+    # 1 см = 1440 твипов / 2.54 = 566.929... твипов.
+    DXA_PER_CM = 1440 / 2.54
+    total_width_cm = sum(
+        int(tc.find(f"{W_NS}tcPr/{W_NS}tcW").get(f"{W_NS}w")) / DXA_PER_CM
+        for tc in tcs
+    )
+    assert abs(total_width_cm - expected_table_width_cm) < 0.05  # округления, не расхождение по сути
+
+
+def test_album_orientation_swaps_page_dimensions_and_widens_table(db_with_builtins, tmp_path):
+    official = next(
+        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
+        if t["is_official"] == 1
+    )
+    content = dict(SAMPLE_CONTENT)
+    content["page_orientation"] = "album"
+    out_path = tmp_path / "album.docx"
+    build_docx(content, official, out_path)
+
+    document = Document(str(out_path))
+    section = document.sections[0]
+    # альбомная — ширина страницы больше высоты (было наоборот в книжной)
+    assert section.page_width.cm > section.page_height.cm
+    assert round(section.page_width.cm, 1) == round(PAGE_HEIGHT_CM, 1)
+    assert round(section.page_height.cm, 1) == round(PAGE_WIDTH_CM, 1)
+
+
+def test_book_orientation_is_default_when_not_specified(db_with_builtins, tmp_path):
+    official = next(
+        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
+        if t["is_official"] == 1
+    )
+    out_path = tmp_path / "default_orientation.docx"
+    build_docx(SAMPLE_CONTENT, official, out_path)  # без page_orientation в content
+
+    document = Document(str(out_path))
+    section = document.sections[0]
+    assert round(section.page_width.cm, 1) == round(PAGE_WIDTH_CM, 1)
+    assert round(section.page_height.cm, 1) == round(PAGE_HEIGHT_CM, 1)

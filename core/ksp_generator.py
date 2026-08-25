@@ -19,6 +19,7 @@ core/ksp_generator.py — генератор КСП: тема + код цели 
 import json
 import re
 import uuid
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 
@@ -27,6 +28,62 @@ from core.db import execute, query
 from core.docx_builder import build_docx, build_filename
 from core.llm_client import LLMClient
 from core.templates import get_template
+from core.values import get_value
+
+# =====================================================================
+# Р5.2/Р5.3 — необязательные опции урока сверх обязательного минимума
+# Б6.1. Одним объектом, а не россыпью параметров у каждой функции: их
+# много (7+), логически это одна группа настроек "что ещё учесть", и
+# добавлять их по одной как позиционные/именованные параметры build_prompt/
+# generate_ksp/generate_and_save_ksp сделало бы сигнатуры нечитаемыми.
+# =====================================================================
+
+WORK_FORMS = [
+    "Самостоятельная работа",
+    "Парная работа",
+    "Групповая работа",
+    "Проектная деятельность",
+    "Лабораторная работа",
+    "Практическая работа",
+]
+FUNCTIONAL_LITERACY_TYPES = [
+    "Математическая грамотность",
+    "Грамотность чтения",
+    "Естественно-научная грамотность",
+    "Финансовая грамотность",
+    "Креативное мышление",
+]
+MAX_VIDY_DEYATELNOSTI = 3
+
+TIP_UROKA_OPTIONS = [
+    "Комбинированный урок",
+    "Изучение нового материала",
+    "Закрепление",
+    "Контроль",
+]
+
+
+@dataclass
+class LessonOptions:
+    """Необязательные опции урока (Р5.2, Р5.3). Все поля по умолчанию
+    "выключены" — учитель, который не заполнял расширенную часть формы,
+    получает ровно тот же результат, что и до блока Р5."""
+
+    cennost_key: str | None = None  # ключ из core.values.VALUES
+    vidy_deyatelnosti: list[str] = field(default_factory=list)  # до MAX_VIDY_DEYATELNOSTI
+    ima_oop: bool = False
+    sor_instead_of_reflection: bool = False
+    fizkultminutka: bool = False
+    predvaritelnye_znaniya: str | None = None
+    tip_uroka: str | None = None
+    mezhpredmetnye_svyazi: list[str] = field(default_factory=list)
+    page_orientation: str = "book"  # "book" | "album" — влияет только на docx_builder, не на промпт
+
+    def __post_init__(self) -> None:
+        # Р5.2, ловушка из плана: "до трёх" — ограничение, не пожелание.
+        # Отсекаем здесь, а не полагаемся, что вызывающий код проверит сам.
+        if len(self.vidy_deyatelnosti) > MAX_VIDY_DEYATELNOSTI:
+            self.vidy_deyatelnosti = self.vidy_deyatelnosti[:MAX_VIDY_DEYATELNOSTI]
 
 # =====================================================================
 # Тексты промптов — строго по MASTER.md, раздел 1.6. Ничего из этого
@@ -77,6 +134,10 @@ TASK_DURATION_LABEL = "Продолжительность:"
 EXTRA_COLUMN_LABELS = {
     "domashnee_zadanie": "домашнее задание",
     "dop_literatura": "дополнительная литература",
+    # Р5.3: не от шаблона, а от флага "ima_oop" (LessonOptions) — тот же
+    # механизм подсказки модели переиспользован для генерационного флага,
+    # не только для колонок, зашитых в конкретный шаблон (см. build_prompt).
+    "differenciaciya_oop": "дифференциация/адаптация для обучающихся с ООП",
 }
 TASK_EXTRA_COLUMNS_LABEL = (
     "Выбранный шаблон дополнительно требует заполнить в каждом этапе урока:"
@@ -97,6 +158,70 @@ TASK_RAZDATOCHNYE_MATERIALY_INSTRUCTION = (
     "тогда оставь его пустым, не выдумывай). Плюс отдельно — 2-4 общих "
     "критерия успеха урока."
 )
+
+# Р5.1: ценность для интеграции — имя ценности мы уже знаем сама (core.
+# values), модель НЕ должна её придумывать или переформулировать; задача
+# модели — вплести её реально в ход урока, не просто упомянуть в шапке.
+TASK_CENNOST_LABEL = "Ценность для интеграции в урок (обязательно отрази в ходе урока, не только формально):"
+
+# Р5.2: виды учебной деятельности — до MAX_VIDY_DEYATELNOSTI, отсекается
+# на входе (LessonOptions.__post_init__), здесь только рендер того, что
+# уже прошло проверку.
+TASK_VIDY_DEYATELNOSTI_LABEL = "Виды учебной деятельности, которые нужно заложить в урок:"
+
+# Р5.3: флаги урока — каждый включается независимо, текст добавляется в
+# промпт только если флаг реально включён (иначе промпт не меняется
+# вообще для учителя, который не трогал расширенную форму).
+TASK_OOP_INSTRUCTION = (
+    "В классе есть обучающиеся с особыми образовательными потребностями — "
+    "для каждого этапа урока заполни поле 'differenciaciya_oop': конкретная "
+    "адаптация именно этого этапа (не общая фраза)."
+)
+TASK_SOR_INSTRUCTION = (
+    "Вместо отдельных этапов закрепления и рефлексии сделай один "
+    "заключительный этап с названием, начинающимся на 'СОР' (суммативное "
+    "оценивание раздела) — он завершает урок, отдельной рефлексии после "
+    "него быть не должно."
+)
+TASK_FIZKULTMINUTKA_INSTRUCTION = (
+    "Добавь короткий этап физкультминутки где-то в середине урока (не "
+    "первым и не последним этапом)."
+)
+TASK_TIP_UROKA_LABEL = "Тип урока:"
+TASK_MEZHPREDMETNYE_SVYAZI_LABEL = "Учти межпредметные связи с предметами:"
+
+
+def _render_lesson_options(options: "LessonOptions | None") -> str:
+    """Рендерит инструкции по опциям Р5.2/Р5.3 в промпт. Пустая строка,
+    если опций нет вообще — учитель, не трогавший расширенную форму, не
+    должен получать другой промпт (Р5: "не превращать диалог в анкету")."""
+    if options is None:
+        return ""
+
+    lines: list[str] = []
+
+    cennost = get_value(options.cennost_key) if options.cennost_key else None
+    if cennost:
+        lines.append(f"{TASK_CENNOST_LABEL} {cennost['name']} — {cennost['goal']}.")
+
+    if options.vidy_deyatelnosti:
+        lines.append(f"{TASK_VIDY_DEYATELNOSTI_LABEL} {', '.join(options.vidy_deyatelnosti)}.")
+
+    if options.tip_uroka:
+        lines.append(f"{TASK_TIP_UROKA_LABEL} {options.tip_uroka}")
+
+    if options.mezhpredmetnye_svyazi:
+        lines.append(f"{TASK_MEZHPREDMETNYE_SVYAZI_LABEL} {', '.join(options.mezhpredmetnye_svyazi)}.")
+
+    if options.ima_oop:
+        lines.append(TASK_OOP_INSTRUCTION)
+    if options.sor_instead_of_reflection:
+        lines.append(TASK_SOR_INSTRUCTION)
+    if options.fizkultminutka:
+        lines.append(TASK_FIZKULTMINUTKA_INSTRUCTION)
+
+    return "\n".join(lines)
+
 
 RAZDATOCHNYE_MATERIALY_RESPONSE_PROPERTIES = {
     "razdatochnye_materialy": {
@@ -180,6 +305,13 @@ KSP_RESPONSE_SCHEMA = {
                     # пустыми при любой генерации.
                     "domashnee_zadanie": {"type": "string"},
                     "dop_literatura": {"type": "string"},
+                    "differenciaciya_oop": {
+                        "type": "string",
+                        "description": (
+                            "Как адаптировано для обучающихся с особыми "
+                            "образовательными потребностями на этом этапе."
+                        ),
+                    },
                 },
                 "required": [
                     "etap",
@@ -340,6 +472,7 @@ def build_prompt(
     db_path=None,
     extra_columns: list[str] | None = None,
     include_razdatochnye_materialy: bool = False,
+    options: "LessonOptions | None" = None,
 ) -> str:
     """КОНТЕКСТ (если есть профиль стиля) + ЗАДАЧА — ровно те два блока
     промпта из MASTER.md, раздел 1.6. Схема ответа сюда не встраивается
@@ -348,7 +481,10 @@ def build_prompt(
 
     include_razdatochnye_materialy — Р3.1: учитель попросил разноуровневые
     карточки-раздатки. По умолчанию False — большинство запросов их не
-    просят, и лишняя инструкция в промпте не нужна."""
+    просят, и лишняя инструкция в промпте не нужна.
+
+    options — Р5.2/Р5.3: необязательные опции урока (LessonOptions).
+    None или пустой LessonOptions() не меняют промпт вообще."""
     objective_description = (
         _fetch_objective_description(objective_code, db_path=db_path) if objective_code else None
     )
@@ -370,6 +506,11 @@ def build_prompt(
     )
     if include_razdatochnye_materialy:
         parts.append(TASK_RAZDATOCHNYE_MATERIALY_INSTRUCTION)
+
+    options_text = _render_lesson_options(options)
+    if options_text:
+        parts.append(options_text)
+
     return "\n\n".join(parts)
 
 
@@ -563,6 +704,7 @@ async def generate_ksp(
     db_path=None,
     extra_columns: list[str] | None = None,
     include_razdatochnye_materialy: bool = False,
+    options: "LessonOptions | None" = None,
 ) -> dict:
     """Генерирует и валидирует JSON-содержимое КСП (без сборки .docx —
     это отдельно, save_generated_ksp). Профиль стиля учителя (если
@@ -573,7 +715,7 @@ async def generate_ksp(
     конкретных проблем; если и он не проходит — KSPValidationError.
     Недостающие поля никогда не дописываются заглушками (Б6.2).
 
-    include_razdatochnye_materialy — Р3.1, см. build_prompt."""
+    include_razdatochnye_materialy — Р3.1, options — Р5.2/Р5.3, см. build_prompt."""
     style_profile = _fetch_style_profile(teacher_id, db_path=db_path)
     prompt = build_prompt(
         topic,
@@ -585,6 +727,7 @@ async def generate_ksp(
         db_path=db_path,
         extra_columns=extra_columns,
         include_razdatochnye_materialy=include_razdatochnye_materialy,
+        options=options,
     )
     schema = _build_response_schema(include_razdatochnye_materialy)
 
@@ -617,6 +760,7 @@ def _fill_header_fields(
     klass: str,
     generated_at: date,
     db_path=None,
+    options: "LessonOptions | None" = None,
 ) -> dict:
     """Дописывает в content поля шапки формы №130, которые LLM не
     возвращает и вернуть не может: их неоткуда взять из темы урока, они
@@ -634,6 +778,12 @@ def _fill_header_fields(
 
     Уже заполненные значения не перетираются: если content почему-то
     пришёл с этими полями, приоритет у него.
+
+    options (Р5.1/Р5.3) — cennost_integracii/predvaritelnye_znaniya/
+    page_orientation/ima_oop здесь же: их значения система знает сама
+    (учитель выбрал ценность из справочника, вписал текст, выбрал
+    ориентацию) — модель их не генерирует и не должна, это не то же
+    самое, что "недостающие данные" из ловушки Б6.2 выше.
     """
     filled = dict(content)
 
@@ -655,6 +805,18 @@ def _fill_header_fields(
         if teacher_name:
             filled["fio_pedagoga"] = teacher_name
 
+    if options is not None:
+        if options.cennost_key:
+            value = get_value(options.cennost_key)
+            if value:
+                filled["cennost_integracii"] = value["name"]
+        if options.predvaritelnye_znaniya:
+            filled["predvaritelnye_znaniya"] = options.predvaritelnye_znaniya
+        if options.page_orientation == "album":
+            filled["page_orientation"] = "album"
+        if options.ima_oop:
+            filled["ima_oop"] = True
+
     return filled
 
 
@@ -669,6 +831,7 @@ def save_generated_ksp(
     generated_at: date | None = None,
     db_path=None,
     output_dir: Path | str | None = None,
+    options: "LessonOptions | None" = None,
 ) -> dict:
     """Б6.4: строит .docx (core.docx_builder, блок Б5) в output_dir
     (по умолчанию settings.generated_dir) и сохраняет строку в
@@ -682,9 +845,11 @@ def save_generated_ksp(
     ответе модели (_fill_header_fields) — иначе ФИО педагога, дата и
     класс в готовом документе остаются пустыми. В content_json пишется
     тот же дополненный словарь, что ушёл в файл, чтобы предпросмотр в
-    Mini App показывал ровно то же, что лежит в .docx."""
+    Mini App показывал ровно то же, что лежит в .docx.
+
+    options — Р5.1/Р5.3, см. _fill_header_fields."""
     generated_at = generated_at or datetime.now().date()
-    content = _fill_header_fields(content, teacher_id, klass, generated_at, db_path=db_path)
+    content = _fill_header_fields(content, teacher_id, klass, generated_at, db_path=db_path, options=options)
 
     filename = build_filename(subject, klass, content.get("tema_uroka", ""), generated_at)
     out_path = Path(output_dir or settings.generated_dir) / filename
@@ -731,13 +896,15 @@ async def generate_and_save_ksp(
     db_path=None,
     output_dir: Path | str | None = None,
     include_razdatochnye_materialy: bool = False,
+    options: "LessonOptions | None" = None,
 ) -> dict:
     """Полный конвейер: промпт -> LLM -> валидация -> .docx -> запись в
     generated_ksp. Удобный вызов для bot/handlers.py (блок Б8); тесты
     и другой код могут пользоваться generate_ksp/save_generated_ksp
     по отдельности.
 
-    include_razdatochnye_materialy — Р3.1, см. build_prompt."""
+    include_razdatochnye_materialy — Р3.1, options — Р5.1/Р5.2/Р5.3,
+    см. build_prompt / _fill_header_fields."""
     template = get_template(template_id, db_path=db_path)
     if template is None:
         raise KSPGenerationError(f"шаблон с id={template_id} не найден")
@@ -753,6 +920,7 @@ async def generate_and_save_ksp(
         db_path=db_path,
         extra_columns=_extra_columns_of_template(template),
         include_razdatochnye_materialy=include_razdatochnye_materialy,
+        options=options,
     )
 
     return save_generated_ksp(
@@ -764,5 +932,6 @@ async def generate_and_save_ksp(
         klass,
         output_dir=output_dir,
         ktp_entry_id=ktp_entry_id,
+        options=options,
         db_path=db_path,
     )

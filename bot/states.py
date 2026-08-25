@@ -37,6 +37,7 @@ class Generate(StatesGroup):
     waiting_for_razdel = State()
     waiting_for_klass = State()
     waiting_for_duration = State()
+    waiting_for_extra_options = State()  # Р5.2/Р5.3, необязательный шаг
     waiting_for_template = State()
     waiting_for_confirmation = State()
 

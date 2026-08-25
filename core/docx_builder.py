@@ -76,6 +76,9 @@ _FIELD_LABELS = {
     "celi_obucheniya": "Цели обучения в соответствии с учебной программой:",
     "celi_uroka": "Цели урока:",
     "chasy": "Часы:",
+    # Р5.1/Р5.3 — не часть официальной формы, content-driven (см. build_docx).
+    "cennost_integracii": "Ценность для интеграции:",
+    "predvaritelnye_znaniya": "Предварительные знания:",
 }
 
 _COLUMN_LABELS = {
@@ -87,6 +90,7 @@ _COLUMN_LABELS = {
     "resursy": "Ресурсы",
     "domashnee_zadanie": "Домашнее задание",
     "dop_literatura": "Доп. литература",
+    "differenciaciya_oop": "Дифференциация/ООП",
 }
 
 # Относительный вес ширины колонки таблицы "Ход урока" — "действия" вдвое
@@ -100,6 +104,7 @@ _COLUMN_WEIGHTS = {
     "ocenivanie": 1.0,
     "domashnee_zadanie": 1.2,
     "dop_literatura": 1.0,
+    "differenciaciya_oop": 1.3,
 }
 _DEFAULT_COLUMN_WEIGHT = 1.0
 
@@ -124,11 +129,24 @@ _SHAPKA_KLASS_GROUP = ["klass", "prisutstvuet", "otsutstvuet"]
 # --- оформление страницы (Б5.1) ---
 
 
-def _apply_page_setup(document: Document) -> None:
-    """A4, поля 2 см, Times New Roman 12 — требование Б5.1."""
+def _apply_page_setup(document: Document, orientation: str = "book") -> tuple[float, float]:
+    """A4, поля 2 см, Times New Roman 12 — требование Б5.1.
+
+    orientation — "book" (портрет, по умолчанию) или "album" (альбомная,
+    Р5.3): нужна как разрядка для широких таблиц — например, с добавленной
+    колонкой "Дифференциация/ООП" (Р5.3, 6 колонок вместо 5). Возвращает
+    (page_width_cm, page_height_cm) — фактические размеры, чтобы вызывающий
+    код (build_docx) пересчитал ширину таблицы под них, а не полагался на
+    константу, посчитанную один раз для портретной ориентации."""
+    width_cm, height_cm = (PAGE_HEIGHT_CM, PAGE_WIDTH_CM) if orientation == "album" else (PAGE_WIDTH_CM, PAGE_HEIGHT_CM)
+
     section = document.sections[0]
-    section.page_width = Cm(PAGE_WIDTH_CM)
-    section.page_height = Cm(PAGE_HEIGHT_CM)
+    if orientation == "album":
+        from docx.enum.section import WD_ORIENT
+
+        section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width = Cm(width_cm)
+    section.page_height = Cm(height_cm)
     section.left_margin = Cm(MARGIN_CM)
     section.right_margin = Cm(MARGIN_CM)
     section.top_margin = Cm(MARGIN_CM)
@@ -137,6 +155,8 @@ def _apply_page_setup(document: Document) -> None:
     normal_style = document.styles["Normal"]
     normal_style.font.name = "Times New Roman"
     normal_style.font.size = Pt(12)
+
+    return width_cm, height_cm
 
 
 def _add_draft_notice(document: Document) -> None:
@@ -196,11 +216,11 @@ def _column_widths(columns: list[str], total_width_cm: float) -> list[Cm]:
     return [Cm(total_width_cm * w / weight_sum) for w in weights]
 
 
-def _build_table(document: Document, columns: list[str]) -> tuple[Table, list[Cm]]:
+def _build_table(document: Document, columns: list[str], table_width_cm: float) -> tuple[Table, list[Cm]]:
     table = document.add_table(rows=0, cols=len(columns))
     table.style = "Table Grid"
     table.autofit = False
-    widths = _column_widths(columns, TABLE_WIDTH_CM)
+    widths = _column_widths(columns, table_width_cm)
     for i, width in enumerate(widths):
         table.columns[i].width = width
     return table, widths
@@ -364,8 +384,15 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
         structure = json.loads(structure)
     blocks = {block["key"]: block for block in structure.get("blocks", [])}
 
+    # Р5.3: альбомная ориентация — content-driven, тот же принцип, что и
+    # cennost_integracii/predvaritelnye_znaniya выше: учитель выбирает при
+    # генерации, не шаблон. Особенно полезна с колонкой ООП (ниже) — 6
+    # колонок в портретной ориентации получаются слишком узкими.
+    orientation = "album" if content.get("page_orientation") == "album" else "book"
+
     document = Document()
-    _apply_page_setup(document)
+    page_width_cm, _ = _apply_page_setup(document, orientation=orientation)
+    table_width_cm = page_width_cm - 2 * MARGIN_CM
     _add_draft_notice(document)  # F7 — первая строка документа, всегда
 
     shapka_fields = blocks.get("shapka", {}).get("fields", [])
@@ -373,8 +400,15 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
         _add_provereno_line(document)
     tema_fields = blocks.get("tema", {}).get("fields", [])
     celi_fields = blocks.get("celi", {}).get("fields", [])
-    hod_uroka_columns = blocks.get("hod_uroka", {}).get("columns") or list(_CANONICAL_HOD_UROKA_COLUMNS)
+    hod_uroka_columns = list(blocks.get("hod_uroka", {}).get("columns") or _CANONICAL_HOD_UROKA_COLUMNS)
     primechanie_fields = blocks.get("primechanie", {}).get("fields", [])
+
+    # Р5.3: колонка "Дифференциация/ООП" — не часть шаблона (учитель
+    # решает при каждой генерации, не раз навсегда для всех документов
+    # по этому шаблону), поэтому добавляется здесь, а не в structure_json.
+    # Копия списка выше (list(...)) — не трогаем сам объект шаблона.
+    if content.get("ima_oop") and "differenciaciya_oop" not in hod_uroka_columns:
+        hod_uroka_columns.append("differenciaciya_oop")
 
     if "organizaciya" in shapka_fields:
         _add_underline_field(
@@ -386,7 +420,7 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
     if "tema_uroka" in tema_fields:
         _add_underline_field(document, content.get("tema_uroka", ""), "(тема урока)")
 
-    table, widths = _build_table(document, hod_uroka_columns)
+    table, widths = _build_table(document, hod_uroka_columns, table_width_cm)
 
     for field in _SHAPKA_STANDALONE_ORDER:
         if field in shapka_fields:
@@ -410,6 +444,20 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
     for field in ("celi_obucheniya", "celi_uroka"):
         if field in celi_fields:
             _add_label_value_row(table, _FIELD_LABELS[field], content.get(field, ""))
+
+    # Р5.1: ценность для интеграции — не часть официальной формы (не
+    # гейтится полем шаблона, как shapka_fields выше), появляется в любом
+    # шаблоне ровно тогда, когда учитель её реально выбрал — тем же
+    # принципом, что и раздаточные материалы (Р3.2): решает content, не
+    # structure_json.
+    cennost_name = content.get("cennost_integracii")
+    if cennost_name:
+        _add_label_value_row(table, _FIELD_LABELS["cennost_integracii"], cennost_name)
+
+    # Р5.3: предварительные знания — тоже content-driven, тот же принцип.
+    predvaritelnye = content.get("predvaritelnye_znaniya")
+    if predvaritelnye:
+        _add_label_value_row(table, _FIELD_LABELS["predvaritelnye_znaniya"], predvaritelnye)
 
     _add_hod_uroka_section(table, hod_uroka_columns, widths, content.get("hod_uroka", []))
 

@@ -18,9 +18,12 @@ from docx import Document
 
 from core.db import execute, init_db, query
 from core.ksp_generator import (
+    MAX_VIDY_DEYATELNOSTI,
     KSPGenerationError,
     KSPValidationError,
+    LessonOptions,
     _extract_minutes,
+    _fill_header_fields,
     _validate_ksp_content,
     build_prompt,
     generate_and_save_ksp,
@@ -175,6 +178,90 @@ def test_build_prompt_empty_style_profile_is_treated_as_no_profile():
     }
     prompt = build_prompt("Тема", "Раздел", None, "10А", DURATION, style_profile=empty_profile)
     assert "КОНТЕКСТ" not in prompt
+
+
+# --- Р5.1/Р5.2/Р5.3: LessonOptions ---
+
+
+def test_lesson_options_truncates_vidy_deyatelnosti_to_max():
+    """Р5.2, ловушка из плана: 'до трёх' — ограничение, не пожелание."""
+    options = LessonOptions(vidy_deyatelnosti=["А", "Б", "В", "Г", "Д"])
+    assert len(options.vidy_deyatelnosti) == MAX_VIDY_DEYATELNOSTI
+    assert options.vidy_deyatelnosti == ["А", "Б", "В"]
+
+
+def test_lesson_options_defaults_do_not_change_prompt():
+    """Учитель, не тронувший расширенную форму, получает тот же промпт,
+    что и до блока Р5 — LessonOptions() "по умолчанию" ничего не добавляет."""
+    without = build_prompt("Тема", "Раздел", None, "10А", DURATION)
+    with_default_options = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=LessonOptions())
+    assert without == with_default_options
+
+
+def test_prompt_includes_cennost_name_and_goal_when_chosen():
+    options = LessonOptions(cennost_key="sozidaniye_novatorstvo")
+    prompt = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=options)
+    assert "Созидание и новаторство" in prompt
+    assert "инновационное мышление" in prompt.lower()
+
+
+def test_prompt_ignores_unknown_cennost_key():
+    options = LessonOptions(cennost_key="несуществующий_ключ")
+    prompt = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=options)
+    without = build_prompt("Тема", "Раздел", None, "10А", DURATION)
+    assert prompt == without  # неизвестный ключ тихо игнорируется, не ломает промпт
+
+
+def test_prompt_includes_vidy_deyatelnosti():
+    options = LessonOptions(vidy_deyatelnosti=["Групповая работа", "Финансовая грамотность"])
+    prompt = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=options)
+    assert "Групповая работа" in prompt
+    assert "Финансовая грамотность" in prompt
+
+
+def test_prompt_includes_oop_instruction_only_when_flag_set():
+    with_oop = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=LessonOptions(ima_oop=True))
+    without_oop = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=LessonOptions(ima_oop=False))
+    assert "differenciaciya_oop" in with_oop
+    assert "differenciaciya_oop" not in without_oop
+
+
+def test_prompt_includes_sor_instruction_only_when_flag_set():
+    prompt = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=LessonOptions(sor_instead_of_reflection=True))
+    assert "СОР" in prompt
+
+
+def test_prompt_includes_fizkultminutka_instruction_only_when_flag_set():
+    prompt = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=LessonOptions(fizkultminutka=True))
+    assert "физкультминутк" in prompt.lower()
+
+
+def test_prompt_includes_tip_uroka_and_mezhpredmetnye_svyazi():
+    options = LessonOptions(tip_uroka="Контроль", mezhpredmetnye_svyazi=["информатика", "математика"])
+    prompt = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=options)
+    assert "Контроль" in prompt
+    assert "информатика" in prompt
+    assert "математика" in prompt
+
+
+def test_fill_header_fields_stamps_cennost_predznaniya_orientation_oop():
+    options = LessonOptions(
+        cennost_key="edinstvo_solidarnost",
+        predvaritelnye_znaniya="Основы кинематики",
+        page_orientation="album",
+        ima_oop=True,
+    )
+    filled = _fill_header_fields({}, teacher_id=1, klass="10А", generated_at="2026-09-01", options=options)
+    assert filled["cennost_integracii"] == "Единство и солидарность"
+    assert filled["predvaritelnye_znaniya"] == "Основы кинематики"
+    assert filled["page_orientation"] == "album"
+    assert filled["ima_oop"] is True
+
+
+def test_fill_header_fields_without_options_does_not_add_new_keys():
+    filled = _fill_header_fields({}, teacher_id=1, klass="10А", generated_at="2026-09-01")
+    for key in ("cennost_integracii", "predvaritelnye_znaniya", "page_orientation", "ima_oop"):
+        assert key not in filled
 
 
 # --- Б6.2: валидация ---

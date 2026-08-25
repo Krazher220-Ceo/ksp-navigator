@@ -46,6 +46,7 @@ from bot.main import _global_error_handler
 from bot.states import Generate, TeacherProfile
 from core import ksp_generator as ksp_generator_module
 from core.config import settings
+from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
 from core.db import execute, init_db, query
 from core.templates import load_builtin_templates
 
@@ -471,6 +472,11 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
     await generate_razdel_received(FakeMessage(text="Механика"), state)
     await generate_klass_received(FakeMessage(text="10А"), state)
     await generate_duration_received(FakeMessage(text="40"), state)
+    assert await state.get_state() == Generate.waiting_for_extra_options.state
+
+    from bot.handlers import generate_extra_options_received
+
+    await generate_extra_options_received(FakeMessage(text="-"), state)  # пропущено, Р5
     assert await state.get_state() == Generate.waiting_for_template.state
 
     template_id = query("SELECT id FROM templates WHERE is_builtin = 1")[0]["id"]
@@ -496,6 +502,22 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
         "klass": "10А",
         "duration_minutes": 40,
         "objective_code": None,
+        # "-" на шаге доп. настроек -> LessonOptions() со значениями по
+        # умолчанию, не None — функционально то же самое (все проверки в
+        # _render_lesson_options/_fill_header_fields одинаково пропускают
+        # и None, и объект с пустыми полями), но по факту в payload лежит
+        # словарь, а не null.
+        "options": {
+            "cennost_key": None,
+            "vidy_deyatelnosti": [],
+            "ima_oop": False,
+            "sor_instead_of_reflection": False,
+            "fizkultminutka": False,
+            "predvaritelnye_znaniya": None,
+            "tip_uroka": None,
+            "mezhpredmetnye_svyazi": [],
+            "page_orientation": "book",
+        },
     }
     assert await state.get_state() is None
 
@@ -559,6 +581,128 @@ async def test_generate_ktp_dash_means_no_topics(isolated_env):
     data = await state.get_data()
     assert data["topics"] == []
     assert "составлю сам" in message.sent[-1]["text"]
+
+
+# =====================================================================
+# Р5.2/Р5.3: разбор строк доп. настроек и их применение в /generate
+# =====================================================================
+
+
+def test_parse_lesson_options_text_recognizes_all_keys():
+    from bot.handlers import _parse_lesson_options_text
+
+    text = "\n".join(
+        [
+            "Ценность: Созидание и новаторство",
+            "Виды деятельности: групповая работа, финансовая грамотность",
+            "ООП: да",
+            "СОР: да",
+            "Физкультминутка: да",
+            "Предварительные знания: основы кинематики",
+            "Тип урока: Контроль",
+            "Межпредметные связи: информатика, математика",
+            "Ориентация: альбомная",
+        ]
+    )
+    options, unrecognized = _parse_lesson_options_text(text)
+
+    assert unrecognized == []
+    assert options.cennost_key == "sozidaniye_novatorstvo"
+    assert options.vidy_deyatelnosti == ["групповая работа", "финансовая грамотность"]
+    assert options.ima_oop is True
+    assert options.sor_instead_of_reflection is True
+    assert options.fizkultminutka is True
+    assert options.predvaritelnye_znaniya == "основы кинематики"
+    assert options.tip_uroka == "Контроль"
+    assert options.mezhpredmetnye_svyazi == ["информатика", "математика"]
+    assert options.page_orientation == "album"
+
+
+def test_parse_lesson_options_text_case_insensitive_keys_and_values():
+    from bot.handlers import _parse_lesson_options_text
+
+    options, unrecognized = _parse_lesson_options_text("ооп: ДА\nориентация: Альбомная")
+    assert unrecognized == []
+    assert options.ima_oop is True
+    assert options.page_orientation == "album"
+
+
+def test_parse_lesson_options_text_flags_unknown_lines_honestly():
+    from bot.handlers import _parse_lesson_options_text
+
+    options, unrecognized = _parse_lesson_options_text("Погода: солнечно\nООП: да")
+    assert options.ima_oop is True
+    assert unrecognized == ["Погода: солнечно"]
+
+
+def test_parse_lesson_options_text_flags_unknown_value_name():
+    """Неизвестное название ценности — тоже честная ошибка, не молчаливое
+    игнорирование и не выдуманный ключ."""
+    from bot.handlers import _parse_lesson_options_text
+
+    options, unrecognized = _parse_lesson_options_text("Ценность: Выдуманная ценность")
+    assert options.cennost_key is None
+    assert unrecognized == ["Ценность: Выдуманная ценность"]
+
+
+def test_parse_lesson_options_text_truncates_vidy_deyatelnosti_to_three():
+    from bot.handlers import _parse_lesson_options_text
+
+    options, _ = _parse_lesson_options_text("Виды деятельности: А, Б, В, Г, Д")
+    assert len(options.vidy_deyatelnosti) == MAX_VIDY_DEYATELNOSTI
+    assert options.vidy_deyatelnosti == ["А", "Б", "В"]
+
+
+async def test_generate_extra_options_dash_skips_and_moves_to_template_step(isolated_env):
+    from bot.handlers import generate_extra_options_received
+
+    _create_teacher(1)
+    state = _state()
+    await state.update_data(teacher_id=1, topic="Т", razdel="Р", klass="10А", duration_minutes=40)
+    await state.set_state(Generate.waiting_for_extra_options)
+
+    await generate_extra_options_received(FakeMessage(text="-"), state)
+
+    data = await state.get_data()
+    assert data["options"]["cennost_key"] is None
+    assert await state.get_state() == Generate.waiting_for_template.state
+
+
+async def test_generate_extra_options_applied_reach_confirmation_summary(isolated_env):
+    from bot.handlers import generate_extra_options_received
+
+    _create_teacher(1)
+    state = _state()
+    template_id = query("SELECT id FROM templates WHERE is_builtin = 1")[0]["id"]
+    await state.update_data(
+        teacher_id=1, topic="Т", razdel="Р", klass="10А", duration_minutes=40, template_id=template_id
+    )
+    await state.set_state(Generate.waiting_for_extra_options)
+
+    message = FakeMessage(text="Ценность: Единство и солидарность\nООП: да")
+    await generate_extra_options_received(message, state)
+
+    assert await state.get_state() == Generate.waiting_for_confirmation.state
+    summary_text = message.sent[-1]["text"]
+    assert "Единство и солидарность" in summary_text
+    assert "ООП" in summary_text
+
+
+async def test_generate_extra_options_unrecognized_line_warns_but_continues(isolated_env):
+    from bot.handlers import generate_extra_options_received
+
+    _create_teacher(1)
+    state = _state()
+    await state.update_data(teacher_id=1, topic="Т", razdel="Р", klass="10А", duration_minutes=40)
+    await state.set_state(Generate.waiting_for_extra_options)
+
+    message = FakeMessage(text="Чепуха: ерунда\nООП: да")
+    await generate_extra_options_received(message, state)
+
+    warning = message.sent[0]["text"]
+    assert "Чепуха" in warning
+    data = await state.get_data()
+    assert data["options"]["ima_oop"] is True  # распознанная строка всё равно применилась
 
 
 async def test_generate_ktp_hours_week_rejects_non_numeric_input(isolated_env):

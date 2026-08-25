@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 
 from aiogram import Bot, F, Router
@@ -46,7 +47,12 @@ from bot import texts
 from bot.states import Generate, GenerateKTP, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
 from core.config import settings
 from core.db import execute, query
-from core.ksp_generator import generate_and_save_ksp, guess_objective_code
+from core.ksp_generator import (
+    MAX_VIDY_DEYATELNOSTI,
+    LessonOptions,
+    generate_and_save_ksp,
+    guess_objective_code,
+)
 from core.ksp_parser import (
     KSPConversionError,
     KSPParseError,
@@ -59,6 +65,7 @@ from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMError
 from core.queue import MAX_RETRIES, enqueue
 from core.templates import get_template, list_templates, save_user_template
+from core.values import find_value_key_by_name, get_value
 
 logger = logging.getLogger(__name__)
 
@@ -450,7 +457,7 @@ async def upload_template_wrong_input(message: Message) -> None:
 
 # =====================================================================
 # /generate — FSM: тема -> код -> раздел -> класс -> продолжительность
-#             -> шаблон -> подтверждение -> очередь
+#             -> доп. настройки (Р5) -> шаблон -> подтверждение -> очередь
 #
 # Спецификация (PLAN_STAGE1.md, Б8.2) в сокращённом виде перечисляет
 # "тема -> код -> шаблон -> подтверждение", но generate_and_save_ksp
@@ -458,6 +465,109 @@ async def upload_template_wrong_input(message: Message) -> None:
 # взять, кроме как спросить. Не хотелось молча подставлять выдуманные
 # значения (класс/раздел/минуты урока — это не то, что можно угадать).
 # =====================================================================
+
+# Р5.2/Р5.3: ключи строк доп. настроек -> поле LessonOptions. Один
+# свободнотекстовый шаг, а не 8 последовательных вопросов — прямое
+# требование блока Р5 ("не превращать диалог в анкету из 30 вопросов").
+_EXTRA_OPTION_KEY_ALIASES = {
+    "ценность": "cennost",
+    "виды деятельности": "vidy_deyatelnosti",
+    "ооп": "ima_oop",
+    "сор": "sor",
+    "физкультминутка": "fizkultminutka",
+    "предварительные знания": "predvaritelnye_znaniya",
+    "тип урока": "tip_uroka",
+    "межпредметные связи": "mezhpredmetnye_svyazi",
+    "ориентация": "page_orientation",
+}
+_AFFIRMATIVE_VALUES = {"да", "есть", "нужна", "нужно", "нужны", "true", "1", "yes"}
+
+
+def _parse_lesson_options_text(text: str) -> tuple[LessonOptions, list[str]]:
+    """Разбирает свободнотекстовый ввод расширенных настроек урока в
+    LessonOptions. Строки, ключ которых не распознан, возвращаются
+    отдельным списком — вызывающий код честно говорит о них учителю,
+    а не молчит и не выдумывает, что они значили."""
+    options = LessonOptions()
+    unrecognized: list[str] = []
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            if line:
+                unrecognized.append(line)
+            continue
+
+        key_part, _, value_part = line.partition(":")
+        field = _EXTRA_OPTION_KEY_ALIASES.get(key_part.strip().lower())
+        value = value_part.strip()
+        if field is None or not value:
+            unrecognized.append(line)
+            continue
+
+        if field == "cennost":
+            key = find_value_key_by_name(value)
+            if key is None:
+                unrecognized.append(line)
+                continue
+            options.cennost_key = key
+        elif field == "vidy_deyatelnosti":
+            options.vidy_deyatelnosti = [v.strip() for v in value.split(",") if v.strip()][:MAX_VIDY_DEYATELNOSTI]
+        elif field == "ima_oop":
+            options.ima_oop = value.lower() in _AFFIRMATIVE_VALUES
+        elif field == "sor":
+            options.sor_instead_of_reflection = value.lower() in _AFFIRMATIVE_VALUES
+        elif field == "fizkultminutka":
+            options.fizkultminutka = value.lower() in _AFFIRMATIVE_VALUES
+        elif field == "predvaritelnye_znaniya":
+            options.predvaritelnye_znaniya = value
+        elif field == "tip_uroka":
+            options.tip_uroka = value
+        elif field == "mezhpredmetnye_svyazi":
+            options.mezhpredmetnye_svyazi = [v.strip() for v in value.split(",") if v.strip()]
+        elif field == "page_orientation":
+            options.page_orientation = "album" if "альбом" in value.lower() else "book"
+
+    # __post_init__ уже отсёк vidy_deyatelnosti сверх лимита при создании
+    # объекта конструктором, но поля выше присваивались после — доотсекаем.
+    if len(options.vidy_deyatelnosti) > MAX_VIDY_DEYATELNOSTI:
+        options.vidy_deyatelnosti = options.vidy_deyatelnosti[:MAX_VIDY_DEYATELNOSTI]
+
+    return options, unrecognized
+
+
+def _format_extra_options_summary(options_dict: dict | None) -> str:
+    """Строка для сводки подтверждения — пусто, если ни одна доп.
+    настройка не включена, чтобы не загромождать обычный (без Р5) путь."""
+    if not options_dict:
+        return ""
+    options = LessonOptions(**options_dict)
+
+    bits = []
+    if options.cennost_key:
+        value = get_value(options.cennost_key)
+        if value:
+            bits.append(f"ценность «{value['name']}»")
+    if options.vidy_deyatelnosti:
+        bits.append("виды деятельности: " + ", ".join(options.vidy_deyatelnosti))
+    if options.ima_oop:
+        bits.append("ООП")
+    if options.sor_instead_of_reflection:
+        bits.append("СОР вместо рефлексии")
+    if options.fizkultminutka:
+        bits.append("физкультминутка")
+    if options.predvaritelnye_znaniya:
+        bits.append(f"предзнания: {options.predvaritelnye_znaniya}")
+    if options.tip_uroka:
+        bits.append(f"тип урока: {options.tip_uroka}")
+    if options.mezhpredmetnye_svyazi:
+        bits.append("межпредм. связи: " + ", ".join(options.mezhpredmetnye_svyazi))
+    if options.page_orientation == "album":
+        bits.append("альбомная ориентация")
+
+    if not bits:
+        return ""
+    return texts.GENERATE_EXTRA_OPTIONS_LINE.format(summary="; ".join(bits))
 
 
 @router.message(Command("generate"))
@@ -529,8 +639,28 @@ async def generate_duration_received(message: Message, state: FSMContext) -> Non
         await message.answer(texts.GENERATE_DURATION_NOT_A_NUMBER)
         return
 
-    duration = int(text)
-    await state.update_data(duration_minutes=duration)
+    await state.update_data(duration_minutes=int(text))
+    await state.set_state(Generate.waiting_for_extra_options)
+    await message.answer(texts.GENERATE_ASK_EXTRA_OPTIONS)
+
+
+@router.message(Generate.waiting_for_extra_options)
+async def generate_extra_options_received(message: Message, state: FSMContext) -> None:
+    """Р5.2/Р5.3: необязательный шаг. "-" (или пусто) — пропустить, ничего
+    не меняется по сравнению с тем, что было до блока Р5. Формат —
+    свободные строки "Ключ: значение", парсер терпим к порядку и
+    отсутствию части строк (см. _parse_lesson_options_text)."""
+    text = (message.text or "").strip()
+    if text and text != "-":
+        options, unrecognized = _parse_lesson_options_text(text)
+        if unrecognized:
+            await message.answer(
+                texts.GENERATE_EXTRA_OPTIONS_UNRECOGNIZED_NOTE.format(lines=", ".join(unrecognized))
+            )
+    else:
+        options = LessonOptions()
+
+    await state.update_data(options=asdict(options))
 
     data = await state.get_data()
 
@@ -574,6 +704,7 @@ async def _ask_generate_confirmation(message: Message, state: FSMContext, templa
         klass=data["klass"],
         duration=data["duration_minutes"],
         template_name=template["name"],
+        extra_options_line=_format_extra_options_summary(data.get("options")),
     )
     if not _has_style_profile(data["teacher_id"]):
         summary += texts.GENERATE_NO_STYLE_PROFILE_NOTE
@@ -622,6 +753,7 @@ async def generate_confirmed(callback: CallbackQuery, state: FSMContext) -> None
         "klass": data["klass"],
         "duration_minutes": data["duration_minutes"],
         "objective_code": data.get("objective_code"),
+        "options": data.get("options"),  # Р5.2/Р5.3, словарь полей LessonOptions или None
     }
     enqueue("generate_ksp", payload, chat_id=callback.message.chat.id)
     await state.clear()
@@ -893,6 +1025,9 @@ def make_generate_ksp_handler(bot: Bot):
         payload = task["payload"]
         chat_id = task["telegram_chat_id"]
 
+        options_dict = payload.get("options")
+        options = LessonOptions(**options_dict) if options_dict else None
+
         result = await generate_and_save_ksp(
             teacher_id=payload["teacher_id"],
             template_id=payload["template_id"],
@@ -903,6 +1038,7 @@ def make_generate_ksp_handler(bot: Bot):
             duration_minutes=payload["duration_minutes"],
             objective_code=payload.get("objective_code"),
             ktp_entry_id=payload.get("ktp_entry_id"),
+            options=options,
         )
 
         docx_path = Path(result["docx_path"])
