@@ -784,6 +784,8 @@ def _fill_header_fields(
     известны самой системе.
 
     fio_pedagoga — из teachers.name (учитель назвал его в /teacher),
+    organizaciya — из teachers.school (Р9, необязательное поле профиля —
+    может быть NULL, тогда шапка остаётся с прочерком, как и раньше),
     klass — из аргумента (учитель назвал его в /generate),
     data — дата генерации.
 
@@ -816,11 +818,13 @@ def _fill_header_fields(
             else str(generated_at)
         )
 
-    if not filled.get("fio_pedagoga"):
-        rows = query("SELECT name FROM teachers WHERE id = ?", (teacher_id,), db_path=db_path)
-        teacher_name = rows[0]["name"] if rows else None
-        if teacher_name:
-            filled["fio_pedagoga"] = teacher_name
+    if not filled.get("fio_pedagoga") or not filled.get("organizaciya"):
+        rows = query("SELECT name, school FROM teachers WHERE id = ?", (teacher_id,), db_path=db_path)
+        row = rows[0] if rows else None
+        if row and not filled.get("fio_pedagoga") and row["name"]:
+            filled["fio_pedagoga"] = row["name"]
+        if row and not filled.get("organizaciya") and row["school"]:
+            filled["organizaciya"] = row["school"]
 
     if options is not None:
         if options.cennost_key:

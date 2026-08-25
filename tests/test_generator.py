@@ -282,6 +282,45 @@ def test_fill_header_fields_without_options_does_not_add_new_keys():
         assert key not in filled
 
 
+def test_fill_header_fields_stamps_organizaciya_from_teacher_school(tmp_path):
+    db_path = tmp_path / "test.db"
+    init_db(db_path=db_path, schema_path=REAL_SCHEMA_PATH)
+    execute(
+        "INSERT INTO teachers (id, name, subject, school) VALUES (1, 'Т', 'физика', 'КГУ «Гимназия №27»')",
+        db_path=db_path,
+    )
+
+    filled = _fill_header_fields({}, teacher_id=1, klass="10А", generated_at="2026-09-01", db_path=db_path)
+    assert filled["organizaciya"] == "КГУ «Гимназия №27»"
+
+
+def test_fill_header_fields_leaves_organizaciya_absent_when_school_not_set(tmp_path):
+    db_path = tmp_path / "test.db"
+    init_db(db_path=db_path, schema_path=REAL_SCHEMA_PATH)
+    execute("INSERT INTO teachers (id, name, subject) VALUES (1, 'Т', 'физика')", db_path=db_path)
+
+    filled = _fill_header_fields({}, teacher_id=1, klass="10А", generated_at="2026-09-01", db_path=db_path)
+    assert "organizaciya" not in filled
+
+
+def test_fill_header_fields_does_not_overwrite_existing_organizaciya(tmp_path):
+    db_path = tmp_path / "test.db"
+    init_db(db_path=db_path, schema_path=REAL_SCHEMA_PATH)
+    execute(
+        "INSERT INTO teachers (id, name, subject, school) VALUES (1, 'Т', 'физика', 'КГУ «Гимназия №27»')",
+        db_path=db_path,
+    )
+
+    filled = _fill_header_fields(
+        {"organizaciya": "Уже вписанное значение"},
+        teacher_id=1,
+        klass="10А",
+        generated_at="2026-09-01",
+        db_path=db_path,
+    )
+    assert filled["organizaciya"] == "Уже вписанное значение"
+
+
 # --- Б6.2: валидация ---
 
 

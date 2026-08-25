@@ -17,6 +17,7 @@ from aiogram.fsm.state import State, StatesGroup
 class TeacherProfile(StatesGroup):
     waiting_for_name = State()
     waiting_for_subject = State()
+    waiting_for_school = State()  # Р9, необязательный шаг
 
 
 class UploadKSP(StatesGroup):

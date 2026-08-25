@@ -167,22 +167,41 @@ async def teacher_subject_received(message: Message, state: FSMContext) -> None:
     if not subject:
         await message.answer(texts.TEACHER_ASK_SUBJECT)
         return
+    await state.update_data(subject=subject)
+    await state.set_state(TeacherProfile.waiting_for_school)
+    await message.answer(texts.TEACHER_ASK_SCHOOL)
+
+
+@router.message(TeacherProfile.waiting_for_school)
+async def teacher_school_received(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    school = None if text in ("-", "") else text
 
     data = await state.get_data()
     name = data["name"]
+    subject = data["subject"]
     telegram_user_id = message.from_user.id
 
     existing = _get_teacher(telegram_user_id)
     if existing:
-        execute(
-            "UPDATE teachers SET name = ?, subject = ? WHERE telegram_user_id = ?",
-            (name, subject, telegram_user_id),
-        )
+        # school не перетирается пустым: учитель мог заполнить его раньше
+        # и сейчас просто обновляет ФИО/предмет, отправив "-" по инерции —
+        # не должны молча стереть то, что уже было указано.
+        if school is not None:
+            execute(
+                "UPDATE teachers SET name = ?, subject = ?, school = ? WHERE telegram_user_id = ?",
+                (name, subject, school, telegram_user_id),
+            )
+        else:
+            execute(
+                "UPDATE teachers SET name = ?, subject = ? WHERE telegram_user_id = ?",
+                (name, subject, telegram_user_id),
+            )
         response = texts.TEACHER_UPDATED
     else:
         execute(
-            "INSERT INTO teachers (name, subject, telegram_user_id) VALUES (?, ?, ?)",
-            (name, subject, telegram_user_id),
+            "INSERT INTO teachers (name, subject, school, telegram_user_id) VALUES (?, ?, ?, ?)",
+            (name, subject, school, telegram_user_id),
         )
         response = texts.TEACHER_CREATED
 

@@ -36,6 +36,7 @@ from bot.handlers import (
     make_generate_ksp_handler,
     make_parse_ksp_handler,
     teacher_name_received,
+    teacher_school_received,
     teacher_subject_received,
     upload_ksp_done,
     upload_ksp_file_received,
@@ -201,21 +202,25 @@ async def test_teacher_create_then_update_no_duplicate(isolated_env):
 
     await teacher_name_received(FakeMessage(text="Иванов И.И.", user_id=42), state)
     await teacher_subject_received(FakeMessage(text="физика", user_id=42), state)
+    await teacher_school_received(FakeMessage(text="КГУ «Школа №5»", user_id=42), state)
 
     rows = query("SELECT * FROM teachers WHERE telegram_user_id = 42")
     assert len(rows) == 1
     assert rows[0]["name"] == "Иванов И.И."
+    assert rows[0]["school"] == "КГУ «Школа №5»"
 
     # второй раз - другое имя, должно ОБНОВИТЬ ту же строку
     state2 = _state()
     await cmd_teacher(FakeMessage(text="/teacher", user_id=42), state2)
     await teacher_name_received(FakeMessage(text="Иванов Иван Иванович", user_id=42), state2)
-    m = FakeMessage(text="физика (продлёнка)", user_id=42)
-    await teacher_subject_received(m, state2)
+    await teacher_subject_received(FakeMessage(text="физика (продлёнка)", user_id=42), state2)
+    m = FakeMessage(text="-", user_id=42)
+    await teacher_school_received(m, state2)
 
     rows = query("SELECT * FROM teachers WHERE telegram_user_id = 42")
     assert len(rows) == 1, "повторный вызов /teacher не должен плодить дубли"
     assert rows[0]["name"] == "Иванов Иван Иванович"
+    assert rows[0]["school"] == "КГУ «Школа №5»", "'-' на повторном шаге не должен стирать уже сохранённую школу"
     assert "обновлён" in m.sent[-1]["text"].lower()
 
 

@@ -13,6 +13,11 @@ CREATE TABLE IF NOT EXISTS teachers (
     id INTEGER PRIMARY KEY,
     name TEXT,
     subject TEXT,
+    -- school добавлен блоком Р9 (PLAN_STAGE1_EXT.md). Для базы, созданной
+    -- ДО этого блока, CREATE TABLE IF NOT EXISTS колонку не добавит —
+    -- см. scripts/migrate_add_school_to_teachers.py (аддитивная миграция,
+    -- ALTER TABLE ... ADD COLUMN, SQLite это умеет напрямую).
+    school TEXT,
     telegram_user_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
