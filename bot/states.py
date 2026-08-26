@@ -53,3 +53,12 @@ class GenerateKTP(StatesGroup):
     waiting_for_hours_year = State()
     waiting_for_topics = State()
     waiting_for_confirmation = State()
+
+
+class Konspekt(StatesGroup):
+    """/konspekt — блок К2.3 (PLAN_STAGE2.md). Один шаг: сбор аудио урока,
+    файлы копятся (как UploadKSP), пока учитель не отправит /done. Сама
+    генерация конспекта из готового транскрипта — блок К4, здесь только
+    приём аудио и постановка задачи 'transcribe' в очередь."""
+
+    collecting_audio = State()

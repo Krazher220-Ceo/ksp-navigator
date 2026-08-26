@@ -47,7 +47,7 @@ from aiogram.types import (
 
 from bot import keyboards, texts
 from bot.navigation import go_back, go_to
-from bot.states import Generate, GenerateKTP, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
+from bot.states import Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
 from core.config import settings
 from core.dashboard import collect as collect_dashboard
 from core.db import execute, query
@@ -638,6 +638,148 @@ async def upload_template_file_received(message: Message, state: FSMContext, bot
 @router.message(UploadTemplate.waiting_for_file)
 async def upload_template_wrong_input(message: Message) -> None:
     await message.answer(texts.UPLOAD_TEMPLATE_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
+
+
+# =====================================================================
+# /konspekt — приём аудио урока (блок К2.3, PLAN_STAGE2.md). Один шаг,
+# файлы (части записи) копятся, как в UploadKSP — до /done. Сама
+# расшифровка (блок К3) и конспект (блок К4) собираются задачей очереди
+# 'transcribe', здесь только приём и постановка в очередь.
+#
+# Команда пока НЕ добавлена в BOT_COMMANDS/MAIN_MENU (М1.1/М2.1, принцип
+# "только то, что реально работает уже сейчас") — обработчика задачи
+# 'transcribe' в очереди ещё нет (появится в блоке К3), без него
+# поставленная в очередь задача зависла бы в pending навсегда. Появится
+# в списке команд и в меню в блоке К4, когда весь путь заработает целиком.
+# =====================================================================
+
+MAX_KONSPEKT_PARTS = 10
+
+# Voice в Telegram всегда .ogg (кодек opus) — безопасный дефолт, если по
+# mime/имени файла угадать не удалось.
+_AUDIO_MIME_EXTENSIONS = {
+    "audio/ogg": ".ogg",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+}
+
+
+def _guess_audio_extension(mime_type: str | None, filename: str | None) -> str:
+    if filename:
+        ext = Path(filename).suffix.lower()
+        if ext:
+            return ext
+    if mime_type:
+        ext = _AUDIO_MIME_EXTENSIONS.get(mime_type)
+        if ext:
+            return ext
+    return ".ogg"
+
+
+def _format_duration(seconds: int | None) -> str:
+    if not seconds:
+        return "длительность неизвестна"
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes} мин {secs} с" if minutes else f"{secs} с"
+
+
+@router.message(Command("konspekt"))
+async def cmd_konspekt(message: Message, state: FSMContext) -> None:
+    teacher = await _require_teacher(message)
+    if teacher is None:
+        return
+    await go_to(state, Konspekt.collecting_audio)
+    await state.update_data(teacher_id=teacher["id"], audio_paths=[], audio_durations=[])
+    await message.answer(
+        texts.KONSPEKT_PROMPT.format(max_parts=MAX_KONSPEKT_PARTS),
+        reply_markup=keyboards.back_cancel_keyboard(),
+    )
+
+
+async def _konspekt_store_part(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+    telegram_file,
+    filename: str | None,
+    mime_type: str | None,
+    duration: int | None,
+) -> None:
+    """Общая логика приёма одной части записи — вызывается из трёх
+    хендлеров (voice/audio/document), чтобы не дублировать её трижды."""
+    size_error = _check_file_size(telegram_file)
+    if size_error:
+        await message.answer(size_error)
+        return
+
+    data = await state.get_data()
+    paths = data.get("audio_paths", [])
+    if len(paths) >= MAX_KONSPEKT_PARTS:
+        await message.answer(texts.KONSPEKT_MAX_PARTS_REACHED.format(max=MAX_KONSPEKT_PARTS))
+        return
+
+    ext = _guess_audio_extension(mime_type, filename)
+    dest = settings.uploads_dir / f"{uuid.uuid4()}{ext}"
+    await bot.download(telegram_file, destination=dest)
+
+    paths.append(str(dest))
+    durations = data.get("audio_durations", [])
+    durations.append(duration)
+    await state.update_data(audio_paths=paths, audio_durations=durations)
+
+    await message.answer(
+        texts.KONSPEKT_PART_ACCEPTED.format(
+            n=len(paths), max=MAX_KONSPEKT_PARTS, duration=_format_duration(duration)
+        ),
+        reply_markup=keyboards.back_cancel_keyboard(),
+    )
+
+
+@router.message(Konspekt.collecting_audio, F.voice)
+async def konspekt_voice_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    voice = message.voice
+    await _konspekt_store_part(message, state, bot, voice, None, voice.mime_type, voice.duration)
+
+
+@router.message(Konspekt.collecting_audio, F.audio)
+async def konspekt_audio_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    audio = message.audio
+    await _konspekt_store_part(message, state, bot, audio, audio.file_name, audio.mime_type, audio.duration)
+
+
+@router.message(Konspekt.collecting_audio, F.document)
+async def konspekt_document_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    document = message.document
+    mime_type = document.mime_type or ""
+    if not mime_type.startswith("audio/"):
+        await message.answer(texts.KONSPEKT_UNSUPPORTED_INPUT, reply_markup=keyboards.back_cancel_keyboard())
+        return
+    await _konspekt_store_part(message, state, bot, document, document.file_name, mime_type, None)
+
+
+@router.message(Konspekt.collecting_audio, Command("done"))
+async def konspekt_done(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    paths = data.get("audio_paths", [])
+    if not paths:
+        await message.answer(texts.KONSPEKT_NO_PARTS_YET, reply_markup=keyboards.back_cancel_keyboard())
+        return
+
+    enqueue(
+        "transcribe",
+        {"teacher_id": data["teacher_id"], "audio_paths": paths},
+        chat_id=message.chat.id,
+    )
+    await state.clear()
+    await message.answer(texts.KONSPEKT_QUEUED.format(count=len(paths)), reply_markup=keyboards.MAIN_MENU)
+
+
+@router.message(Konspekt.collecting_audio)
+async def konspekt_wrong_input(message: Message) -> None:
+    await message.answer(texts.KONSPEKT_UNSUPPORTED_INPUT, reply_markup=keyboards.back_cancel_keyboard())
 
 
 # =====================================================================

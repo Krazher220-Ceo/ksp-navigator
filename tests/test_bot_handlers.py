@@ -21,6 +21,12 @@ from bot.handlers import (
     back_button_pressed,
     back_callback_pressed,
     cancel_button_pressed,
+    cmd_konspekt,
+    konspekt_audio_received,
+    konspekt_document_received,
+    konspekt_done,
+    konspekt_voice_received,
+    konspekt_wrong_input,
     cmd_cancel,
     cmd_generate,
     cmd_generate_ktp,
@@ -58,7 +64,7 @@ from bot.handlers import (
 )
 from bot import keyboards, texts
 from bot.main import _global_error_handler, _register_bot_commands, _register_chat_menu_button
-from bot.states import Generate, GenerateKTP, TeacherProfile, UploadKSP
+from bot.states import Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKSP
 from core import ksp_generator as ksp_generator_module
 from core.config import settings
 from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
@@ -125,10 +131,11 @@ class FakeChat:
 
 
 class FakeDocument:
-    def __init__(self, file_id="fid", file_name="file.docx", file_size=1000):
+    def __init__(self, file_id="fid", file_name="file.docx", file_size=1000, mime_type=None):
         self.file_id = file_id
         self.file_name = file_name
         self.file_size = file_size
+        self.mime_type = mime_type
 
 
 class FakePhotoSize:
@@ -137,13 +144,32 @@ class FakePhotoSize:
         self.file_size = file_size
 
 
+class FakeVoice:
+    def __init__(self, file_id="voice-fid", file_size=1000, duration=30, mime_type="audio/ogg"):
+        self.file_id = file_id
+        self.file_size = file_size
+        self.duration = duration
+        self.mime_type = mime_type
+
+
+class FakeAudio:
+    def __init__(self, file_id="audio-fid", file_size=1000, duration=30, mime_type="audio/mpeg", file_name="urok.mp3"):
+        self.file_id = file_id
+        self.file_size = file_size
+        self.duration = duration
+        self.mime_type = mime_type
+        self.file_name = file_name
+
+
 class FakeMessage:
-    def __init__(self, text=None, user_id=1, chat_id=1, document=None, photo=None):
+    def __init__(self, text=None, user_id=1, chat_id=1, document=None, photo=None, voice=None, audio=None):
         self.text = text
         self.from_user = FakeUser(user_id)
         self.chat = FakeChat(chat_id)
         self.document = document
         self.photo = photo  # список FakePhotoSize (крупнейший — последний), как у Telegram
+        self.voice = voice
+        self.audio = audio
         self.sent: list[dict] = []
 
     async def answer(self, text, reply_markup=None, **kwargs):
@@ -1840,3 +1866,178 @@ async def test_dashboard_text_shows_ongoing_incident(isolated_env):
     text = message.sent[0]["text"]
     assert "сейчас недоступно" in text
     assert "сеть недоступна (TCP)" in text
+
+
+# =====================================================================
+# К2.3 — /konspekt: приём аудио урока
+# =====================================================================
+
+
+async def test_konspekt_starts_collecting_state(isolated_env):
+    _create_teacher(910)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=910), state)
+    assert await state.get_state() == Konspekt.collecting_audio.state
+
+
+async def test_konspekt_without_profile_shows_error(isolated_env):
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=999999), state)
+    assert await state.get_state() is None
+
+
+async def test_konspekt_accepts_voice_message(isolated_env):
+    teacher_id = _create_teacher(911)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=911), state)
+
+    message = FakeMessage(user_id=911, voice=FakeVoice(duration=125))
+    bot = FakeBot()
+    await konspekt_voice_received(message, state, bot)
+
+    data = await state.get_data()
+    assert len(data["audio_paths"]) == 1
+    assert data["audio_durations"] == [125]
+    assert "2 мин" in message.sent[-1]["text"]
+
+
+async def test_konspekt_accepts_audio_file(isolated_env):
+    _create_teacher(912)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=912), state)
+
+    message = FakeMessage(user_id=912, audio=FakeAudio(file_name="urok.mp3"))
+    bot = FakeBot()
+    await konspekt_audio_received(message, state, bot)
+
+    data = await state.get_data()
+    assert len(data["audio_paths"]) == 1
+    assert data["audio_paths"][0].endswith(".mp3")
+
+
+async def test_konspekt_rejects_non_audio_document(isolated_env):
+    _create_teacher(913)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=913), state)
+
+    message = FakeMessage(user_id=913, document=FakeDocument(file_name="report.docx", mime_type="application/msword"))
+    bot = FakeBot()
+    await konspekt_document_received(message, state, bot)
+
+    data = await state.get_data()
+    assert data["audio_paths"] == []
+    assert "не похоже на аудио" in message.sent[-1]["text"]
+
+
+async def test_konspekt_accepts_audio_document_with_correct_mime(isolated_env):
+    _create_teacher(914)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=914), state)
+
+    message = FakeMessage(user_id=914, document=FakeDocument(file_name="urok.wav", mime_type="audio/wav"))
+    bot = FakeBot()
+    await konspekt_document_received(message, state, bot)
+
+    data = await state.get_data()
+    assert len(data["audio_paths"]) == 1
+
+
+async def test_konspekt_multiple_parts_collected_in_order(isolated_env):
+    """К2.3, ловушка 2: несколько частей одного урока — все части должны
+    накапливаться по порядку присылки."""
+    _create_teacher(915)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=915), state)
+
+    bot = FakeBot()
+    for i in range(3):
+        message = FakeMessage(user_id=915, voice=FakeVoice(duration=60 + i))
+        await konspekt_voice_received(message, state, bot)
+
+    data = await state.get_data()
+    assert len(data["audio_paths"]) == 3
+    assert data["audio_durations"] == [60, 61, 62]
+
+
+async def test_konspekt_max_parts_limit(isolated_env):
+    _create_teacher(916)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=916), state)
+
+    bot = FakeBot()
+    from bot.handlers import MAX_KONSPEKT_PARTS
+
+    for i in range(MAX_KONSPEKT_PARTS + 2):
+        message = FakeMessage(user_id=916, voice=FakeVoice())
+        await konspekt_voice_received(message, state, bot)
+
+    data = await state.get_data()
+    assert len(data["audio_paths"]) == MAX_KONSPEKT_PARTS
+    assert "больше не приму" in message.sent[-1]["text"]
+
+
+async def test_konspekt_size_limit_reuses_check_file_size(isolated_env):
+    """Ловушка К2.3 дословно: переиспользовать существующую
+    _check_file_size, не писать вторую."""
+    _create_teacher(917)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=917), state)
+
+    huge_voice = FakeVoice(file_size=25 * 1024 * 1024)  # 25 МБ, больше лимита в 20
+    message = FakeMessage(user_id=917, voice=huge_voice)
+    bot = FakeBot()
+    await konspekt_voice_received(message, state, bot)
+
+    data = await state.get_data()
+    assert data["audio_paths"] == []
+    assert "20" in message.sent[-1]["text"]
+
+
+async def test_konspekt_done_with_no_parts_shows_error(isolated_env):
+    _create_teacher(918)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=918), state)
+
+    message = FakeMessage(text="/done", user_id=918)
+    await konspekt_done(message, state)
+
+    assert await state.get_state() == Konspekt.collecting_audio.state
+    assert "нет ни одной части" in message.sent[-1]["text"]
+
+
+async def test_konspekt_done_enqueues_transcribe_task(isolated_env):
+    _create_teacher(919)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=919), state)
+
+    bot = FakeBot()
+    await konspekt_voice_received(FakeMessage(user_id=919, voice=FakeVoice(), chat_id=919), state, bot)
+    await konspekt_voice_received(FakeMessage(user_id=919, voice=FakeVoice(), chat_id=919), state, bot)
+
+    message = FakeMessage(text="/done", user_id=919, chat_id=919)
+    await konspekt_done(message, state)
+
+    assert await state.get_state() is None
+    tasks = query("SELECT * FROM tasks WHERE type = 'transcribe'")
+    assert len(tasks) == 1
+    assert tasks[0]["telegram_chat_id"] == 919
+    payload = json.loads(tasks[0]["payload"])
+    assert len(payload["audio_paths"]) == 2
+
+
+async def test_konspekt_wrong_input_shows_message(isolated_env):
+    _create_teacher(920)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=920), state)
+
+    message = FakeMessage(text="привет", user_id=920)
+    await konspekt_wrong_input(message)
+    assert "не похоже на аудио" in message.sent[-1]["text"]
+
+
+async def test_konspekt_not_added_to_bot_commands_yet():
+    """Команда есть, но пока не рекламируется (М1.1 принцип): обработчика
+    задачи 'transcribe' в очереди ещё нет, появится в блоке К3."""
+    command_names = {name for name, _ in texts.BOT_COMMANDS}
+    assert "konspekt" not in command_names
+    assert texts.MENU_BUTTON_DASHBOARD in keyboards.MAIN_MENU_BUTTON_TEXTS  # существующие кнопки не пострадали

@@ -79,11 +79,13 @@ CREATE TABLE IF NOT EXISTS generated_ksp (
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
-    -- 'generate_ktp' добавлен блоком Р4.3 (PLAN_STAGE1_EXT.md). Для базы,
-    -- созданной ДО этого блока, одного перезапуска schema.sql недостаточно —
+    -- 'generate_ktp' добавлен блоком Р4.3 (PLAN_STAGE1_EXT.md). 'transcribe'
+    -- и 'generate_konspekt' — блоком К2.1 (PLAN_STAGE2.md). Для базы,
+    -- созданной ДО этих блоков, одного перезапуска schema.sql недостаточно —
     -- CREATE TABLE IF NOT EXISTS не трогает уже существующую таблицу с
-    -- другим CHECK. См. scripts/migrate_add_generate_ktp_task_type.py.
-    type TEXT CHECK(type IN ('parse_ksp','generate_ksp','generate_ktp')),
+    -- другим CHECK. См. scripts/migrate_add_generate_ktp_task_type.py и
+    -- scripts/migrate_add_transcribe_task_type.py.
+    type TEXT CHECK(type IN ('parse_ksp','generate_ksp','generate_ktp','transcribe','generate_konspekt')),
     status TEXT CHECK(status IN ('pending','processing','done','failed')) DEFAULT 'pending',
     payload TEXT,
     result TEXT,
@@ -109,6 +111,35 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     tokens INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (telegram_user_id, day, operation)
 );
+
+-- transcripts/konspekty — аудио урока (блоки К2-К5, PLAN_STAGE2.md).
+-- Цепочка одна: аудиозапись -> whisper.cpp -> transcripts -> konspekty ->
+-- КСП. Конспект БЕЗ транскрипта (source='audio' обязателен на входе)
+-- в проекте не делается — решение автора, MASTER.md 0.6 п.2.
+CREATE TABLE IF NOT EXISTS transcripts (
+    id TEXT PRIMARY KEY,
+    teacher_id INTEGER REFERENCES teachers(id),
+    ktp_entry_id INTEGER REFERENCES ktp_entries(id),
+    source TEXT,               -- 'audio' | 'manual'
+    text TEXT NOT NULL,
+    duration_seconds INTEGER,
+    language TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS konspekty (
+    id TEXT PRIMARY KEY,
+    teacher_id INTEGER REFERENCES teachers(id),
+    transcript_id TEXT REFERENCES transcripts(id),
+    ktp_entry_id INTEGER REFERENCES ktp_entries(id),
+    tema TEXT,
+    content_json TEXT NOT NULL,
+    docx_path TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_transcripts_teacher ON transcripts(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_konspekty_teacher ON konspekty(teacher_id);
 
 -- incidents — живучесть (блок М7, PLAN_STAGE2.md). Пишет scripts/watchdog.sh
 -- напрямую через sqlite3 CLI (у watchdog нет доступа к процессу бота —
