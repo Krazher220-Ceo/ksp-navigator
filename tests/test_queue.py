@@ -590,3 +590,70 @@ async def test_heartbeat_ticker_stops_after_task_finishes(db_path):
     await asyncio.sleep(0.05)
 
     assert len(asyncio.all_tasks()) <= before, "фоновая корутина heartbeat пережила задачу"
+
+
+# =====================================================================
+# Аудит этапа 2, находка 4 — свои пороги зависания у transcribe и
+# generate_konspekt (М7.3 требовал порог на тип, они падали на общий)
+# =====================================================================
+
+
+async def test_long_running_transcribe_is_not_recovered_too_early(db_path):
+    """Транскрипция многочастевого урока идёт десятки минут. На общем
+    пороге в 15 минут её признавали зависшей и отбирали у живого воркера
+    посреди работы. Через 20 минут работы задача обязана остаться в
+    processing."""
+    task_id = enqueue("transcribe", {"audio_paths": []}, chat_id=1, db_path=db_path)
+    execute(
+        "UPDATE tasks SET status = 'processing', updated_at = datetime('now', '-20 minutes') WHERE id = ?",
+        (task_id,),
+        db_path=db_path,
+    )
+
+    recovered = recover_stuck_tasks(db_path=db_path)
+
+    assert recovered == 0
+    assert query("SELECT status FROM tasks WHERE id = ?", (task_id,), db_path=db_path)[0]["status"] == "processing"
+
+
+async def test_truly_stuck_transcribe_is_still_recovered(db_path):
+    """Граница: порог не бесконечный. Задача, висящая дольше своего
+    порога, по-прежнему возвращается в очередь."""
+    task_id = enqueue("transcribe", {"audio_paths": []}, chat_id=1, db_path=db_path)
+    execute(
+        "UPDATE tasks SET status = 'processing', updated_at = datetime('now', '-70 minutes') WHERE id = ?",
+        (task_id,),
+        db_path=db_path,
+    )
+
+    assert recover_stuck_tasks(db_path=db_path) == 1
+    assert query("SELECT status FROM tasks WHERE id = ?", (task_id,), db_path=db_path)[0]["status"] == "pending"
+
+
+async def test_stuck_generate_konspekt_recovered_faster_than_default(db_path):
+    """Конспект — один вызов LLM (живой замер 19с). На общем пороге в 15
+    минут зависший вызов держал бы задачу вчетверо дольше нужного."""
+    task_id = enqueue("generate_konspekt", {"transcript_id": "x"}, chat_id=1, db_path=db_path)
+    execute(
+        "UPDATE tasks SET status = 'processing', updated_at = datetime('now', '-8 minutes') WHERE id = ?",
+        (task_id,),
+        db_path=db_path,
+    )
+
+    assert recover_stuck_tasks(db_path=db_path) == 1
+    assert query("SELECT status FROM tasks WHERE id = ?", (task_id,), db_path=db_path)[0]["status"] == "pending"
+
+
+def test_every_task_type_has_its_own_stuck_threshold():
+    """М7.3 ловушка: порог на тип, а не один на всё. Ни один тип задачи из
+    схемы не должен молча падать на общий запасной порог — этот тест
+    поймает следующий добавленный тип, если про порог для него забудут."""
+    import re
+
+    schema = (PROJECT_ROOT / "storage" / "schema.sql").read_text(encoding="utf-8")
+    match = re.search(r"type TEXT[^\n]*CHECK\(type IN \(([^)]*)\)\)", schema)
+    assert match, "не нашёл CHECK по tasks.type в схеме — тест устарел, поправить"
+    types_in_schema = set(re.findall(r"'([a-z_]+)'", match.group(1)))
+
+    missing = types_in_schema - set(STUCK_PROCESSING_MINUTES_BY_TYPE)
+    assert not missing, f"нет своего порога зависания для типов задач: {sorted(missing)}"
