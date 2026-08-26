@@ -1959,13 +1959,16 @@ async def test_konspekt_multiple_parts_collected_in_order(isolated_env):
     await cmd_konspekt(FakeMessage(text="/konspekt", user_id=915), state)
 
     bot = FakeBot()
-    for i in range(3):
+    # столько частей, сколько разрешено сейчас, — не жёсткое число, иначе
+    # тест ломается при каждом изменении лимита вместо того, чтобы его
+    # проверять (лимит менялся: было 10, стало 2)
+    for i in range(MAX_KONSPEKT_PARTS):
         message = FakeMessage(user_id=915, voice=FakeVoice(duration=60 + i))
         await konspekt_voice_received(message, state, bot)
 
     data = await state.get_data()
-    assert len(data["audio_paths"]) == 3
-    assert data["audio_durations"] == [60, 61, 62]
+    assert len(data["audio_paths"]) == MAX_KONSPEKT_PARTS
+    assert data["audio_durations"] == [60 + i for i in range(MAX_KONSPEKT_PARTS)]
 
 
 async def test_konspekt_max_parts_limit(isolated_env):
@@ -2612,9 +2615,12 @@ async def test_konspekt_handler_stores_docx_path_in_db(isolated_env, monkeypatch
 # =====================================================================
 
 
-async def _konspekt_with_parts(telegram_id: int, parts: int = 3):
+async def _konspekt_with_parts(telegram_id: int, parts: int | None = None):
     """Доводит /konspekt до состояния «принято N частей» и возвращает
-    (state, список путей на диске)."""
+    (state, список путей на диске). По умолчанию берёт максимум, который
+    разрешён сейчас, — жёсткое число здесь ломалось бы при каждом
+    изменении лимита."""
+    parts = MAX_KONSPEKT_PARTS if parts is None else parts
     _create_teacher(telegram_id)
     state = _state()
     await cmd_konspekt(FakeMessage(text="/konspekt", user_id=telegram_id), state)
@@ -2654,8 +2660,10 @@ async def test_menu_button_deletes_collected_audio_parts(isolated_env):
 async def test_back_in_konspekt_removes_only_last_part(isolated_env):
     """М3.3 (ловушка) для состояния из К2: «Назад» здесь убирает последнюю
     присланную часть, а не выходит из диалога. До правки «Назад» выходил
-    в меню и бросал на диске все три части."""
+    в меню и бросал на диске все принятые части."""
     state, paths = await _konspekt_with_parts(972)
+    collected = len(paths)
+    assert collected >= 2, "тесту нужно минимум две части, чтобы «последняя» имела смысл"
 
     message = FakeMessage(text=texts.BUTTON_BACK, user_id=972)
     await back_button_pressed(message, state)
@@ -2663,8 +2671,8 @@ async def test_back_in_konspekt_removes_only_last_part(isolated_env):
     assert not paths[-1].exists()          # последняя убрана с диска
     assert all(p.exists() for p in paths[:-1])  # остальные на месте
     assert await state.get_state() == Konspekt.collecting_audio.state  # из диалога не вышли
-    assert len((await state.get_data())["audio_paths"]) == 2
-    assert "Осталось частей: 2" in message.sent[-1]["text"]
+    assert len((await state.get_data())["audio_paths"]) == collected - 1
+    assert f"Осталось частей: {collected - 1}" in message.sent[-1]["text"]
 
 
 async def test_back_in_konspekt_without_parts_says_nothing_to_remove(isolated_env):
@@ -2889,3 +2897,39 @@ async def test_start_button_without_parts_does_not_enqueue(isolated_env):
 
     assert query("SELECT * FROM tasks WHERE type = 'transcribe'") == []
     assert message.sent[-1]["text"] == texts.KONSPEKT_NO_PARTS_YET
+
+
+async def test_konspekt_accepts_no_more_than_two_parts(isolated_env):
+    """Решение автора от 27.08.2026: не больше двух частей записи.
+    Урок на 45 минут укладывается в один файл до 20 МБ (проверено на
+    настоящей записи: 39 минут — 19,2 МБ), вторая нужна разве что на пару."""
+    assert MAX_KONSPEKT_PARTS == 2
+
+    _create_teacher(993)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=993), state)
+
+    bot = FakeBot()
+    third = None
+    for _ in range(3):
+        third = FakeMessage(user_id=993, voice=FakeVoice())
+        await konspekt_voice_received(third, state, bot)
+
+    assert len((await state.get_data())["audio_paths"]) == 2
+    assert "больше не приму" in third.sent[-1]["text"]
+    # третий файл на диск не лёг — принято ровно два
+    assert len(list(settings.uploads_dir.iterdir())) == 2
+
+
+def test_texts_about_parts_show_the_actual_limit():
+    """Число в текстах подставляется из константы, а не написано руками —
+    иначе бот обещал бы одно, а делал другое."""
+    prompt = texts.KONSPEKT_PROMPT.format(max_parts=MAX_KONSPEKT_PARTS)
+    assert "не более 2" in prompt
+    assert "10" not in prompt
+
+    hint = texts.KONSPEKT_FILE_TOO_LARGE_HINT.format(max_parts=MAX_KONSPEKT_PARTS)
+    assert "не больше 2" in hint
+
+    reached = texts.KONSPEKT_MAX_PARTS_REACHED.format(max=MAX_KONSPEKT_PARTS)
+    assert "частей: 2" in reached
