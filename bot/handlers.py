@@ -42,11 +42,10 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
     WebAppInfo,
 )
 
-from bot import texts
+from bot import keyboards, texts
 from bot.states import Generate, GenerateKTP, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
 from core.config import settings
 from core.db import execute, query
@@ -122,7 +121,7 @@ async def _require_teacher(message: Message) -> dict | None:
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(texts.START)
+    await message.answer(texts.START, reply_markup=keyboards.MAIN_MENU)
 
 
 # =====================================================================
@@ -138,6 +137,34 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await message.answer(texts.CANCEL_DONE)
+
+
+# =====================================================================
+# М2.1 — постоянное меню: единственный обработчик всех его кнопок
+#
+# Регистрируется здесь, сразу после /cancel и ДО любых хендлеров с
+# фильтром по состоянию (Generate.*, GenerateKTP.*, UploadKSP.* и
+# остальные ниже по файлу). Ловушка плана (М2.1/М3.2): aiogram матчит
+# хендлеры в порядке регистрации, и если этот хендлер окажется НИЖЕ
+# состояний диалога, текст кнопки меню будет съеден как обычный ответ
+# пользователя на вопрос диалога (тема урока, класс и т.д.) — тем же
+# способом, каким уже решена ровно эта проблема для /cancel выше.
+#
+# _MENU_BUTTON_HANDLERS заполняется в самом низу этого файла, когда все
+# cmd_* функции уже определены — Python резолвит имя при вызове (внутри
+# тела async-функции), а не при её определении, так что вперёд смотреть
+# не нужно.
+# =====================================================================
+
+
+@router.message(F.text.in_(keyboards.MAIN_MENU_BUTTON_TEXTS))
+async def menu_button_pressed(message: Message, state: FSMContext) -> None:
+    current = await state.get_state()
+    if current is not None:
+        await state.clear()
+        await message.answer(texts.MENU_DIALOG_INTERRUPTED)
+    handler = _MENU_BUTTON_HANDLERS[message.text]
+    await handler(message, state)
 
 
 # =====================================================================
@@ -392,7 +419,7 @@ async def templates_web_app_choice(message: Message, state: FSMContext) -> None:
         payload = json.loads(message.web_app_data.data)
         template_id = int(payload["template_id"])
     except (ValueError, TypeError, KeyError):
-        await message.answer(texts.TEMPLATES_CHOSEN_UNKNOWN, reply_markup=ReplyKeyboardRemove())
+        await message.answer(texts.TEMPLATES_CHOSEN_UNKNOWN, reply_markup=keyboards.MAIN_MENU)
         return
 
     # Шаблон должен быть доступен именно этому учителю: id приходит с
@@ -400,7 +427,7 @@ async def templates_web_app_choice(message: Message, state: FSMContext) -> None:
     available = {t["id"]: t for t in list_templates(teacher["id"])}
     template = available.get(template_id)
     if template is None:
-        await message.answer(texts.TEMPLATES_CHOSEN_UNKNOWN, reply_markup=ReplyKeyboardRemove())
+        await message.answer(texts.TEMPLATES_CHOSEN_UNKNOWN, reply_markup=keyboards.MAIN_MENU)
         return
 
     await state.clear()
@@ -410,7 +437,7 @@ async def templates_web_app_choice(message: Message, state: FSMContext) -> None:
     )
     await message.answer(
         texts.TEMPLATES_CHOSEN.format(template_name=template["name"]),
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=keyboards.MAIN_MENU,
     )
     await message.answer(texts.GENERATE_ASK_TOPIC)
 
@@ -1049,6 +1076,39 @@ async def cmd_history(message: Message) -> None:
         keyboard_rows.append([InlineKeyboardButton(text=button_text, callback_data=f"hist:{row['id']}")])
 
     await message.answer(texts.HISTORY_HEADER, reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows))
+
+
+# =====================================================================
+# М2.1 — таблица «текст кнопки меню -> обработчик», для menu_button_pressed
+# выше. Три из восьми обработчиков (cmd_templates, cmd_status, cmd_history)
+# принимают только message, без state — под них тонкие обёртки с общей
+# сигнатурой (message, state), чтобы menu_button_pressed вызывал любой
+# обработчик из словаря одинаково, не проверяя его сигнатуру.
+# =====================================================================
+
+
+async def _menu_call_templates(message: Message, state: FSMContext) -> None:
+    await cmd_templates(message)
+
+
+async def _menu_call_status(message: Message, state: FSMContext) -> None:
+    await cmd_status(message)
+
+
+async def _menu_call_history(message: Message, state: FSMContext) -> None:
+    await cmd_history(message)
+
+
+_MENU_BUTTON_HANDLERS = {
+    texts.MENU_BUTTON_GENERATE_KSP: cmd_generate,
+    texts.MENU_BUTTON_GENERATE_KTP: cmd_generate_ktp,
+    texts.MENU_BUTTON_TEACHER: cmd_teacher,
+    texts.TEMPLATES_BUTTON: _menu_call_templates,
+    texts.MENU_BUTTON_STATUS: _menu_call_status,
+    texts.MENU_BUTTON_HISTORY: _menu_call_history,
+    texts.MENU_BUTTON_UPLOAD_KSP: cmd_upload_ksp,
+    texts.MENU_BUTTON_UPLOAD_KTP: cmd_upload_ktp,
+}
 
 
 @router.callback_query(F.data.startswith("hist:"))

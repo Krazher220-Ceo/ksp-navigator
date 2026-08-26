@@ -20,7 +20,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BotCommand, ErrorEvent
+from aiogram.types import BotCommand, ErrorEvent, MenuButtonWebApp, WebAppInfo
 
 from bot import texts
 from bot.handlers import (
@@ -52,6 +52,23 @@ async def _register_bot_commands(bot: Bot) -> None:
     перезаписывает список целиком, а не дополняет уже выставленный."""
     await bot.set_my_commands(
         [BotCommand(command=name, description=description) for name, description in texts.BOT_COMMANDS]
+    )
+
+
+async def _register_chat_menu_button(bot: Bot) -> None:
+    """М2.2 (PLAN_STAGE2.md): синяя кнопка слева от поля ввода открывает
+    Mini App напрямую, без команды /templates. settings.webapp_url может
+    быть не задан (Cloudflare Tunnel не поднят) — тогда кнопку не ставим
+    и пишем в лог info, а не роняем старт бота из-за необязательной
+    кнопки (ловушка плана)."""
+    if not settings.webapp_url:
+        logger.info("WEBAPP_URL не задан — кнопка меню чата (Mini App) не установлена")
+        return
+    await bot.set_chat_menu_button(
+        menu_button=MenuButtonWebApp(
+            text=texts.CHAT_MENU_BUTTON_TEXT,
+            web_app=WebAppInfo(url=settings.webapp_url),
+        )
     )
 
 
@@ -152,6 +169,7 @@ async def run() -> None:
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await _register_bot_commands(bot)
+        await _register_chat_menu_button(bot)
         await dp.start_polling(bot)
     finally:
         worker.stop()

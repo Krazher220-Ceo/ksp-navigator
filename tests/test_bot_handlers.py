@@ -19,6 +19,7 @@ from openpyxl import Workbook
 from bot.handlers import (
     cmd_cancel,
     cmd_generate,
+    cmd_generate_ktp,
     cmd_history,
     cmd_start,
     cmd_status,
@@ -35,6 +36,7 @@ from bot.handlers import (
     history_resend,
     make_generate_ksp_handler,
     make_parse_ksp_handler,
+    menu_button_pressed,
     router,
     teacher_name_received,
     teacher_school_received,
@@ -43,8 +45,8 @@ from bot.handlers import (
     upload_ksp_file_received,
     upload_ktp_file_received,
 )
-from bot import texts
-from bot.main import _global_error_handler, _register_bot_commands
+from bot import keyboards, texts
+from bot.main import _global_error_handler, _register_bot_commands, _register_chat_menu_button
 from bot.states import Generate, TeacherProfile
 from core import ksp_generator as ksp_generator_module
 from core.config import settings
@@ -157,6 +159,7 @@ class FakeBot:
         self.sent_messages: list[tuple] = []
         self.sent_documents: list[dict] = []
         self.set_commands_calls: list[list] = []
+        self.set_chat_menu_button_calls: list = []
 
     async def download(self, file, destination):
         Path(destination).write_bytes(b"fake ksp/ktp file content for tests")
@@ -172,6 +175,9 @@ class FakeBot:
 
     async def set_my_commands(self, commands, **kwargs):
         self.set_commands_calls.append(commands)
+
+    async def set_chat_menu_button(self, menu_button=None, **kwargs):
+        self.set_chat_menu_button_calls.append(menu_button)
 
 
 def _state():
@@ -1273,3 +1279,107 @@ def test_every_bot_command_has_a_registered_handler():
     declared = {name for name, _ in texts.BOT_COMMANDS}
     missing = declared - registered
     assert not missing, f"в BOT_COMMANDS есть команды без хендлера в router: {missing}"
+
+
+# =====================================================================
+# М2.2 — кнопка меню чата (Mini App)
+# =====================================================================
+
+
+async def test_register_chat_menu_button_sets_webapp_when_configured():
+    bot = FakeBot()
+    original = settings.webapp_url
+    object.__setattr__(settings, "webapp_url", "https://example.test/webapp")
+    try:
+        await _register_chat_menu_button(bot)
+    finally:
+        object.__setattr__(settings, "webapp_url", original)
+
+    assert len(bot.set_chat_menu_button_calls) == 1
+    assert bot.set_chat_menu_button_calls[0].web_app.url == "https://example.test/webapp"
+
+
+async def test_register_chat_menu_button_skips_when_webapp_url_missing():
+    bot = FakeBot()
+    original = settings.webapp_url
+    object.__setattr__(settings, "webapp_url", None)
+    try:
+        await _register_chat_menu_button(bot)
+    finally:
+        object.__setattr__(settings, "webapp_url", original)
+
+    assert bot.set_chat_menu_button_calls == []
+
+
+# =====================================================================
+# М2.1 — постоянное меню: нажатие кнопки сбрасывает диалог
+# =====================================================================
+
+
+async def test_start_sends_main_menu_keyboard(isolated_env):
+    message = FakeMessage(text="/start")
+    await cmd_start(message, _state())
+    assert message.sent[0]["reply_markup"] is keyboards.MAIN_MENU
+
+
+async def test_menu_button_mid_generate_dialog_resets_state_without_recording_button_text(isolated_env):
+    """М2.1 КГ (PLAN_STAGE2.md, дословно): на любом шаге /generate нажатие
+    кнопки меню сбрасывает состояние и не записывает текст кнопки в
+    данные диалога."""
+    teacher_id = _create_teacher(999)
+    state = _state()
+
+    # доводим диалог /generate до шага "ожидаем тему урока"
+    await cmd_generate(FakeMessage(text="/generate", user_id=999), state)
+    assert await state.get_state() == Generate.waiting_for_topic.state
+
+    # пользователь вместо темы урока нажимает кнопку меню
+    button_message = FakeMessage(text=texts.MENU_BUTTON_STATUS, user_id=999)
+    await menu_button_pressed(button_message, state)
+
+    # диалог прерван — состояние сброшено, а не осталось на месте
+    assert await state.get_state() is None
+    data = await state.get_data()
+    assert "topic" not in data
+    assert texts.MENU_BUTTON_STATUS not in json.dumps(data, ensure_ascii=False)
+
+    # пользователь увидел явное сообщение о прерывании, а не тишину
+    interrupted_texts = [s["text"] for s in button_message.sent]
+    assert texts.MENU_DIALOG_INTERRUPTED in interrupted_texts
+
+    # и целевой обработчик (cmd_status) реально сработал
+    assert any(
+        "нет активных задач" in s["text"].lower() or "очеред" in s["text"].lower()
+        for s in button_message.sent
+    )
+
+
+async def test_menu_button_pressed_dispatches_to_matching_handler(isolated_env):
+    """Каждая кнопка меню вызывает ровно тот обработчик, который
+    соответствует её тексту — проверка на кнопке «Мой профиль»."""
+    message = FakeMessage(text=texts.MENU_BUTTON_TEACHER, user_id=555)
+    state = _state()
+    await menu_button_pressed(message, state)
+    assert await state.get_state() == TeacherProfile.waiting_for_name.state
+
+
+def test_menu_button_pressed_registered_before_all_state_handlers():
+    """Ловушка плана (М2.1/М3.2): aiogram матчит хендлеры в порядке
+    регистрации — если menu_button_pressed окажется НИЖЕ хотя бы одного
+    хендлера с фильтром по состоянию, текст кнопки меню будет перехвачен
+    этим состоянием раньше, чем дойдёт до обработчика меню. Прямой вызов
+    функции (как в тестах выше) эту ошибку не ловит — только проверка
+    порядка в самом router."""
+    from aiogram.fsm.state import State
+
+    names = [h.callback.__name__ for h in router.message.handlers]
+    menu_index = names.index("menu_button_pressed")
+
+    for index, handler in enumerate(router.message.handlers):
+        has_state_filter = any(isinstance(f.callback, State) for f in handler.filters)
+        if has_state_filter:
+            assert index > menu_index, (
+                f"хендлер {handler.callback.__name__} с фильтром по состоянию "
+                f"зарегистрирован раньше menu_button_pressed — кнопка меню "
+                f"будет перехвачена этим состоянием"
+            )
