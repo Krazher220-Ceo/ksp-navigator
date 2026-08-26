@@ -66,6 +66,14 @@
           <div class="dash-section-title">Профиль стиля</div>
           <div id="dash-style-profile"></div>
         </div>
+        <!-- М7.4: живучесть — не про конкретного учителя, показывается
+             всегда, включая has_profile=false (см. dashboard-no-profile
+             выше, куда renderDashboard тоже вставляет этот блок). -->
+        <div class="dash-section">
+          <div class="dash-section-title" id="dash-uptime-title"></div>
+          <div id="dash-uptime-last-incident" class="state-message" hidden></div>
+          <div id="dash-uptime-stats"></div>
+        </div>
       </div>
     </div>
   </section>

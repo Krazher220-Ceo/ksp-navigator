@@ -66,6 +66,11 @@ class Settings:
     webapp_url: str | None
     webapp_port: int
 
+    # М7.1 (PLAN_STAGE2.md): куда слать уведомление о завершившемся
+    # инциденте живучести (core/incidents.py). Не задан — некому слать,
+    # бот не падает из-за этого (тот же принцип, что webapp_url).
+    admin_telegram_chat_id: int | None
+
     log_level: str
 
 
@@ -132,6 +137,14 @@ def _build_settings() -> Settings:
 
     llm_provider_order = _parse_provider_order(_env("LLM_PROVIDERS"))
 
+    admin_chat_id_raw = _env("ADMIN_TELEGRAM_CHAT_ID")
+    admin_telegram_chat_id = None
+    if admin_chat_id_raw:
+        try:
+            admin_telegram_chat_id = int(admin_chat_id_raw)
+        except ValueError:
+            _fail(f"ADMIN_TELEGRAM_CHAT_ID должен быть целым числом, получено: {admin_chat_id_raw!r}")
+
     return Settings(
         base_dir=BASE_DIR,
         storage_dir=storage_dir,
@@ -145,6 +158,7 @@ def _build_settings() -> Settings:
         llm_providers=_build_provider_settings(llm_provider_order),
         webapp_url=_env("WEBAPP_URL"),
         webapp_port=webapp_port,
+        admin_telegram_chat_id=admin_telegram_chat_id,
         log_level=_env("LOG_LEVEL", "INFO"),
     )
 

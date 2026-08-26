@@ -33,14 +33,34 @@ import logging
 import uuid
 from typing import Any, Awaitable, Callable
 
-from core.db import query, transaction
+from core.db import execute, query, transaction
 
 logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 2.0
 MAX_RETRIES = 3
 RETRY_DELAYS_SECONDS = [10, 30, 90]  # пауза перед попыткой №2, №3, (№4 - про запас)
-STUCK_PROCESSING_MINUTES = 15
+STUCK_PROCESSING_MINUTES = 15  # порог по умолчанию — незнакомый тип задачи (М7.3)
+
+# М7.3 (PLAN_STAGE2.md), ловушка плана дословно: "порог для транскрипции —
+# минуты, для генерации КСП — секунды. Один порог на всё даст либо ложные
+# тревоги, либо слепоту." На реальных замерах (KPI_STAGE1.md) генерация
+# КСП занимает 25-42с даже с полными репликами педагога (блок Р2) — 3
+# минуты уже с большим запасом. generate_ktp может собирать полный
+# учебный год дольше — запас пошире. parse_ksp — разбор файлов без LLM,
+# быстрее всех. 'transcribe' появится в блоке К3 этого же плана, порог
+# заводить уже сейчас смысла нет — на реальных длинных записях замера
+# ещё не было (см. К1.1 в PLAN_STAGE2.md).
+STUCK_PROCESSING_MINUTES_BY_TYPE = {
+    "parse_ksp": 3,
+    "generate_ksp": 3,
+    "generate_ktp": 5,
+}
+
+# М7.3: раз в сколько проходов цикла проверять зависшие задачи повторно
+# (не при каждом опросе — recover_stuck_tasks это UPDATE по всей таблице
+# tasks, незачем гонять его чаще, чем реально может что-то зависнуть).
+STUCK_RECOVERY_CHECK_EVERY_N_CYCLES = 30  # примерно раз в минуту при POLL_INTERVAL_SECONDS=2
 
 
 # =====================================================================
@@ -140,21 +160,63 @@ def fail(task_id: str, error: str, max_retries: int = MAX_RETRIES, db_path=None)
     return row["status"]
 
 
-def recover_stuck_tasks(db_path=None, stuck_minutes: int = STUCK_PROCESSING_MINUTES) -> int:
-    """Задачи, застрявшие в processing дольше stuck_minutes (Mac уснул,
-    процесс воркера убит, что угодно) — возвращает в pending. Вызывается
-    один раз при старте воркера (run_forever/run_until_idle). Возвращает
-    число восстановленных задач."""
+def recover_stuck_tasks(db_path=None, stuck_minutes: int | None = None) -> int:
+    """Задачи, застрявшие в processing дольше разумного времени для ИХ
+    типа (Mac уснул, процесс воркера убит, провайдер завис без таймаута,
+    что угодно) — возвращает в pending. Вызывается при старте воркера и
+    затем периодически из run_forever (М7.3 — не только один раз при
+    старте, застрять можно и посреди долгой работы). Возвращает суммарное
+    число восстановленных задач.
+
+    stuck_minutes — необязательный override ОДНИМ порогом на все типы
+    сразу (для тестов и ручной диагностики); без него — пороги по типу
+    из STUCK_PROCESSING_MINUTES_BY_TYPE (М7.3, ловушка плана: один порог
+    на всё даёт либо ложные тревоги, либо слепоту)."""
     with transaction(db_path) as conn:
+        if stuck_minutes is not None:
+            cursor = conn.execute(
+                "UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
+                "WHERE status = 'processing' AND updated_at <= datetime('now', ?) "
+                "RETURNING id",
+                (f"-{stuck_minutes} minutes",),
+            )
+            return len(cursor.fetchall())
+
+        total_recovered = 0
+        for task_type, minutes in STUCK_PROCESSING_MINUTES_BY_TYPE.items():
+            cursor = conn.execute(
+                "UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
+                "WHERE status = 'processing' AND type = ? AND updated_at <= datetime('now', ?) "
+                "RETURNING id",
+                (task_type, f"-{minutes} minutes"),
+            )
+            total_recovered += len(cursor.fetchall())
+
+        # Тип, для которого своего порога ещё не завели (например будущий
+        # 'transcribe' до появления собственного замера в блоке К3) —
+        # старый консервативный STUCK_PROCESSING_MINUTES, не молчание.
+        known_types = tuple(STUCK_PROCESSING_MINUTES_BY_TYPE.keys())
+        placeholders = ",".join("?" * len(known_types))
         cursor = conn.execute(
-            "UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
-            "WHERE status = 'processing' "
-            "AND updated_at <= datetime('now', ?) "
-            "RETURNING id",
-            (f"-{stuck_minutes} minutes",),
+            f"UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
+            f"WHERE status = 'processing' AND type NOT IN ({placeholders}) "
+            f"AND updated_at <= datetime('now', ?) RETURNING id",
+            (*known_types, f"-{STUCK_PROCESSING_MINUTES} minutes"),
         )
-        rows = cursor.fetchall()
-    return len(rows)
+        total_recovered += len(cursor.fetchall())
+
+    return total_recovered
+
+
+def update_worker_heartbeat(db_path=None) -> None:
+    """М7.3: отметка "цикл воркера жив", читает scripts/watchdog.sh
+    напрямую через sqlite3 CLI. UPSERT в одну строку (id=1) — не история,
+    только последний момент."""
+    execute(
+        "INSERT INTO worker_heartbeat (id, updated_at) VALUES (1, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(id) DO UPDATE SET updated_at = CURRENT_TIMESTAMP",
+        db_path=db_path,
+    )
 
 
 # =====================================================================
@@ -211,6 +273,7 @@ class QueueWorker:
             logger.warning("восстановлено %d задач(и), зависших в processing", recovered)
 
         self._running = True
+        cycle_count = 0
         while self._running:
             # Цикл не имеет права умереть: он единственный, кто вообще
             # разбирает очередь. Любая ошибка опроса базы (транзиентная
@@ -223,6 +286,19 @@ class QueueWorker:
             # п.1.7), причём в худшем виде — задача даже до failed не
             # доходит. Поэтому здесь ловится всё и цикл продолжается.
             try:
+                # М7.3: отметка "цикл жив" на каждом проходе, ДО claim_next —
+                # даже проход без готовых задач должен обновить heartbeat,
+                # иначе тихая очередь выглядела бы как зависший воркер.
+                update_worker_heartbeat(db_path=self._db_path)
+                cycle_count += 1
+                if cycle_count % STUCK_RECOVERY_CHECK_EVERY_N_CYCLES == 0:
+                    recovered = recover_stuck_tasks(db_path=self._db_path)
+                    if recovered:
+                        logger.warning(
+                            "восстановлено %d задач(и), зависших в processing (периодическая проверка)",
+                            recovered,
+                        )
+
                 task = claim_next(db_path=self._db_path)
                 if task is None:
                     await asyncio.sleep(self._poll_interval)

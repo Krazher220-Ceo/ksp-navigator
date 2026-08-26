@@ -28,6 +28,12 @@ from core.db import query
 # текстовой сводке бота, а самое полезное — именно "что дальше".
 UPCOMING_LESSONS_LIMIT = 5
 
+# М7.4: инциденты живучести измеряются с момента появления блока М7 —
+# таблица incidents стартует пустой, и это не "аптайм 100% за всё время",
+# а честно "раньше не измеряли вообще". Дата — не для расчётов, только
+# чтобы показать в тексте, что число не про весь срок жизни проекта.
+UPTIME_TRACKING_SINCE = "2026-08-26"
+
 
 def _parse_planned_date(raw: str | None) -> date | None:
     """Возвращает первый день из значения planned_date, если формат
@@ -87,6 +93,10 @@ def collect(teacher_id: int | None, db_path=None) -> dict:
     минимальный набор без чисел, привязанных к учителю, и флаг
     has_profile=False, по которому вызывающий код должен предложить
     /teacher, а не молча показать нули."""
+    # М7.4: живучесть — не про конкретного учителя (incidents общие на
+    # всю систему), считается одинаково независимо от has_profile.
+    uptime = _collect_uptime(db_path=db_path)
+
     if teacher_id is None:
         return {
             "has_profile": False,
@@ -97,6 +107,7 @@ def collect(teacher_id: int | None, db_path=None) -> dict:
             "unparsed_planned_dates": 0,
             "style_profile": {"exists": False, "samples_count": None},
             "usage_today": {"generate_ksp": 0, "generate_ktp": 0, "generate_ksp_limit": 0, "generate_ktp_limit": 0},
+            "uptime": uptime,
         }
 
     now = datetime.now()
@@ -118,6 +129,46 @@ def collect(teacher_id: int | None, db_path=None) -> dict:
         "unparsed_planned_dates": unparsed,
         "style_profile": style_profile,
         "usage_today": usage_today,
+        "uptime": uptime,
+    }
+
+
+def _collect_uptime(db_path=None) -> dict:
+    """М7.4: последний инцидент, счётчик за 7 дней, суммарное время
+    недоступности. Измеряется только с UPTIME_TRACKING_SINCE (см. шапку
+    модуля) — не выдаём за аптайм то, что не измерено (ловушка плана)."""
+    since_7d = (datetime.now() - timedelta(days=7)).isoformat(sep=" ")
+    recent = query(
+        "SELECT started_at, ended_at FROM incidents WHERE started_at >= ? ORDER BY started_at",
+        (since_7d,),
+        db_path=db_path,
+    )
+    downtime_seconds = 0
+    for row in recent:
+        if not row["ended_at"]:
+            continue  # инцидент ещё идёт — его длительность пока неизвестна
+        start = datetime.fromisoformat(str(row["started_at"]))
+        end = datetime.fromisoformat(str(row["ended_at"]))
+        downtime_seconds += int((end - start).total_seconds())
+
+    last_rows = query(
+        "SELECT started_at, ended_at, reason FROM incidents ORDER BY started_at DESC LIMIT 1",
+        db_path=db_path,
+    )
+    last_incident = None
+    if last_rows:
+        row = last_rows[0]
+        last_incident = {
+            "started_at": row["started_at"],
+            "ended_at": row["ended_at"],  # None - инцидент ещё не закрыт
+            "reason": row["reason"],
+        }
+
+    return {
+        "incidents_7d": len(recent),
+        "downtime_seconds_7d": downtime_seconds,
+        "last_incident": last_incident,
+        "measured_since": UPTIME_TRACKING_SINCE,
     }
 
 

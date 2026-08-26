@@ -272,3 +272,94 @@ def test_usage_today_zero_when_nothing_recorded(db_path):
     result = collect(teacher_id, db_path=db_path)
     assert result["usage_today"]["generate_ksp"] == 0
     assert result["usage_today"]["generate_ksp_limit"] == 5
+
+
+# =====================================================================
+# М7.4 — аптайм в дашборде
+# =====================================================================
+
+
+def test_uptime_empty_when_no_incidents(db_path):
+    teacher_id = _create_teacher(db_path)
+    result = collect(teacher_id, db_path=db_path)
+    assert result["uptime"]["incidents_7d"] == 0
+    assert result["uptime"]["downtime_seconds_7d"] == 0
+    assert result["uptime"]["last_incident"] is None
+    assert result["uptime"]["measured_since"] == "2026-08-26"
+
+
+def test_uptime_present_even_without_teacher_profile(db_path):
+    """М7.4: живучесть не про конкретного учителя, показывается и без
+    профиля (в отличие от остальных секций дашборда)."""
+    result = collect(None, db_path=db_path)
+    assert "uptime" in result
+    assert result["uptime"]["incidents_7d"] == 0
+
+
+def test_uptime_counts_closed_incident_within_7_days(db_path):
+    from datetime import datetime, timedelta
+
+    teacher_id = _create_teacher(db_path)
+    start = (datetime.now() - timedelta(hours=2)).isoformat(sep=" ")
+    end = (datetime.now() - timedelta(hours=1, minutes=50)).isoformat(sep=" ")
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason) VALUES (?, ?, 'dns_fail')",
+        (start, end),
+        db_path=db_path,
+    )
+    result = collect(teacher_id, db_path=db_path)
+    assert result["uptime"]["incidents_7d"] == 1
+    # 10 минут = 600 секунд простоя
+    assert result["uptime"]["downtime_seconds_7d"] == 600
+    assert result["uptime"]["last_incident"]["reason"] == "dns_fail"
+
+
+def test_uptime_ignores_incidents_older_than_7_days(db_path):
+    from datetime import datetime, timedelta
+
+    teacher_id = _create_teacher(db_path)
+    old_start = (datetime.now() - timedelta(days=10)).isoformat(sep=" ")
+    old_end = (datetime.now() - timedelta(days=10) + timedelta(minutes=5)).isoformat(sep=" ")
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason) VALUES (?, ?, 'dns_fail')",
+        (old_start, old_end),
+        db_path=db_path,
+    )
+    result = collect(teacher_id, db_path=db_path)
+    assert result["uptime"]["incidents_7d"] == 0
+    assert result["uptime"]["downtime_seconds_7d"] == 0
+
+
+def test_uptime_still_open_incident_not_counted_in_downtime(db_path):
+    """Инцидент, который ещё идёт (ended_at NULL) — его длительность
+    неизвестна, не считаем в downtime_seconds_7d, но last_incident его
+    показывает (с ended_at=None, вызывающий код должен это увидеть)."""
+    teacher_id = _create_teacher(db_path)
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason) VALUES (datetime('now'), NULL, 'tcp_fail')",
+        db_path=db_path,
+    )
+    result = collect(teacher_id, db_path=db_path)
+    assert result["uptime"]["downtime_seconds_7d"] == 0
+    assert result["uptime"]["last_incident"]["ended_at"] is None
+    assert result["uptime"]["last_incident"]["reason"] == "tcp_fail"
+
+
+def test_uptime_last_incident_is_most_recent_by_start(db_path):
+    from datetime import datetime, timedelta
+
+    teacher_id = _create_teacher(db_path)
+    older = (datetime.now() - timedelta(days=1)).isoformat(sep=" ")
+    newer = (datetime.now() - timedelta(hours=1)).isoformat(sep=" ")
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason) VALUES (?, ?, 'dns_fail')",
+        (older, older),
+        db_path=db_path,
+    )
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason) VALUES (?, ?, 'tcp_fail')",
+        (newer, newer),
+        db_path=db_path,
+    )
+    result = collect(teacher_id, db_path=db_path)
+    assert result["uptime"]["last_incident"]["reason"] == "tcp_fail"

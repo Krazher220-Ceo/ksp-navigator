@@ -397,6 +397,51 @@
     } else {
       styleEl.textContent = "Нет — /upload_ksp в боте, чтобы КСП собирались в вашей манере.";
     }
+
+    renderUptime(data.uptime);
+  }
+
+  // М7.4: живучесть — та же таблица reason -> человеческий текст, что и
+  // bot/texts.py (DASHBOARD_REASON_LABELS). Дублируется, а не запрашивается
+  // с сервера — четыре строки, не стоит отдельного API-эндпоинта.
+  const REASON_LABELS = {
+    dns_fail: "не резолвился DNS",
+    tcp_fail: "сеть недоступна (TCP)",
+    telegram_5xx: "Telegram отвечает ошибкой сервера",
+    bot_process: "процесс бота не запущен",
+    worker_stuck: "воркер очереди завис",
+  };
+
+  function formatDowntime(seconds) {
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const remMinutes = minutes % 60;
+    return hours ? hours + " ч " + remMinutes + " мин" : remMinutes + " мин";
+  }
+
+  function renderUptime(uptime) {
+    document.getElementById("dash-uptime-title").textContent = "Живучесть (с " + uptime.measured_since + ")";
+
+    const lastEl = document.getElementById("dash-uptime-last-incident");
+    if (uptime.last_incident) {
+      const reasonLabel = REASON_LABELS[uptime.last_incident.reason] || uptime.last_incident.reason;
+      lastEl.hidden = false;
+      if (!uptime.last_incident.ended_at) {
+        lastEl.textContent = "Сейчас недоступно: " + reasonLabel;
+      } else {
+        lastEl.textContent =
+          "Последний сбой: " + uptime.last_incident.started_at.slice(0, 16).replace("T", " ") +
+          " — " + uptime.last_incident.ended_at.slice(0, 16).replace("T", " ") +
+          ", причина: " + reasonLabel;
+      }
+    } else {
+      lastEl.hidden = true;
+    }
+
+    const statsEl = document.getElementById("dash-uptime-stats");
+    statsEl.textContent = uptime.incidents_7d
+      ? "Сбоев за 7 дней: " + uptime.incidents_7d + ", суммарно недоступно: " + formatDowntime(uptime.downtime_seconds_7d)
+      : "Сбоев за 7 дней не было";
   }
 
   function initDashboardScreen() {

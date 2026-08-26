@@ -390,3 +390,23 @@ LIMIT_TOKENS_EXCEEDED = (
     "Дневной потолок токенов на сегодня исчерпан ({used} из {limit}).\n"
     "Обновится в полночь по Костанаю ({reset_time})."
 )
+
+# --- М7.4: живучесть в дашборде ---
+
+DASHBOARD_UPTIME_HEADER = "\n\nЖивучесть (с {since}):"
+DASHBOARD_UPTIME_NO_INCIDENTS = "\n  сбоев за 7 дней не было"
+DASHBOARD_UPTIME_STATS = "\n  сбоев за 7 дней: {count}, суммарно недоступно: {downtime}"
+DASHBOARD_UPTIME_LAST_INCIDENT_ONGOING = "\n  сейчас недоступно: {reason_label} (с {started})"
+DASHBOARD_UPTIME_LAST_INCIDENT_RESOLVED = "\n  последний сбой: {started} — {ended}, причина: {reason_label}"
+
+# Человеческие подписи причин — дублируют core.incidents.REASON_LABELS
+# текстом для показа в боте; core.incidents не тянем сюда как зависимость
+# ради одного словаря (bot/texts.py не должен знать про core.incidents,
+# PLAN_STAGE1.md Б8.1 — здесь только тексты, не логика).
+DASHBOARD_REASON_LABELS = {
+    "dns_fail": "не резолвился DNS",
+    "tcp_fail": "сеть недоступна (TCP)",
+    "telegram_5xx": "Telegram отвечает ошибкой сервера",
+    "bot_process": "процесс бота не запущен",
+    "worker_stuck": "воркер очереди завис",
+}

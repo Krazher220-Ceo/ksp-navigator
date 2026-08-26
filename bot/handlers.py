@@ -1365,7 +1365,9 @@ def format_dashboard_text(data: dict) -> str:
     Не в core/dashboard.py: там только расчёт, текст для конкретного канала —
     дело вызывающего кода (см. шапку модуля core/dashboard.py)."""
     if not data["has_profile"]:
-        return texts.DASHBOARD_NO_PROFILE
+        # М7.4: живучесть не про конкретного учителя — показывается даже
+        # без профиля, в отличие от остального дашборда.
+        return texts.DASHBOARD_NO_PROFILE + _format_uptime_text(data["uptime"])
 
     text = texts.DASHBOARD_HEADER
     text += texts.DASHBOARD_QUEUE.format(**data["queue"])
@@ -1393,6 +1395,47 @@ def format_dashboard_text(data: dict) -> str:
         ksp_used=usage["generate_ksp"], ksp_limit=usage["generate_ksp_limit"],
         ktp_used=usage["generate_ktp"], ktp_limit=usage["generate_ktp_limit"],
     )
+
+    text += _format_uptime_text(data["uptime"])
+
+    return text
+
+
+def _format_downtime_duration(seconds: int) -> str:
+    """10 мин / 1 ч 30 мин — коротко и по-русски, не "0:10:00"."""
+    minutes = seconds // 60
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours} ч {minutes} мин"
+    return f"{minutes} мин"
+
+
+def _format_uptime_text(uptime: dict) -> str:
+    """М7.4: отдельная функция — используется и в /dashboard с профилем,
+    и без него (данные о живучести общие на всю систему, не про учителя)."""
+    text = texts.DASHBOARD_UPTIME_HEADER.format(since=uptime["measured_since"])
+
+    last = uptime["last_incident"]
+    if last is not None:
+        reason_label = texts.DASHBOARD_REASON_LABELS.get(last["reason"], last["reason"])
+        if last["ended_at"] is None:
+            text += texts.DASHBOARD_UPTIME_LAST_INCIDENT_ONGOING.format(
+                reason_label=reason_label, started=str(last["started_at"])[:16].replace("T", " ")
+            )
+        else:
+            text += texts.DASHBOARD_UPTIME_LAST_INCIDENT_RESOLVED.format(
+                started=str(last["started_at"])[:16].replace("T", " "),
+                ended=str(last["ended_at"])[:16].replace("T", " "),
+                reason_label=reason_label,
+            )
+
+    if uptime["incidents_7d"]:
+        text += texts.DASHBOARD_UPTIME_STATS.format(
+            count=uptime["incidents_7d"],
+            downtime=_format_downtime_duration(uptime["downtime_seconds_7d"]),
+        )
+    else:
+        text += texts.DASHBOARD_UPTIME_NO_INCIDENTS
 
     return text
 

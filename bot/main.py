@@ -30,6 +30,7 @@ from bot.handlers import (
     router,
 )
 from core.config import settings
+from core.incidents import format_incident_message, get_unnotified_resolved_incidents, mark_notified
 from core.queue import QueueWorker
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,29 @@ async def _register_bot_commands(bot: Bot) -> None:
     await bot.set_my_commands(
         [BotCommand(command=name, description=description) for name, description in texts.BOT_COMMANDS]
     )
+
+
+async def _notify_unresolved_incidents(bot: Bot) -> None:
+    """М7.1: проверка при СТАРТЕ бота, не только по таймеру (ловушка 3
+    плана) — если бот в момент восстановления сети сам перезапускался
+    (launchd KeepAlive), уведомление всё равно обязано уйти. watchdog.sh
+    закрывает инцидент (ended_at) сам, без доступа к боту — здесь только
+    досылка накопленных, ОДНО сообщение на инцидент (ловушка 1: не 26
+    сообщений на двухчасовой обрыв, как было бы по числу тревог watchdog)."""
+    if not settings.admin_telegram_chat_id:
+        logger.info("ADMIN_TELEGRAM_CHAT_ID не задан — уведомления об инцидентах не отправляются")
+        return
+
+    incidents = get_unnotified_resolved_incidents()
+    for incident in incidents:
+        try:
+            await bot.send_message(settings.admin_telegram_chat_id, format_incident_message(incident))
+            mark_notified(incident["id"])
+        except Exception:
+            logger.exception(
+                "не удалось отправить уведомление об инциденте id=%s — попробую при следующем старте",
+                incident["id"],
+            )
 
 
 async def _register_chat_menu_button(bot: Bot) -> None:
@@ -170,6 +194,7 @@ async def run() -> None:
         await bot.delete_webhook(drop_pending_updates=True)
         await _register_bot_commands(bot)
         await _register_chat_menu_button(bot)
+        await _notify_unresolved_incidents(bot)
         await dp.start_polling(bot)
     finally:
         worker.stop()

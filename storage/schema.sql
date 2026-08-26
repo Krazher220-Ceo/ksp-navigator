@@ -110,7 +110,30 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     PRIMARY KEY (telegram_user_id, day, operation)
 );
 
+-- incidents — живучесть (блок М7, PLAN_STAGE2.md). Пишет scripts/watchdog.sh
+-- напрямую через sqlite3 CLI (у watchdog нет доступа к процессу бота —
+-- М7.1, ловушка 2), читает и закрывает уведомлением core/incidents.py.
+-- reason: 'dns_fail' | 'tcp_fail' | 'telegram_5xx' | 'bot_process' |
+-- 'worker_stuck' — коды причин watchdog различает по коду возврата curl,
+-- не по тексту сообщения (М7.2, ловушка).
+CREATE TABLE IF NOT EXISTS incidents (
+    id INTEGER PRIMARY KEY,
+    started_at TIMESTAMP NOT NULL,
+    ended_at TIMESTAMP,
+    reason TEXT NOT NULL,
+    notified INTEGER NOT NULL DEFAULT 0
+);
+
+-- worker_heartbeat — одна строка (id=1), обновляется core.queue.QueueWorker
+-- на каждом проходе цикла (блок М7.3). Отдельная таблица, не поле в
+-- tasks: воркер жив даже когда задач нет вообще, и это тоже нужно видеть.
+CREATE TABLE IF NOT EXISTS worker_heartbeat (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Индексы сверх документа (PLAN_STAGE1.md, задача Б1.1)
 CREATE INDEX IF NOT EXISTS idx_ktp_teacher ON ktp_entries(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_incidents_unresolved ON incidents(ended_at, notified);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_teachers_tg ON teachers(telegram_user_id);

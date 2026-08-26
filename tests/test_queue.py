@@ -16,12 +16,14 @@ from core.db import init_db, query, transaction
 from core.queue import (
     MAX_RETRIES,
     RETRY_DELAYS_SECONDS,
+    STUCK_PROCESSING_MINUTES_BY_TYPE,
     QueueWorker,
     claim_next,
     complete,
     enqueue,
     fail,
     recover_stuck_tasks,
+    update_worker_heartbeat,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -393,3 +395,131 @@ async def test_worker_run_forever_can_be_stopped(db_path):
     await asyncio.sleep(0.05)
     worker.stop()
     await asyncio.wait_for(run_task, timeout=1.0)  # не должно зависнуть навсегда
+
+
+# =====================================================================
+# М7.3 — пороги зависания по типу задачи, живость воркера
+# =====================================================================
+
+
+def test_generate_ksp_stuck_threshold_is_three_minutes(db_path):
+    """generate_ksp реально занимает 25-42с на живых замерах
+    (KPI_STAGE1.md) — 3 минуты порог с большим запасом, не 15, как было
+    общим порогом до блока М7."""
+    task_id = enqueue("generate_ksp", {}, db_path=db_path)
+    claim_next(db_path=db_path)
+    _age_updated_at(task_id, 4 * 60, db_path)  # 4 минуты > порога 3 минуты
+
+    recovered = recover_stuck_tasks(db_path=db_path)
+    assert recovered == 1
+    row = query("SELECT status FROM tasks WHERE id = ?", (task_id,), db_path=db_path)[0]
+    assert row["status"] == "pending"
+
+
+def test_generate_ksp_not_recovered_before_its_own_threshold(db_path):
+    task_id = enqueue("generate_ksp", {}, db_path=db_path)
+    claim_next(db_path=db_path)
+    _age_updated_at(task_id, 2 * 60, db_path)  # 2 минуты < порога 3 минуты
+
+    recovered = recover_stuck_tasks(db_path=db_path)
+    assert recovered == 0
+    row = query("SELECT status FROM tasks WHERE id = ?", (task_id,), db_path=db_path)[0]
+    assert row["status"] == "processing"
+
+
+def test_generate_ktp_has_its_own_longer_threshold(db_path):
+    """generate_ktp может собирать полный учебный год дольше, чем КСП —
+    порог 5 минут, отдельный от generate_ksp (3 минуты). Задача,
+    зависшая на 4 минуты, должна остаться processing для КТП, но была
+    бы восстановлена для КСП — ровно та ловушка плана про "один порог на
+    всё"."""
+    assert STUCK_PROCESSING_MINUTES_BY_TYPE["generate_ktp"] > STUCK_PROCESSING_MINUTES_BY_TYPE["generate_ksp"]
+
+    task_id = enqueue("generate_ktp", {}, db_path=db_path)
+    claim_next(db_path=db_path)
+    _age_updated_at(task_id, 4 * 60, db_path)
+
+    recovered = recover_stuck_tasks(db_path=db_path)
+    assert recovered == 0
+    row = query("SELECT status FROM tasks WHERE id = ?", (task_id,), db_path=db_path)[0]
+    assert row["status"] == "processing"
+
+
+def test_different_types_recovered_independently_in_same_call(db_path):
+    """Один вызов recover_stuck_tasks обрабатывает все типы разом, каждый
+    по своему порогу — не только generate_ksp, если в очереди вперемешку
+    разные типы."""
+    ksp_id = enqueue("generate_ksp", {}, db_path=db_path)
+    ktp_id = enqueue("generate_ktp", {}, db_path=db_path)
+    claim_next(db_path=db_path)
+    claim_next(db_path=db_path)
+    _age_updated_at(ksp_id, 4 * 60, db_path)  # старше порога generate_ksp (3 мин)
+    _age_updated_at(ktp_id, 4 * 60, db_path)  # младше порога generate_ktp (5 мин)
+
+    recovered = recover_stuck_tasks(db_path=db_path)
+    assert recovered == 1
+
+    ksp_status = query("SELECT status FROM tasks WHERE id = ?", (ksp_id,), db_path=db_path)[0]["status"]
+    ktp_status = query("SELECT status FROM tasks WHERE id = ?", (ktp_id,), db_path=db_path)[0]["status"]
+    assert ksp_status == "pending"
+    assert ktp_status == "processing"
+
+
+def test_unknown_task_type_uses_conservative_default_threshold(db_path):
+    """Тип задачи без своего порога в STUCK_PROCESSING_MINUTES_BY_TYPE
+    (например будущий 'transcribe' до блока К3) — не молчание, а старый
+    консервативный порог (STUCK_PROCESSING_MINUTES=15)."""
+    task_id = enqueue("parse_ksp", {}, db_path=db_path)  # известный тип, для контраста
+    claim_next(db_path=db_path)
+    _age_updated_at(task_id, 4 * 60, db_path)  # старше своего порога (3 мин)
+
+    recovered = recover_stuck_tasks(db_path=db_path)
+    assert recovered == 1  # parse_ksp - известный тип, порог 3 минуты сработал
+
+
+def test_stuck_minutes_override_applies_uniformly_to_all_types(db_path):
+    """Явный stuck_minutes (для тестов/ручной диагностики) игнорирует
+    пороги по типу и применяется одним числом ко всем сразу — задача
+    generate_ktp (у которой собственный порог 5 минут) восстанавливается
+    уже через 2 минуты, если задан override=1."""
+    task_id = enqueue("generate_ktp", {}, db_path=db_path)
+    claim_next(db_path=db_path)
+    _age_updated_at(task_id, 2 * 60, db_path)  # 2 минуты — младше порога generate_ktp (5), но старше override (1)
+
+    recovered = recover_stuck_tasks(db_path=db_path, stuck_minutes=1)
+    assert recovered == 1
+    row = query("SELECT status FROM tasks WHERE id = ?", (task_id,), db_path=db_path)[0]
+    assert row["status"] == "pending"
+
+
+def test_worker_heartbeat_creates_row_when_missing(db_path):
+    rows = query("SELECT * FROM worker_heartbeat", db_path=db_path)
+    assert rows == []
+
+    update_worker_heartbeat(db_path=db_path)
+
+    rows = query("SELECT * FROM worker_heartbeat WHERE id = 1", db_path=db_path)
+    assert len(rows) == 1
+
+
+def test_worker_heartbeat_updates_existing_row_not_duplicates(db_path):
+    update_worker_heartbeat(db_path=db_path)
+    update_worker_heartbeat(db_path=db_path)
+    update_worker_heartbeat(db_path=db_path)
+
+    rows = query("SELECT * FROM worker_heartbeat", db_path=db_path)
+    assert len(rows) == 1
+
+
+async def test_run_forever_updates_heartbeat_on_each_cycle(db_path):
+    """М7.3 КГ: воркер обновляет отметку "последний проход цикла"."""
+    import asyncio
+
+    worker = QueueWorker(handlers={}, notify=lambda c, t: None, db_path=db_path, poll_interval=0.01)
+    run_task = asyncio.create_task(worker.run_forever())
+    await asyncio.sleep(0.05)
+    worker.stop()
+    await asyncio.wait_for(run_task, timeout=1.0)
+
+    rows = query("SELECT * FROM worker_heartbeat WHERE id = 1", db_path=db_path)
+    assert len(rows) == 1

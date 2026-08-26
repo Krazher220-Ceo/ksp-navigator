@@ -1636,7 +1636,9 @@ async def test_dashboard_without_profile_shows_friendly_message_not_generic_erro
 
     message = FakeMessage(text="/dashboard", user_id=901)
     await cmd_dashboard(message)
-    assert message.sent[0]["text"] == texts.DASHBOARD_NO_PROFILE
+    # М7.4: живучесть дописывается и без профиля - проверяем, что текст
+    # НАЧИНАЕТСЯ с дружелюбного сообщения, а не точное равенство целиком.
+    assert message.sent[0]["text"].startswith(texts.DASHBOARD_NO_PROFILE)
     assert message.sent[0]["text"] != texts.ERROR_NO_TEACHER_PROFILE
 
 
@@ -1737,3 +1739,104 @@ async def test_limit_check_does_not_consume_quota_by_itself(isolated_env):
     check_count_limit(952, "generate_ksp")
     usage = get_usage_today(952)
     assert usage["counts"].get("generate_ksp", 0) == 0
+
+
+# =====================================================================
+# М7.1 — уведомление о завершённых инцидентах при старте бота
+# =====================================================================
+
+
+async def test_notify_unresolved_incidents_skips_when_admin_chat_id_not_set(isolated_env):
+    from bot.main import _notify_unresolved_incidents
+    from core.config import settings as core_settings
+
+    original = core_settings.admin_telegram_chat_id
+    object.__setattr__(core_settings, "admin_telegram_chat_id", None)
+    try:
+        bot = FakeBot()
+        await _notify_unresolved_incidents(bot)
+        assert bot.sent_messages == []
+    finally:
+        object.__setattr__(core_settings, "admin_telegram_chat_id", original)
+
+
+async def test_notify_unresolved_incidents_sends_one_message_per_incident(isolated_env):
+    """М7.1, ловушка 1 дословно: одно сообщение на инцидент, а не на
+    каждую тревогу watchdog внутри него."""
+    from bot.main import _notify_unresolved_incidents
+    from core.config import settings as core_settings
+
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason, notified) "
+        "VALUES ('2026-08-25 10:00:00', '2026-08-25 11:57:00', 'dns_fail', 0)"
+    )
+
+    original = core_settings.admin_telegram_chat_id
+    object.__setattr__(core_settings, "admin_telegram_chat_id", 999999)
+    try:
+        bot = FakeBot()
+        await _notify_unresolved_incidents(bot)
+        assert len(bot.sent_messages) == 1
+        chat_id, text = bot.sent_messages[0]
+        assert chat_id == 999999
+        assert "10:00" in text
+    finally:
+        object.__setattr__(core_settings, "admin_telegram_chat_id", original)
+
+    # повторный запуск (следующий старт бота) не шлёт то же самое снова
+    rows = query("SELECT notified FROM incidents")
+    assert rows[0]["notified"] == 1
+
+
+async def test_notify_unresolved_incidents_sends_multiple_separately(isolated_env):
+    from bot.main import _notify_unresolved_incidents
+    from core.config import settings as core_settings
+
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason, notified) "
+        "VALUES ('2026-08-25 10:00:00', '2026-08-25 11:57:00', 'dns_fail', 0)"
+    )
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason, notified) "
+        "VALUES ('2026-08-26 11:28:00', '2026-08-26 11:34:00', 'tcp_fail', 0)"
+    )
+
+    original = core_settings.admin_telegram_chat_id
+    object.__setattr__(core_settings, "admin_telegram_chat_id", 999999)
+    try:
+        bot = FakeBot()
+        await _notify_unresolved_incidents(bot)
+        assert len(bot.sent_messages) == 2
+    finally:
+        object.__setattr__(core_settings, "admin_telegram_chat_id", original)
+
+
+async def test_dashboard_text_shows_uptime_with_resolved_incident(isolated_env):
+    from bot.handlers import cmd_dashboard
+
+    _create_teacher(904)
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason) VALUES "
+        "('2026-08-25 10:00:00', '2026-08-25 11:57:00', 'dns_fail')"
+    )
+    message = FakeMessage(text="/dashboard", user_id=904)
+    await cmd_dashboard(message)
+    text = message.sent[0]["text"]
+    assert "не резолвился DNS" in text
+    assert "10:00" in text
+    assert "11:57" in text
+    assert "1 ч 57 мин" in text  # суммарная недоступность за 7 дней
+
+
+async def test_dashboard_text_shows_ongoing_incident(isolated_env):
+    from bot.handlers import cmd_dashboard
+
+    _create_teacher(905)
+    execute(
+        "INSERT INTO incidents (started_at, ended_at, reason) VALUES (datetime('now'), NULL, 'tcp_fail')"
+    )
+    message = FakeMessage(text="/dashboard", user_id=905)
+    await cmd_dashboard(message)
+    text = message.sent[0]["text"]
+    assert "сейчас недоступно" in text
+    assert "сеть недоступна (TCP)" in text
