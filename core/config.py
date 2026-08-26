@@ -71,6 +71,16 @@ class Settings:
     # бот не падает из-за этого (тот же принцип, что webapp_url).
     admin_telegram_chat_id: int | None
 
+    # К1 (PLAN_STAGE2.md): whisper.cpp — все три читаются здесь БЕЗ
+    # проверки существования (whisper_binary может отсутствовать в PATH,
+    # whisper_model_path — не существовать на диске). Проверка ленивая, в
+    # момент первого вызова транскрипции (core/transcriber.py, блок К1.2/К3),
+    # а не здесь — отсутствие whisper не должно мешать боту стартовать,
+    # весь этап 1 обязан работать на машине без него.
+    whisper_binary: str
+    whisper_model_path: str | None
+    whisper_language: str
+
     log_level: str
 
 
@@ -159,6 +169,9 @@ def _build_settings() -> Settings:
         webapp_url=_env("WEBAPP_URL"),
         webapp_port=webapp_port,
         admin_telegram_chat_id=admin_telegram_chat_id,
+        whisper_binary=_env("WHISPER_BINARY", "whisper-cli"),
+        whisper_model_path=_env("WHISPER_MODEL_PATH"),
+        whisper_language=_env("WHISPER_LANGUAGE", "ru"),
         log_level=_env("LOG_LEVEL", "INFO"),
     )
 
