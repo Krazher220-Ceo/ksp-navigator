@@ -196,6 +196,15 @@ TASK_TEXTBOOK_HEADER = (
     "реально опираться на это содержание, не только на тему:"
 )
 
+# К5: конспект урока, уже собранный из настоящей аудиозаписи (блок К4,
+# core.konspekt_generator) — КСП строится вокруг того, что реально было
+# на уроке, а не только вокруг темы.
+TASK_KONSPEKT_HEADER = (
+    "Конспект этого урока, составленный по расшифровке настоящей "
+    "аудиозаписи — ход урока должен раскладывать по этапам именно то, "
+    "что в этом конспекте есть, а не придумывать заново:"
+)
+
 
 def _render_lesson_options(options: "LessonOptions | None") -> str:
     """Рендерит инструкции по опциям Р5.2/Р5.3 в промпт. Пустая строка,
@@ -480,6 +489,7 @@ def build_prompt(
     include_razdatochnye_materialy: bool = False,
     options: "LessonOptions | None" = None,
     textbook_text: str | None = None,
+    konspekt_text: str | None = None,
 ) -> str:
     """КОНТЕКСТ (если есть профиль стиля) + ЗАДАЧА — ровно те два блока
     промпта из MASTER.md, раздел 1.6. Схема ответа сюда не встраивается
@@ -496,6 +506,12 @@ def build_prompt(
     textbook_text — Р6.2: текст со страницы учебника, распознанный по
     фото (core.textbook_ocr). Урок должен опираться на него, а не только
     на тему — модель прямо просят использовать его содержание.
+
+    konspekt_text — К5: уже собранный конспект реального урока
+    (core.konspekt_generator, формат — тот же текст, что бот отправляет
+    учителю, core.konspekt_generator.format_konspekt_text не дублируется
+    здесь второй раз). Тем же способом, что и textbook_text — не меняет
+    промпт вообще, если не передан.
 
     М4.2 (PLAN_STAGE2.md): порядок частей ниже — не произвольный, это
     компоновка под префиксный кэш провайдера (у DeepSeek он автоматический —
@@ -536,6 +552,8 @@ def build_prompt(
         parts.append(options_text)
     if textbook_text and textbook_text.strip():
         parts.append(f"{TASK_TEXTBOOK_HEADER}\n{textbook_text.strip()}")
+    if konspekt_text and konspekt_text.strip():
+        parts.append(f"{TASK_KONSPEKT_HEADER}\n{konspekt_text.strip()}")
 
     return "\n\n".join(parts)
 
@@ -732,6 +750,7 @@ async def generate_ksp(
     include_razdatochnye_materialy: bool = False,
     options: "LessonOptions | None" = None,
     textbook_text: str | None = None,
+    konspekt_text: str | None = None,
 ) -> dict:
     """Генерирует и валидирует JSON-содержимое КСП (без сборки .docx —
     это отдельно, save_generated_ksp). Профиль стиля учителя (если
@@ -743,7 +762,7 @@ async def generate_ksp(
     Недостающие поля никогда не дописываются заглушками (Б6.2).
 
     include_razdatochnye_materialy — Р3.1, options — Р5.2/Р5.3,
-    textbook_text — Р6.2, см. build_prompt."""
+    textbook_text — Р6.2, konspekt_text — К5, см. build_prompt."""
     style_profile = _fetch_style_profile(teacher_id, db_path=db_path)
     prompt = build_prompt(
         topic,
@@ -757,6 +776,7 @@ async def generate_ksp(
         include_razdatochnye_materialy=include_razdatochnye_materialy,
         options=options,
         textbook_text=textbook_text,
+        konspekt_text=konspekt_text,
     )
     schema = _build_response_schema(include_razdatochnye_materialy)
 
@@ -931,6 +951,7 @@ async def generate_and_save_ksp(
     include_razdatochnye_materialy: bool = False,
     options: "LessonOptions | None" = None,
     textbook_text: str | None = None,
+    konspekt_text: str | None = None,
 ) -> dict:
     """Полный конвейер: промпт -> LLM -> валидация -> .docx -> запись в
     generated_ksp. Удобный вызов для bot/handlers.py (блок Б8); тесты
@@ -938,7 +959,8 @@ async def generate_and_save_ksp(
     по отдельности.
 
     include_razdatochnye_materialy — Р3.1, options — Р5.1/Р5.2/Р5.3,
-    textbook_text — Р6.2, см. build_prompt / _fill_header_fields."""
+    textbook_text — Р6.2, konspekt_text — К5, см. build_prompt /
+    _fill_header_fields."""
     template = get_template(template_id, db_path=db_path)
     if template is None:
         raise KSPGenerationError(f"шаблон с id={template_id} не найден")
@@ -956,6 +978,7 @@ async def generate_and_save_ksp(
         include_razdatochnye_materialy=include_razdatochnye_materialy,
         options=options,
         textbook_text=textbook_text,
+        konspekt_text=konspekt_text,
     )
 
     return save_generated_ksp(

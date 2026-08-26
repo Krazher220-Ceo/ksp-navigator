@@ -278,6 +278,53 @@ def test_build_prompt_without_textbook_text_unchanged():
     assert without == with_empty == with_blank
 
 
+# --- К5: конспект урока в промпте ---
+
+
+def test_build_prompt_includes_konspekt_text_when_given():
+    prompt = build_prompt(
+        "Тема", "Раздел", None, "10А", DURATION,
+        konspekt_text="📝 Конспект: Кинематика\n\nГлавное:\n• Путь — скаляр",
+    )
+    assert "Путь — скаляр" in prompt
+
+
+def test_build_prompt_without_konspekt_text_unchanged():
+    without = build_prompt("Тема", "Раздел", None, "10А", DURATION)
+    with_empty = build_prompt("Тема", "Раздел", None, "10А", DURATION, konspekt_text=None)
+    with_blank = build_prompt("Тема", "Раздел", None, "10А", DURATION, konspekt_text="   ")
+    assert without == with_empty == with_blank
+
+
+def test_build_prompt_konspekt_text_in_variable_tail():
+    """Тот же порядок, что и у textbook_text (М4.2) — переменная часть,
+    после ЗАДАЧИ, не до неё."""
+    prompt = build_prompt(
+        topic="Кинематика",
+        razdel="Механика",
+        objective_code=None,
+        klass="10А",
+        duration_minutes=DURATION,
+        konspekt_text="Конспект настоящего урока про кинематику.",
+    )
+    task_pos = prompt.index("ЗАДАЧА:")
+    konspekt_pos = prompt.index("Конспект настоящего урока")
+    assert task_pos < konspekt_pos
+
+
+def test_build_prompt_konspekt_text_and_textbook_text_can_coexist():
+    """К5, ловушка «не форкать build_prompt» — konspekt_text и
+    textbook_text это два независимых необязательных блока, оба могут
+    быть заданы одновременно без конфликта."""
+    prompt = build_prompt(
+        "Тема", "Раздел", None, "10А", DURATION,
+        textbook_text="Текст учебника про импульс.",
+        konspekt_text="Конспект настоящего урока.",
+    )
+    assert "Текст учебника про импульс" in prompt
+    assert "Конспект настоящего урока" in prompt
+
+
 # --- Р5.1/Р5.2/Р5.3: LessonOptions ---
 
 

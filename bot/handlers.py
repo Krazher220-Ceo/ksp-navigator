@@ -980,13 +980,55 @@ async def cmd_generate(message: Message, state: FSMContext) -> None:
     await _ask_generate_topic(message, state)
 
 
-@router.message(Generate.waiting_for_topic)
-async def generate_topic_received(message: Message, state: FSMContext) -> None:
-    topic = (message.text or "").strip()
-    if not topic:
-        await _ask_generate_topic(message, state)
+@router.callback_query(F.data.startswith("ksp_from_konspekt:"))
+async def ksp_from_konspekt_pressed(callback: CallbackQuery, state: FSMContext) -> None:
+    """К5: кнопка под готовым конспектом — сразу в /generate с
+    предзаполненной темой (её уже определила модель по расшифровке,
+    core.konspekt_generator) и текстом конспекта для build_prompt.
+
+    Класс и код цели предзаполнить НЕЧЕМ и здесь не выдумываются: /konspekt
+    (К2.3) их не спрашивает — только принимает аудио, в самой записи их
+    тоже нет. Учитель вводит их как при обычном /generate — тот же диалог,
+    просто с уже готовой темой (плановый текст К4.3/К5 предполагает
+    предзаполнение и классом тоже; взять его неоткуда, а дописывать
+    выдуманным значением — прямое нарушение Б6.2, отклонение записано в
+    NIGHT_REPORT_STAGE2.md)."""
+    konspekt_id = callback.data.split(":", 1)[1]
+
+    teacher = _get_teacher(callback.from_user.id)
+    if teacher is None:
+        await callback.message.answer(texts.ERROR_NO_TEACHER_PROFILE)
+        await callback.answer()
         return
 
+    # Отсутствие записи и чужой konspekt_id дают один и тот же ответ — тот
+    # же приём, что history_resend (не подтверждаем существование чужой
+    # записи чужому пользователю).
+    rows = query("SELECT teacher_id, content_json FROM konspekty WHERE id = ?", (konspekt_id,))
+    if not rows or rows[0]["teacher_id"] != teacher["id"]:
+        await callback.answer(texts.KSP_FROM_KONSPEKT_NOT_FOUND, show_alert=True)
+        return
+
+    content = json.loads(rows[0]["content_json"])
+
+    await state.clear()
+    await go_to(state, Generate.waiting_for_topic)
+    await state.update_data(
+        teacher_id=teacher["id"],
+        subject=teacher["subject"],
+        konspekt_text=format_konspekt_text(content),
+    )
+
+    await _proceed_with_topic(callback.message, state, content["tema"])
+    await callback.answer()
+
+
+async def _proceed_with_topic(message: Message, state: FSMContext, topic: str) -> None:
+    """Общая часть после того, как тема стала известна — что при обычном
+    ручном вводе в /generate (generate_topic_received), что при
+    предзаполнении темой из уже готового конспекта (К5,
+    ksp_from_konspekt_pressed): код цели угадывается тем же способом в
+    обоих случаях, не двумя разными."""
     data = await state.get_data()
     code = guess_objective_code(data["teacher_id"], topic)
     await state.update_data(topic=topic, objective_code=code)
@@ -998,6 +1040,15 @@ async def generate_topic_received(message: Message, state: FSMContext) -> None:
     else:
         await go_to(state, Generate.waiting_for_objective_code)
         await _ask_generate_objective_code(message, state)
+
+
+@router.message(Generate.waiting_for_topic)
+async def generate_topic_received(message: Message, state: FSMContext) -> None:
+    topic = (message.text or "").strip()
+    if not topic:
+        await _ask_generate_topic(message, state)
+        return
+    await _proceed_with_topic(message, state, topic)
 
 
 @router.message(Generate.waiting_for_objective_code)
@@ -1264,6 +1315,7 @@ async def generate_confirmed(callback: CallbackQuery, state: FSMContext) -> None
         "objective_code": data.get("objective_code"),
         "options": data.get("options"),  # Р5.2/Р5.3, словарь полей LessonOptions или None
         "textbook_photo_paths": data.get("textbook_photo_paths") or [],  # Р6.1
+        "konspekt_text": data.get("konspekt_text"),  # К5
     }
     enqueue("generate_ksp", payload, chat_id=callback.message.chat.id)
     await state.clear()
@@ -1834,6 +1886,7 @@ def make_generate_ksp_handler(bot: Bot):
                 ktp_entry_id=payload.get("ktp_entry_id"),
                 options=options,
                 textbook_text=textbook_text,
+                konspekt_text=payload.get("konspekt_text"),
                 llm_client=llm_client,
             )
         finally:
@@ -2038,7 +2091,10 @@ def make_konspekt_handler(bot: Bot):
     Топик/код цели как вспомогательный контекст в generate_konspekt пока
     не передаются: /konspekt (К2.3) их не спрашивает — только аудио.
     Расширить это позже можно без изменения самого генератора, у него
-    оба параметра уже необязательные."""
+    оба параметра уже необязательные.
+
+    К5: последнее сообщение несёт кнопку «Собрать КСП по этому
+    конспекту» — ведёт в ksp_from_konspekt_pressed."""
 
     async def handler(task: dict) -> dict:
         payload = task["payload"]
@@ -2066,8 +2122,17 @@ def make_konspekt_handler(bot: Bot):
             (konspekt_id, payload["teacher_id"], payload["transcript_id"], content["tema"], json.dumps(content, ensure_ascii=False)),
         )
 
-        for chunk in _split_for_telegram(format_konspekt_text(content)):
-            await bot.send_message(chat_id, chunk)
+        # К5: кнопка на ПОСЛЕДНЕМ сообщении (не на каждом — при разбивке
+        # на несколько частей одна кнопка под всем конспектом достаточна).
+        chunks = _split_for_telegram(format_konspekt_text(content))
+        ksp_button = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=texts.KSP_FROM_KONSPEKT_BUTTON, callback_data=f"ksp_from_konspekt:{konspekt_id}")]
+            ]
+        )
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            await bot.send_message(chat_id, chunk, reply_markup=ksp_button if is_last else None)
 
         return {"konspekt_id": konspekt_id}
 

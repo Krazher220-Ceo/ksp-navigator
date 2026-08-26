@@ -28,6 +28,7 @@ from bot.handlers import (
     konspekt_voice_received,
     konspekt_wrong_input,
     format_konspekt_text,
+    ksp_from_konspekt_pressed,
     make_konspekt_handler,
     make_transcribe_handler,
     cmd_cancel,
@@ -209,7 +210,7 @@ class FakeBot:
         self.downloaded.append((file, destination))
 
     async def send_message(self, chat_id, text, **kwargs):
-        self.sent_messages.append((chat_id, text))
+        self.sent_messages.append((chat_id, text, kwargs.get("reply_markup")))
 
     async def send_document(self, chat_id, document, caption=None, reply_markup=None, **kwargs):
         self.sent_documents.append(
@@ -588,6 +589,7 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
             "page_orientation": "book",
         },
         "textbook_photo_paths": [],  # /skip на шаге Р6.1 -> пустой список
+        "konspekt_text": None,  # К5: обычный /generate, не по кнопке конспекта
     }
     assert await state.get_state() is None
 
@@ -1808,7 +1810,7 @@ async def test_notify_unresolved_incidents_sends_one_message_per_incident(isolat
         bot = FakeBot()
         await _notify_unresolved_incidents(bot)
         assert len(bot.sent_messages) == 1
-        chat_id, text = bot.sent_messages[0]
+        chat_id, text, _ = bot.sent_messages[0]
         assert chat_id == 999999
         assert "10:00" in text
     finally:
@@ -2307,7 +2309,7 @@ async def test_konspekt_handler_splits_long_konspekt_into_multiple_messages(isol
     await handler(task)
 
     assert len(bot.sent_messages) > 1
-    for _, text in bot.sent_messages:
+    for _, text, _reply_markup in bot.sent_messages:
         assert len(text) <= 4000
 
 
@@ -2347,3 +2349,167 @@ def test_format_konspekt_text_includes_all_sections():
     # пустые секции (primery, domashnee_zadanie) не оставляют "хвостов" в тексте
     assert "Примеры:" not in text
     assert "Домашнее задание:" not in text
+
+
+# =====================================================================
+# К5 — кнопка «Собрать КСП по этому конспекту»
+# =====================================================================
+
+
+async def test_konspekt_message_carries_ksp_button_on_last_chunk_only(isolated_env, monkeypatch):
+    teacher_id = _create_teacher(950)
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-950', ?, 'audio', 'расшифровка', 47, 'ru')",
+        (teacher_id,),
+    )
+
+    long_content = dict(_SAMPLE_KONSPEKT_CONTENT)
+    long_content["glavnoe"] = [f"Пункт {i} длинного конспекта урока физики" for i in range(300)]
+
+    async def fake_generate_konspekt(transcript_text, *, llm_client=None, **kwargs):
+        return long_content
+
+    monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
+
+    bot = FakeBot()
+    handler = make_konspekt_handler(bot)
+    task = {
+        "id": "k4",
+        "type": "generate_konspekt",
+        "telegram_chat_id": 950,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "transcript_id": "tr-950"},
+    }
+    result = await handler(task)
+
+    assert len(bot.sent_messages) > 1
+    # ни у одного сообщения, кроме последнего, кнопки нет
+    for _, _text, reply_markup in bot.sent_messages[:-1]:
+        assert reply_markup is None
+    _, _text, last_markup = bot.sent_messages[-1]
+    assert last_markup is not None
+    button = last_markup.inline_keyboard[0][0]
+    assert button.text == texts.KSP_FROM_KONSPEKT_BUTTON
+    assert button.callback_data == f"ksp_from_konspekt:{result['konspekt_id']}"
+
+
+async def test_ksp_from_konspekt_pressed_prefills_topic_and_stores_konspekt_text(isolated_env):
+    teacher_id = _create_teacher(951)
+    konspekt_id = "ksp-src-951"
+    content = dict(_SAMPLE_KONSPEKT_CONTENT)
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-951', ?, 'audio', 'расшифровка', 47, 'ru')",
+        (teacher_id,),
+    )
+    execute(
+        "INSERT INTO konspekty (id, teacher_id, transcript_id, tema, content_json) VALUES (?, ?, ?, ?, ?)",
+        (konspekt_id, teacher_id, "tr-951", content["tema"], json.dumps(content, ensure_ascii=False)),
+    )
+
+    state = _state()
+    message = FakeMessage(user_id=951, chat_id=951)
+    callback = FakeCallbackQuery(data=f"ksp_from_konspekt:{konspekt_id}", message=message, user_id=951)
+    await ksp_from_konspekt_pressed(callback, state)
+
+    data = await state.get_data()
+    assert data["topic"] == content["tema"]
+    assert data["teacher_id"] == teacher_id
+    assert "Путь — скаляр, перемещение — вектор" in data["konspekt_text"]
+    # код цели по такой теме не угадывается -> следующий шаг — код цели, не раздел
+    assert await state.get_state() == Generate.waiting_for_objective_code.state
+    assert callback.answered  # callback.answer() вызван — не висит "часиками" в клиенте
+
+
+async def test_ksp_from_konspekt_pressed_rejects_foreign_konspekt(isolated_env):
+    owner_id = _create_teacher(952)
+    stranger_id = _create_teacher(953)
+    konspekt_id = "ksp-src-952"
+    content = dict(_SAMPLE_KONSPEKT_CONTENT)
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-952', ?, 'audio', 'расшифровка', 47, 'ru')",
+        (owner_id,),
+    )
+    execute(
+        "INSERT INTO konspekty (id, teacher_id, transcript_id, tema, content_json) VALUES (?, ?, ?, ?, ?)",
+        (konspekt_id, owner_id, "tr-952", content["tema"], json.dumps(content, ensure_ascii=False)),
+    )
+
+    state = _state()
+    message = FakeMessage(user_id=953, chat_id=953)
+    callback = FakeCallbackQuery(data=f"ksp_from_konspekt:{konspekt_id}", message=message, user_id=953)
+    await ksp_from_konspekt_pressed(callback, state)
+
+    assert await state.get_state() is None  # диалог /generate не начался
+    assert callback.answered[-1]["show_alert"] is True
+    assert callback.answered[-1]["text"] == texts.KSP_FROM_KONSPEKT_NOT_FOUND
+    assert message.sent == []  # никакого шага диалога не задано
+
+
+async def test_ksp_from_konspekt_pressed_missing_konspekt_id(isolated_env):
+    _create_teacher(954)
+    state = _state()
+    message = FakeMessage(user_id=954, chat_id=954)
+    callback = FakeCallbackQuery(data="ksp_from_konspekt:нет-такого-id", message=message, user_id=954)
+    await ksp_from_konspekt_pressed(callback, state)
+
+    assert await state.get_state() is None
+    assert callback.answered[-1]["show_alert"] is True
+
+
+async def test_ksp_from_konspekt_pressed_requires_teacher_profile(isolated_env):
+    state = _state()
+    message = FakeMessage(user_id=955, chat_id=955)
+    callback = FakeCallbackQuery(data="ksp_from_konspekt:любой-id", message=message, user_id=955)
+    await ksp_from_konspekt_pressed(callback, state)
+
+    assert texts.ERROR_NO_TEACHER_PROFILE in [item["text"] for item in message.sent]
+
+
+async def test_generate_confirmed_carries_konspekt_text_through_to_task_payload(isolated_env):
+    """К5 целиком: кнопка под конспектом -> предзаполненный /generate ->
+    подтверждение -> конспект доехал до payload задачи очереди."""
+    teacher_id = _create_teacher(956)
+    konspekt_id = "ksp-src-956"
+    content = dict(_SAMPLE_KONSPEKT_CONTENT)
+    content["tema"] = "Совершенно новая уникальная тема"
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-956', ?, 'audio', 'расшифровка', 47, 'ru')",
+        (teacher_id,),
+    )
+    execute(
+        "INSERT INTO konspekty (id, teacher_id, transcript_id, tema, content_json) VALUES (?, ?, ?, ?, ?)",
+        (konspekt_id, teacher_id, "tr-956", content["tema"], json.dumps(content, ensure_ascii=False)),
+    )
+
+    state = _state()
+    message = FakeMessage(user_id=956, chat_id=956)
+    callback = FakeCallbackQuery(data=f"ksp_from_konspekt:{konspekt_id}", message=message, user_id=956)
+    await ksp_from_konspekt_pressed(callback, state)
+    assert await state.get_state() == Generate.waiting_for_objective_code.state
+
+    await generate_objective_code_received(FakeMessage(text="-"), state)
+    await generate_razdel_received(FakeMessage(text="Механика"), state)
+    await generate_klass_received(FakeMessage(text="10А"), state)
+    await generate_duration_received(FakeMessage(text="40"), state)
+    await generate_textbook_photos_skipped(FakeMessage(text="/skip"), state)
+    await generate_extra_options_received(FakeMessage(text="-"), state)
+
+    template_id = query("SELECT id FROM templates WHERE is_builtin = 1")[0]["id"]
+    tpl_message = FakeMessage(chat_id=956)
+    tpl_callback = FakeCallbackQuery(data=f"gen_tpl:{template_id}", message=tpl_message)
+    await generate_template_chosen(tpl_callback, state)
+
+    from bot.handlers import generate_confirmed
+
+    confirm_callback = FakeCallbackQuery(data="gen_confirm", message=tpl_message)
+    await generate_confirmed(confirm_callback, state)
+
+    tasks = query("SELECT * FROM tasks WHERE type = 'generate_ksp'")
+    assert len(tasks) == 1
+    payload = json.loads(tasks[0]["payload"])
+    assert payload["topic"] == "Совершенно новая уникальная тема"
+    assert "Путь — скаляр, перемещение — вектор" in payload["konspekt_text"]
