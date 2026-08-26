@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from core.db import init_db, query, transaction
+from core.db import execute, init_db, query, transaction
 from core.queue import (
     MAX_RETRIES,
     RETRY_DELAYS_SECONDS,
@@ -523,3 +523,70 @@ async def test_run_forever_updates_heartbeat_on_each_cycle(db_path):
 
     rows = query("SELECT * FROM worker_heartbeat WHERE id = 1", db_path=db_path)
     assert len(rows) == 1
+
+
+# =====================================================================
+# Аудит этапа 2, находка 3 — heartbeat тикает и ВО ВРЕМЯ долгой задачи
+# =====================================================================
+
+
+async def test_heartbeat_updated_while_long_task_is_running(db_path):
+    """Пока идёт `await _process_one`, цикл воркера стоит на этом await и
+    отметку "жив" не ставит. При пороге протухания 180с в watchdog.sh это
+    давало ложный инцидент "воркер завис" на исправном воркере, честно
+    расшифровывающем урок.
+
+    Проверяем настоящий эффект, а не факт вызова: ставим отметку заведомо
+    старой, запускаем медленную задачу и смотрим, что строка в базе за
+    время её работы обновилась."""
+    import asyncio
+
+    execute(
+        "INSERT INTO worker_heartbeat (id, updated_at) VALUES (1, datetime('now', '-2 hours')) "
+        "ON CONFLICT(id) DO UPDATE SET updated_at = datetime('now', '-2 hours')",
+        db_path=db_path,
+    )
+    stale_before = query("SELECT updated_at FROM worker_heartbeat WHERE id = 1", db_path=db_path)[0]["updated_at"]
+
+    async def slow_handler(task):
+        await asyncio.sleep(0.3)
+        return {"ok": True}
+
+    task_id = enqueue("generate_ksp", {}, chat_id=1, db_path=db_path)
+    worker = QueueWorker(
+        handlers={"generate_ksp": slow_handler},
+        notify=lambda c, t: None,
+        db_path=db_path,
+        heartbeat_interval=0.05,
+    )
+    claimed = claim_next(db_path=db_path)
+    await worker._process_one_keeping_heartbeat(claimed)
+
+    after = query("SELECT updated_at FROM worker_heartbeat WHERE id = 1", db_path=db_path)[0]["updated_at"]
+    assert after != stale_before, "отметка не обновилась за время задачи — watchdog счёл бы воркер зависшим"
+
+    rows = query("SELECT status FROM tasks WHERE id = ?", (task_id,), db_path=db_path)
+    assert rows[0]["status"] == "done"  # сама задача при этом отработала штатно
+
+
+async def test_heartbeat_ticker_stops_after_task_finishes(db_path):
+    """Фоновая отметка не должна пережить задачу — иначе за сутки
+    накопятся сотни висящих корутин, а "жив" будет тикать даже когда
+    цикл уже остановлен."""
+    import asyncio
+
+    async def quick_handler(task):
+        return {"ok": True}
+
+    enqueue("generate_ksp", {}, chat_id=1, db_path=db_path)
+    worker = QueueWorker(
+        handlers={"generate_ksp": quick_handler},
+        notify=lambda c, t: None,
+        db_path=db_path,
+        heartbeat_interval=0.01,
+    )
+    before = len(asyncio.all_tasks())
+    await worker._process_one_keeping_heartbeat(claim_next(db_path=db_path))
+    await asyncio.sleep(0.05)
+
+    assert len(asyncio.all_tasks()) <= before, "фоновая корутина heartbeat пережила задачу"

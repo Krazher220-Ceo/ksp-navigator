@@ -62,6 +62,22 @@ STUCK_PROCESSING_MINUTES_BY_TYPE = {
 # tasks, незачем гонять его чаще, чем реально может что-то зависнуть).
 STUCK_RECOVERY_CHECK_EVERY_N_CYCLES = 30  # примерно раз в минуту при POLL_INTERVAL_SECONDS=2
 
+# Как часто тикать heartbeat ВО ВРЕМЯ выполнения одной задачи (аудит этапа 2,
+# находка 3). Отметка в начале прохода цикла долгую задачу не покрывает: пока
+# идёт `await _process_one`, цикл стоит на этом await и heartbeat не
+# обновляется. При пороге протухания 180с в scripts/watchdog.sh, запуске
+# watchdog раз в 300с и тревоге на третьей неудаче подряд это давало ложный
+# инцидент "воркер очереди завис" примерно через 15 минут — на исправном
+# воркере, который в этот момент честно расшифровывал урок. Ложная тревога
+# здесь дороже пропущенной: М7 делался ради того, чтобы уведомлениям можно
+# было верить.
+#
+# Это НЕ маскирует по-настоящему зависшую задачу: за неё отвечает другой
+# механизм — recover_stuck_tasks со своим порогом на тип задачи. Разделение
+# намеренное: heartbeat отвечает на вопрос "жив ли цикл", пороги
+# STUCK_PROCESSING_MINUTES_BY_TYPE — на вопрос "не застряла ли задача".
+HEARTBEAT_DURING_TASK_SECONDS = 30.0
+
 
 # =====================================================================
 # Б7.1 — примитивы очереди
@@ -257,12 +273,16 @@ class QueueWorker:
         db_path=None,
         poll_interval: float = POLL_INTERVAL_SECONDS,
         failure_message: Callable[[dict, str], str] = _default_failure_message,
+        heartbeat_interval: float = HEARTBEAT_DURING_TASK_SECONDS,
     ) -> None:
         self._handlers = handlers
         self._notify = notify
         self._db_path = db_path
         self._poll_interval = poll_interval
         self._failure_message = failure_message
+        # heartbeat_interval — параметр ради тестируемости (как poll_interval
+        # выше): тест не должен ждать реальные 30 секунд, чтобы увидеть тик.
+        self._heartbeat_interval = heartbeat_interval
         self._running = False
 
     async def run_forever(self) -> None:
@@ -303,12 +323,41 @@ class QueueWorker:
                 if task is None:
                     await asyncio.sleep(self._poll_interval)
                     continue
-                await self._process_one(task)
+                await self._process_one_keeping_heartbeat(task)
             except asyncio.CancelledError:
                 raise  # штатная остановка при выключении бота — не ошибка
             except Exception:
                 logger.exception("сбой цикла воркера очереди, продолжаю работу")
                 await asyncio.sleep(self._poll_interval)
+
+    async def _tick_heartbeat_forever(self) -> None:
+        """Фоновая отметка "цикл жив" на время выполнения одной задачи
+        (аудит этапа 2, находка 3). Отменяется вызывающим кодом, когда
+        задача закончилась, — сама не завершается никогда.
+
+        Ошибку записи глушим намеренно и осознанно: heartbeat — сигнал
+        наблюдаемости, а не часть работы. Уронить из-за него уже идущую
+        расшифровку урока было бы хуже, чем пропустить одну отметку;
+        следующая попытка через HEARTBEAT_DURING_TASK_SECONDS.
+        """
+        while True:
+            await asyncio.sleep(self._heartbeat_interval)
+            try:
+                update_worker_heartbeat(db_path=self._db_path)
+            except Exception:
+                logger.warning("не удалось обновить heartbeat во время задачи", exc_info=True)
+
+    async def _process_one_keeping_heartbeat(self, task: dict) -> None:
+        """_process_one с фоновым heartbeat на всё время работы задачи."""
+        heartbeat = asyncio.create_task(self._tick_heartbeat_forever())
+        try:
+            await self._process_one(task)
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
 
     def stop(self) -> None:
         self._running = False
