@@ -355,6 +355,50 @@ async def test_gemini_vision_request_uses_inline_data(no_real_sleep):
     assert result == {"text": "ok"}
 
 
+async def test_gemini_key_sent_as_header_not_in_url(no_real_sleep):
+    """М0 (PLAN_STAGE2.md): ключ Gemini раньше уходил в query-строку URL
+    (?key=...), а httpx на уровне INFO логирует полный URL запроса — ключ
+    утекал в logs/app.log. Теперь ключ обязан идти заголовком
+    x-goog-api-key, и в URL его быть не должно вообще."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "key=" not in str(request.url)
+        assert request.headers.get("x-goog-api-key") == "test-key-gemini"
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"answer": "ok"}'}]}}]},
+        )
+
+    providers = [make_named_provider("gemini", "gemini", "https://gemini.test")]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LLMClient(providers=providers, http_client=http)
+        result = await client.complete_json("система", "запрос", SCHEMA)
+
+    assert result == {"answer": "ok"}
+
+
+async def test_gemini_vision_key_sent_as_header_not_in_url(no_real_sleep):
+    """То же самое (М0), но для vision-запроса — сборщик у него отдельный
+    (_build_gemini_vision), правку легко внести в один и забыть про другой."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "key=" not in str(request.url)
+        assert request.headers.get("x-goog-api-key") == "test-key-gemini"
+        return httpx.Response(
+            200,
+            json={"candidates": [{"content": {"parts": [{"text": '{"text": "ok"}'}]}}]},
+        )
+
+    providers = [make_named_provider("gemini", "gemini", "https://gemini.test")]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LLMClient(providers=providers, http_client=http)
+        result = await client.complete_json_with_image(
+            "система", "распознай текст", SCHEMA, image_bytes=FAKE_IMAGE_BYTES, image_mime="image/jpeg"
+        )
+
+    assert result == {"text": "ok"}
+
+
 async def test_complete_json_with_image_raises_when_no_vision_provider_configured(no_real_sleep):
     """Только текстовые провайдеры настроены — честная ошибка, не молчаливый
     провал и не попытка отправить картинку туда, где её не разберут."""

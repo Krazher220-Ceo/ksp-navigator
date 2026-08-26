@@ -152,7 +152,9 @@ async def run() -> None:
 
 
 def main() -> None:
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # не шуметь HTTP-логами LLM-клиента поверх бота
+    # М0.2 (PLAN_STAGE2.md): понижение уровня логгера httpx переехало в
+    # core.config._setup_logging — оно выполняется при импорте core.config
+    # для всех точек входа (бот, веб-API, скрипты), а не только здесь.
     try:
         asyncio.run(run())
     except KeyboardInterrupt:

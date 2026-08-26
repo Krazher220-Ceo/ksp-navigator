@@ -160,6 +160,13 @@ def _setup_logging(settings: "Settings") -> None:
             logging.StreamHandler(sys.stdout),
         ],
     )
+    # М0.2: httpx на уровне INFO логирует полный URL каждого запроса. У
+    # Gemini ключ теперь передаётся заголовком (core/llm_client.py, М0.1),
+    # но это защита первого уровня — уровень логирования снижаем и здесь,
+    # в единой точке настройки логирования, а не в bot/main.py, чтобы
+    # защита не зависела от того, кто именно импортировал core.config
+    # (бот, веб-API, скрипт миграции, ручной прогон в консоли).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 settings = _build_settings()

@@ -137,8 +137,12 @@ def _parse_openai_compatible(data: dict) -> tuple[str, int | None]:
 
 
 def _build_gemini(base_url: str, api_key: str, model: str, system: str, user: str):
-    url = f"{base_url.rstrip('/')}/v1beta/models/{model}:generateContent?key={api_key}"
-    headers = {"Content-Type": "application/json"}
+    # М0: ключ передаётся заголовком x-goog-api-key, а не query-параметром
+    # ?key= — httpx на уровне INFO логирует полный URL запроса, и ключ в
+    # query-строке утекал в logs/app.log при любом вызове без явной
+    # глушилки логгера httpx (обнаружено вживую 26.08.2026).
+    url = f"{base_url.rstrip('/')}/v1beta/models/{model}:generateContent"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
     body = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
@@ -222,8 +226,9 @@ def _build_openai_compatible_vision(
 def _build_gemini_vision(
     base_url: str, api_key: str, model: str, system: str, user: str, image_base64: str, image_mime: str
 ):
-    url = f"{base_url.rstrip('/')}/v1beta/models/{model}:generateContent?key={api_key}"
-    headers = {"Content-Type": "application/json"}
+    # М0: ключ заголовком, не в URL — та же причина, что в _build_gemini.
+    url = f"{base_url.rstrip('/')}/v1beta/models/{model}:generateContent"
+    headers = {"Content-Type": "application/json", "x-goog-api-key": api_key}
     body = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": [
