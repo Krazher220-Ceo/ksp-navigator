@@ -121,6 +121,31 @@ def test_prompt_offers_real_objective_codes_for_physics(tmp_path):
     assert "применять законы сохранения" in prompt
 
 
+def test_prompt_objectives_precede_variable_topics_list(tmp_path):
+    """М4.2 (PLAN_STAGE2.md): objectives зависит только от предмета и
+    класса — при повторной генерации с тем же предметом/классом, но
+    другим списком тем, этот блок совпадает слово в слово. Поставлен
+    перед topics (то, что реально меняется от вызова к вызову), чтобы
+    совпадающий префикс для одного предмета/класса был длиннее."""
+    db_path = tmp_path / "test.db"
+    init_db(db_path=db_path, schema_path=REAL_SCHEMA_PATH)
+    execute(
+        "INSERT INTO curriculum_objectives (code, grade, section, subsection, description, thinking_level) "
+        "VALUES ('10.1.4.1', 10, 'Механика', 'Законы сохранения', "
+        "'применять законы сохранения', 'применение')",
+        db_path=db_path,
+    )
+    prompt = build_prompt(
+        "физика", "10А", 2, 68, topics=["Закон Ома", "Мощность тока"], db_path=db_path
+    )
+    objectives_pos = prompt.index("10.1.4.1")
+    topics_pos = prompt.index("Закон Ома")
+    assert objectives_pos < topics_pos, (
+        "цели обучения (стабильны для предмета/класса) должны идти раньше "
+        "списка тем (переменная часть, своя на каждый вызов)"
+    )
+
+
 def test_prompt_does_not_offer_codes_for_unknown_subject(tmp_path):
     """Ловушка Р8/Р4.2: для предмета, которого нет в curriculum_objectives
     (сейчас там только физика), промпт честно говорит модели не

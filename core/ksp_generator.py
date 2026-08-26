@@ -495,15 +495,31 @@ def build_prompt(
 
     textbook_text — Р6.2: текст со страницы учебника, распознанный по
     фото (core.textbook_ocr). Урок должен опираться на него, а не только
-    на тему — модель прямо просят использовать его содержание."""
+    на тему — модель прямо просят использовать его содержание.
+
+    М4.2 (PLAN_STAGE2.md): порядок частей ниже — не произвольный, это
+    компоновка под префиксный кэш провайдера (у DeepSeek он автоматический —
+    совпадающий ПРЕФИКС промпта берётся из кэша дешевле обычных токенов).
+    Стабильное — то, что не меняется между генерациями ОДНОГО учителя
+    (профиль стиля, инструкция про раздатки, если она включена) — идёт
+    строго в начало. Переменное — своё у каждого урока (тема, раздел, класс,
+    длительность, доп. опции, текст учебника) — строго в конец, одним
+    хвостом. Это ТОЛЬКО перестановка порядка — ни один текст ниже не
+    изменён, смысл промпта для модели тот же (ловушка плана: менять смысл
+    ради кэша нельзя, расход и так копеечный)."""
     objective_description = (
         _fetch_objective_description(objective_code, db_path=db_path) if objective_code else None
     )
 
+    # --- стабильная часть (префикс) ---
     parts = []
     context = _render_style_context(style_profile)
     if context:
         parts.append(context)
+    if include_razdatochnye_materialy:
+        parts.append(TASK_RAZDATOCHNYE_MATERIALY_INSTRUCTION)
+
+    # --- переменная часть (суффикс) ---
     parts.append(
         _render_task_section(
             topic,
@@ -515,13 +531,9 @@ def build_prompt(
             extra_columns=extra_columns,
         )
     )
-    if include_razdatochnye_materialy:
-        parts.append(TASK_RAZDATOCHNYE_MATERIALY_INSTRUCTION)
-
     options_text = _render_lesson_options(options)
     if options_text:
         parts.append(options_text)
-
     if textbook_text and textbook_text.strip():
         parts.append(f"{TASK_TEXTBOOK_HEADER}\n{textbook_text.strip()}")
 

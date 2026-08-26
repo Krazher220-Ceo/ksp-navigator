@@ -105,6 +105,21 @@ ANTHROPIC_API_VERSION = "2023-06-01"
 ANTHROPIC_MAX_TOKENS = 4096
 
 
+@dataclass(frozen=True)
+class TokenUsage:
+    """Расход токенов одного вызова, в едином формате поверх разных
+    провайдеров (М4.1, PLAN_STAGE2.md). None означает "провайдер не
+    сообщает это число", 0 — "сообщает, и получилось ноль". Разница
+    важна для prompt_cached: 0 на первом вызове — нормально (кэш ещё не
+    создан), None означал бы, что провайдер вообще не считает кэш, и
+    понять, работает ли он, было бы нельзя."""
+
+    total: int | None
+    prompt: int | None = None
+    completion: int | None = None
+    prompt_cached: int | None = None
+
+
 def _is_retryable_status(status_code: int) -> bool:
     """429 (лимит/квота) и весь диапазон 5xx — стоит повторить.
     Всё остальное (400, 401, ...) — повтор бессмысленен, падаем сразу."""
@@ -130,10 +145,25 @@ def _build_openai_compatible(base_url: str, api_key: str, model: str, system: st
     return url, headers, body
 
 
-def _parse_openai_compatible(data: dict) -> tuple[str, int | None]:
+def _parse_openai_compatible(data: dict) -> tuple[str, TokenUsage]:
     text = data["choices"][0]["message"]["content"]
-    tokens = (data.get("usage") or {}).get("total_tokens")
-    return text, tokens
+    usage = data.get("usage") or {}
+    # М4.1: поля проверены живым вызовом DeepSeek 26.08.2026 —
+    # prompt_cache_hit_tokens/prompt_cache_miss_tokens (специфика DeepSeek)
+    # и вложенный prompt_tokens_details.cached_tokens (более общий формат
+    # OpenAI-совместимых API) сосуществуют в одном ответе; берём первое,
+    # что нашлось. Живой прогон с реальным SYSTEM_PROMPT (527 промпт-
+    # токенов) показал рост кэша от 0 к 384 и затем к 512 из 527 за три
+    # вызова подряд — запись в KPI_STAGE1.md.
+    cached = usage.get("prompt_cache_hit_tokens")
+    if cached is None:
+        cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    return text, TokenUsage(
+        total=usage.get("total_tokens"),
+        prompt=usage.get("prompt_tokens"),
+        completion=usage.get("completion_tokens"),
+        prompt_cached=cached,
+    )
 
 
 def _build_gemini(base_url: str, api_key: str, model: str, system: str, user: str):
@@ -151,10 +181,21 @@ def _build_gemini(base_url: str, api_key: str, model: str, system: str, user: st
     return url, headers, body
 
 
-def _parse_gemini(data: dict) -> tuple[str, int | None]:
+def _parse_gemini(data: dict) -> tuple[str, TokenUsage]:
     text = data["candidates"][0]["content"]["parts"][0]["text"]
-    tokens = (data.get("usageMetadata") or {}).get("totalTokenCount")
-    return text, tokens
+    # М4.1: поля проверены живым вызовом Gemini 26.08.2026 —
+    # promptTokenCount/candidatesTokenCount/totalTokenCount реально
+    # приходят; cachedContentTokenCount в живом ответе не встретился (это
+    # поле Gemini добавляет только при попадании в кэш — на коротком
+    # тестовом промпте кэш не сработал), поэтому .get(...) с None-дефолтом,
+    # не выдумываем значение.
+    usage = data.get("usageMetadata") or {}
+    return text, TokenUsage(
+        total=usage.get("totalTokenCount"),
+        prompt=usage.get("promptTokenCount"),
+        completion=usage.get("candidatesTokenCount"),
+        prompt_cached=usage.get("cachedContentTokenCount"),
+    )
 
 
 def _build_anthropic(base_url: str, api_key: str, model: str, system: str, user: str):
@@ -173,13 +214,22 @@ def _build_anthropic(base_url: str, api_key: str, model: str, system: str, user:
     return url, headers, body
 
 
-def _parse_anthropic(data: dict) -> tuple[str, int | None]:
+def _parse_anthropic(data: dict) -> tuple[str, TokenUsage]:
     text = data["content"][0]["text"]
     usage = data.get("usage") or {}
     input_tokens = usage.get("input_tokens")
     output_tokens = usage.get("output_tokens")
-    tokens = None if input_tokens is None and output_tokens is None else (input_tokens or 0) + (output_tokens or 0)
-    return text, tokens
+    total = None if input_tokens is None and output_tokens is None else (input_tokens or 0) + (output_tokens or 0)
+    # М4.1, честная оговорка: cache_read_input_tokens — имя поля из
+    # документации Anthropic, НЕ проверено живым вызовом. ANTHROPIC_API_KEY
+    # в этом окружении пуст (см. комментарий у ANTHROPIC_MAX_TOKENS выше —
+    # та же самая, уже известная оговорка про непроверенную ветку). Когда
+    # Anthropic станет активным провайдером в цепочке — перепроверить это
+    # имя реальным ответом, тем же способом, каким уже проверены DeepSeek
+    # и Gemini.
+    return text, TokenUsage(
+        total=total, prompt=input_tokens, completion=output_tokens, prompt_cached=usage.get("cache_read_input_tokens")
+    )
 
 
 _ADAPTERS: dict[str, tuple[Callable, Callable]] = {
@@ -535,7 +585,7 @@ class LLMClient:
                 # провайдера: переходим к следующему.
                 try:
                     data = response.json()
-                    text, tokens = parse(data)
+                    text, usage = parse(data)
                 except (ValueError, KeyError, IndexError, TypeError) as exc:
                     logger.warning(
                         "провайдер=%s модель=%s попытка=%d/%d длительность=%.0fмс "
@@ -547,9 +597,16 @@ class LLMClient:
                         f"({type(exc).__name__}: {exc})"
                     ) from exc
 
+                # М4.1: расход одной строкой на вызов — все четыре поля,
+                # включая prompt_cached (сколько из промпта пришло из
+                # кэша провайдера), чтобы кэш можно было увидеть в логе,
+                # а не гадать по времени ответа.
                 logger.info(
-                    "провайдер=%s модель=%s попытка=%d/%d токены=%s длительность=%.0fмс исход=успех",
-                    provider.name, provider.model, attempt, max_retries, tokens, duration_ms,
+                    "провайдер=%s модель=%s попытка=%d/%d токены_всего=%s "
+                    "токены_промпт=%s токены_ответ=%s токены_из_кэша=%s "
+                    "длительность=%.0fмс исход=успех",
+                    provider.name, provider.model, attempt, max_retries,
+                    usage.total, usage.prompt, usage.completion, usage.prompt_cached, duration_ms,
                 )
                 return text
 

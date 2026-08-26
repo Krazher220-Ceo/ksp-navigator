@@ -166,6 +166,86 @@ def test_build_prompt_includes_context_only_when_style_profile_present():
     assert "Устный опрос" in with_profile
 
 
+# =====================================================================
+# М4.2 — компоновка промпта под префиксный кэш: стабильная часть строго
+# впереди переменной (PLAN_STAGE2.md, блок М4.2)
+# =====================================================================
+
+
+def test_build_prompt_stable_prefix_precedes_variable_task_section():
+    """Профиль стиля (стабилен в пределах учителя) и инструкция про
+    раздатки (стабильна, зависит только от флага) обязаны идти РАНЬШЕ
+    темы/раздела/класса/длительности (меняются на каждый вызов) — иначе
+    любое изменение темы обнуляет кэш всего промпта целиком."""
+    profile = {
+        "goal_phrasing": ["Все учащиеся смогут..."],
+        "stage_structure": [{"stage": "Начало", "timing": "5 мин"}],
+        "assessment_methods": ["Устный опрос"],
+        "resources_used": ["Учебник"],
+    }
+    prompt = build_prompt(
+        topic="Закон Ома",
+        razdel="Электричество",
+        objective_code=None,
+        klass="10А",
+        duration_minutes=DURATION,
+        style_profile=profile,
+        include_razdatochnye_materialy=True,
+    )
+    context_pos = prompt.index("КОНТЕКСТ")
+    razdatka_pos = prompt.index("разноуровневые")  # ключевое слово инструкции про раздатки
+    task_pos = prompt.index("ЗАДАЧА:")
+    topic_pos = prompt.index("Закон Ома")
+
+    assert context_pos < razdatka_pos < task_pos < topic_pos, (
+        "стабильная часть (контекст стиля, инструкция про раздатки) должна "
+        "идти раньше переменной части (задача с темой урока)"
+    )
+
+
+def test_build_prompt_variable_tail_order_preserved():
+    """Опции урока и текст учебника — оба переменные, оба обязаны идти
+    ПОСЛЕ задачи (темы/раздела/класса), а не до неё."""
+    prompt = build_prompt(
+        topic="Закон Ома",
+        razdel="Электричество",
+        objective_code=None,
+        klass="10А",
+        duration_minutes=DURATION,
+        textbook_text="Текст со страницы учебника про закон Ома.",
+    )
+    task_pos = prompt.index("ЗАДАЧА:")
+    textbook_pos = prompt.index("Текст со страницы учебника")
+    assert task_pos < textbook_pos
+
+
+def test_build_prompt_reordering_did_not_drop_any_content():
+    """Перестановка (М4.2) — только порядок, не содержание: с теми же
+    аргументами, что и раньше, в промпте по-прежнему есть всё, что было
+    (регрессия на существующий тест ЗАДАЧА, объективный код, контекст)."""
+    profile = {
+        "goal_phrasing": ["формулировка"],
+        "stage_structure": [{"stage": "Этап", "timing": "10 мин"}],
+        "assessment_methods": ["метод"],
+        "resources_used": ["ресурс"],
+    }
+    prompt = build_prompt(
+        topic="Тема",
+        razdel="Раздел",
+        objective_code="10.1.1.1",
+        klass="10Б",
+        duration_minutes=DURATION,
+        style_profile=profile,
+        include_razdatochnye_materialy=True,
+        textbook_text="Текст учебника",
+    )
+    for expected in (
+        "Тема", "Раздел", "10.1.1.1", "10Б", f"{DURATION} мин",
+        "формулировка", "метод", "ресурс", "разноуровневые", "Текст учебника",
+    ):
+        assert expected in prompt, f"{expected!r} пропало из промпта после перестановки М4.2"
+
+
 def test_build_prompt_empty_style_profile_is_treated_as_no_profile():
     """Свежесозданный учитель без загруженных КСП — профиль существует
     как объект, но все списки пустые. Это тоже штатный режим без

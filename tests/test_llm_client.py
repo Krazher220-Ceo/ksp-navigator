@@ -24,7 +24,11 @@ from core.llm_client import (
     LLMUnavailable,
     LLMClient,
     ProviderConfig,
+    TokenUsage,
     _load_providers_from_settings,
+    _parse_anthropic,
+    _parse_gemini,
+    _parse_openai_compatible,
 )
 
 # Содержимое неважно — в тестах ниже httpx замокан, реального декодирования
@@ -433,3 +437,120 @@ async def test_vision_provider_500_falls_back_to_next_vision_provider(no_real_sl
     assert result == {"text": "from openai"}
     assert calls.count("gemini.test") == 3  # свои ретраи, потом фоллбэк
     assert calls.count("openai.test") == 1
+
+
+# =====================================================================
+# М4.1 — учёт токенов и попаданий в кэш по каждому протоколу
+# =====================================================================
+
+
+def test_parse_openai_compatible_extracts_deepseek_cache_fields():
+    """Поля проверены живым вызовом DeepSeek 26.08.2026 (KPI_STAGE1.md) —
+    prompt_cache_hit_tokens приходит на верхнем уровне usage, не вложенным."""
+    data = {
+        "choices": [{"message": {"content": "ответ"}}],
+        "usage": {
+            "prompt_tokens": 527,
+            "completion_tokens": 44,
+            "total_tokens": 571,
+            "prompt_cache_hit_tokens": 512,
+            "prompt_cache_miss_tokens": 15,
+        },
+    }
+    text, usage = _parse_openai_compatible(data)
+    assert text == "ответ"
+    assert usage == TokenUsage(total=571, prompt=527, completion=44, prompt_cached=512)
+
+
+def test_parse_openai_compatible_falls_back_to_nested_cached_tokens():
+    """Провайдер общего OpenAI-совместимого формата (не DeepSeek) может не
+    иметь prompt_cache_hit_tokens, но иметь вложенный
+    prompt_tokens_details.cached_tokens — тоже должно читаться."""
+    data = {
+        "choices": [{"message": {"content": "ответ"}}],
+        "usage": {
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "total_tokens": 110,
+            "prompt_tokens_details": {"cached_tokens": 80},
+        },
+    }
+    _, usage = _parse_openai_compatible(data)
+    assert usage.prompt_cached == 80
+
+
+def test_parse_openai_compatible_missing_usage_gives_none_not_zero():
+    """Отсутствующее поле — None ("провайдер не сообщает"), не 0
+    ("сообщает и получилось ноль") — разница важна при проверке кэша."""
+    data = {"choices": [{"message": {"content": "ответ"}}]}
+    text, usage = _parse_openai_compatible(data)
+    assert text == "ответ"
+    assert usage == TokenUsage(total=None, prompt=None, completion=None, prompt_cached=None)
+
+
+def test_parse_gemini_extracts_real_field_names():
+    """Поля проверены живым вызовом Gemini 26.08.2026 — camelCase, не
+    snake_case, и totalTokenCount, не total_tokens."""
+    data = {
+        "candidates": [{"content": {"parts": [{"text": "ответ"}]}}],
+        "usageMetadata": {
+            "promptTokenCount": 22,
+            "candidatesTokenCount": 7,
+            "totalTokenCount": 29,
+        },
+    }
+    text, usage = _parse_gemini(data)
+    assert text == "ответ"
+    assert usage == TokenUsage(total=29, prompt=22, completion=7, prompt_cached=None)
+
+
+def test_parse_gemini_cached_content_token_count_when_present():
+    data = {
+        "candidates": [{"content": {"parts": [{"text": "ответ"}]}}],
+        "usageMetadata": {
+            "promptTokenCount": 500,
+            "candidatesTokenCount": 20,
+            "totalTokenCount": 520,
+            "cachedContentTokenCount": 400,
+        },
+    }
+    _, usage = _parse_gemini(data)
+    assert usage.prompt_cached == 400
+
+
+def test_parse_anthropic_sums_input_and_output_tokens():
+    data = {
+        "content": [{"text": "ответ"}],
+        "usage": {"input_tokens": 100, "output_tokens": 30, "cache_read_input_tokens": 60},
+    }
+    text, usage = _parse_anthropic(data)
+    assert text == "ответ"
+    assert usage.total == 130
+    assert usage.prompt == 100
+    assert usage.completion == 30
+    assert usage.prompt_cached == 60
+
+
+def test_parse_anthropic_missing_usage_does_not_crash():
+    data = {"content": [{"text": "ответ"}]}
+    text, usage = _parse_anthropic(data)
+    assert text == "ответ"
+    assert usage == TokenUsage(total=None, prompt=None, completion=None, prompt_cached=None)
+
+
+async def test_client_logs_usage_without_crashing_when_fields_missing(no_real_sleep, caplog):
+    """Ни один протокол не должен ронять вызов из-за отсутствующих полей
+    usage — весь путь до лога должен пройти целиком."""
+    import logging
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"answer": "ok"}'}}]})
+
+    providers = [make_provider("primary", "https://primary.test")]
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LLMClient(providers=providers, http_client=http)
+        with caplog.at_level(logging.INFO, logger="core.llm_client"):
+            result = await client.complete_json("система", "запрос", SCHEMA)
+
+    assert result == {"answer": "ok"}
+    assert any("токены_из_кэша=None" in record.message for record in caplog.records)

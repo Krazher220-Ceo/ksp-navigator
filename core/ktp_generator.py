@@ -167,6 +167,18 @@ def build_prompt(
     topics: list[str] | None = None,
     db_path=None,
 ) -> str:
+    """М4.2 (PLAN_STAGE2.md): objectives (список целей обучения) зависит
+    только от predmet+klass — при повторной генерации КТП с тем же
+    предметом и классом, но другим списком тем, этот блок совпадает
+    слово в слово. Поставлен сразу после predmet/klass/часов и ДО topics
+    (списка тем — то, что реально меняется от вызова к вызову), чтобы
+    совпадающий префикс при повторных вызовах для одного предмета/класса
+    был длиннее для кэша провайдера. Выгода этой перестановки скромнее,
+    чем в core.ksp_generator (КТП генерируется редко, лимит 2/сутки, см.
+    MASTER.md 0.6 п.5) — но это только порядок строк, ничего не меняет по
+    смыслу, поэтому сделано для единообразия с М4.2."""
+    objectives = _fetch_available_objectives(predmet, klass, db_path=db_path)
+
     lines = [
         TASK_HEADER,
         f"{TASK_PREDMET_LABEL} {predmet}",
@@ -175,18 +187,17 @@ def build_prompt(
         f"{TASK_HOURS_YEAR_LABEL} {chasov_v_god}",
     ]
 
-    if topics:
-        lines.append(TASK_TOPICS_HEADER)
-        lines.extend(f"  {i+1}. {t}" for i, t in enumerate(topics))
-    else:
-        lines.append(TASK_NO_TOPICS_NOTE)
-
-    objectives = _fetch_available_objectives(predmet, klass, db_path=db_path)
     if objectives:
         lines.append(TASK_OBJECTIVES_HEADER)
         lines.extend(f"  {o['code']} — {o['description']}" for o in objectives)
     else:
         lines.append(TASK_NO_OBJECTIVES_NOTE)
+
+    if topics:
+        lines.append(TASK_TOPICS_HEADER)
+        lines.extend(f"  {i+1}. {t}" for i, t in enumerate(topics))
+    else:
+        lines.append(TASK_NO_TOPICS_NOTE)
 
     return "\n".join(lines)
 
