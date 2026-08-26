@@ -17,6 +17,9 @@ import pytest
 from openpyxl import Workbook
 
 from bot.handlers import (
+    back_button_pressed,
+    back_callback_pressed,
+    cancel_button_pressed,
     cmd_cancel,
     cmd_generate,
     cmd_generate_ktp,
@@ -28,10 +31,17 @@ from bot.handlers import (
     cmd_upload_ksp,
     cmd_upload_ktp,
     generate_duration_received,
+    generate_extra_options_received,
     generate_klass_received,
+    generate_ktp_hours_week_received,
+    generate_ktp_hours_year_received,
+    generate_ktp_klass_received,
+    generate_ktp_predmet_received,
+    generate_ktp_topics_received,
     generate_objective_code_received,
     generate_razdel_received,
     generate_template_chosen,
+    generate_textbook_photos_skipped,
     generate_topic_received,
     history_resend,
     make_generate_ksp_handler,
@@ -47,12 +57,12 @@ from bot.handlers import (
 )
 from bot import keyboards, texts
 from bot.main import _global_error_handler, _register_bot_commands, _register_chat_menu_button
-from bot.states import Generate, TeacherProfile
+from bot.states import Generate, GenerateKTP, TeacherProfile, UploadKSP
 from core import ksp_generator as ksp_generator_module
 from core.config import settings
 from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
 from core.db import execute, init_db, query
-from core.templates import load_builtin_templates
+from core.templates import list_templates, load_builtin_templates
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_SCHEMA_PATH = PROJECT_ROOT / "storage" / "schema.sql"
@@ -1363,23 +1373,250 @@ async def test_menu_button_pressed_dispatches_to_matching_handler(isolated_env):
     assert await state.get_state() == TeacherProfile.waiting_for_name.state
 
 
-def test_menu_button_pressed_registered_before_all_state_handlers():
-    """Ловушка плана (М2.1/М3.2): aiogram матчит хендлеры в порядке
-    регистрации — если menu_button_pressed окажется НИЖЕ хотя бы одного
-    хендлера с фильтром по состоянию, текст кнопки меню будет перехвачен
-    этим состоянием раньше, чем дойдёт до обработчика меню. Прямой вызов
-    функции (как в тестах выше) эту ошибку не ловит — только проверка
-    порядка в самом router."""
+@pytest.mark.parametrize(
+    "global_handler_name",
+    ["menu_button_pressed", "back_button_pressed", "cancel_button_pressed"],
+)
+def test_global_button_handler_registered_before_all_state_handlers(global_handler_name):
+    """Ловушка плана (М2.1/М3.2), для всех трёх глобальных обработчиков
+    кнопок сразу: aiogram матчит хендлеры в порядке регистрации — если
+    один из них окажется НИЖЕ хотя бы одного хендлера с фильтром по
+    состоянию, текст его кнопки будет перехвачен этим состоянием раньше,
+    чем дойдёт до глобального обработчика. Прямой вызов функции (как в
+    тестах выше) эту ошибку не ловит — только проверка порядка в самом
+    router."""
     from aiogram.fsm.state import State
 
     names = [h.callback.__name__ for h in router.message.handlers]
-    menu_index = names.index("menu_button_pressed")
+    handler_index = names.index(global_handler_name)
 
     for index, handler in enumerate(router.message.handlers):
         has_state_filter = any(isinstance(f.callback, State) for f in handler.filters)
         if has_state_filter:
-            assert index > menu_index, (
+            assert index > handler_index, (
                 f"хендлер {handler.callback.__name__} с фильтром по состоянию "
-                f"зарегистрирован раньше menu_button_pressed — кнопка меню "
+                f"зарегистрирован раньше {global_handler_name} — его кнопка "
                 f"будет перехвачена этим состоянием"
             )
+
+
+# =====================================================================
+# М3 — «Назад» на реальном прогоне диалогов
+# =====================================================================
+
+
+async def test_generate_dialog_back_navigation_preserves_data(isolated_env):
+    """М3.2 КГ, дух дословного требования плана: пройти /generate до шага
+    подтверждения, нажимать «Назад» — на всём пути назад данные,
+    введённые на пройденных шагах (раздел, класс, длительность), не
+    теряются и показываются в подсказке при повторном вопросе.
+
+    Отклонение от буквы плана (записано и в NIGHT_REPORT_STAGE2.md):
+    формулировка КГ «три раза — оказаться на шаге темы» предполагала
+    более короткий путь, чем есть в реальном диалоге — между темой и
+    подтверждением лежат необязательные, но всё равно присутствующие в
+    стеке шаги (код цели, если не найден автоматически; фото учебника;
+    доп. опции; выбор шаблона). Тест идёт назад ровно до темы, сколько бы
+    шагов это ни заняло, и проверяет сохранность данных на каждом шаге —
+    это строже, чем фиксированное число «три»."""
+    teacher_id = _create_teacher(777)
+    state = _state()
+
+    await cmd_generate(FakeMessage(text="/generate", user_id=777), state)
+    assert await state.get_state() == Generate.waiting_for_topic.state
+
+    # тема -> код цели не найден (КТП не загружен) -> спросит код вручную
+    await generate_topic_received(FakeMessage(text="Закон Ома", user_id=777), state)
+    assert await state.get_state() == Generate.waiting_for_objective_code.state
+
+    await generate_objective_code_received(FakeMessage(text="-", user_id=777), state)
+    assert await state.get_state() == Generate.waiting_for_razdel.state
+
+    await generate_razdel_received(FakeMessage(text="Электричество", user_id=777), state)
+    assert await state.get_state() == Generate.waiting_for_klass.state
+
+    await generate_klass_received(FakeMessage(text="10Б", user_id=777), state)
+    assert await state.get_state() == Generate.waiting_for_duration.state
+
+    await generate_duration_received(FakeMessage(text="45", user_id=777), state)
+    assert await state.get_state() == Generate.waiting_for_textbook_photos.state
+
+    await generate_textbook_photos_skipped(FakeMessage(text="/skip", user_id=777), state)
+    assert await state.get_state() == Generate.waiting_for_extra_options.state
+
+    await generate_extra_options_received(FakeMessage(text="-", user_id=777), state)
+    assert await state.get_state() == Generate.waiting_for_template.state
+
+    templates_list = list_templates(teacher_id)
+    assert templates_list, "встроенные шаблоны должны быть в isolated_env (load_builtin_templates)"
+    template_id = templates_list[0]["id"]
+
+    template_message = FakeMessage(user_id=777)
+    callback = FakeCallbackQuery(data=f"gen_tpl:{template_id}", message=template_message, user_id=777)
+    await generate_template_chosen(callback, state)
+    assert await state.get_state() == Generate.waiting_for_confirmation.state
+
+    # теперь идём назад, пока не дойдём до темы, сохраняя журнал состояний
+    visited_states = [await state.get_state()]
+    back_message = FakeMessage(user_id=777)
+    for _ in range(10):  # с запасом — реальных шагов заведомо меньше 10
+        await back_button_pressed(back_message, state)
+        current = await state.get_state()
+        visited_states.append(current)
+        if current == Generate.waiting_for_topic.state:
+            break
+    else:
+        raise AssertionError(f"не дошли до темы за 10 нажатий 'Назад': {visited_states}")
+
+    assert visited_states[-1] == Generate.waiting_for_topic.state
+    # порядок шагов назад строго обратный порядку вперёд, без пропусков и дублей
+    assert visited_states == [
+        Generate.waiting_for_confirmation.state,
+        Generate.waiting_for_template.state,
+        Generate.waiting_for_extra_options.state,
+        Generate.waiting_for_textbook_photos.state,
+        Generate.waiting_for_duration.state,
+        Generate.waiting_for_klass.state,
+        Generate.waiting_for_razdel.state,
+        Generate.waiting_for_objective_code.state,
+        Generate.waiting_for_topic.state,
+    ]
+
+    # данные не потеряны на всём пути назад
+    data = await state.get_data()
+    assert data["razdel"] == "Электричество"
+    assert data["klass"] == "10Б"
+    assert data["duration_minutes"] == 45
+    assert data["topic"] == "Закон Ома"
+
+    # и подсказка на последнем шаге назад (тема) показывает текущее значение
+    last_prompt = back_message.sent[-1]["text"]
+    assert "Закон Ома" in last_prompt
+
+
+async def test_generate_dialog_back_from_first_step_returns_to_menu(isolated_env):
+    _create_teacher(778)
+    state = _state()
+    await cmd_generate(FakeMessage(text="/generate", user_id=778), state)
+    assert await state.get_state() == Generate.waiting_for_topic.state
+
+    message = FakeMessage(user_id=778)
+    await back_button_pressed(message, state)
+
+    assert await state.get_state() is None
+    assert message.sent[-1]["text"] == texts.NAV_BACK_TO_MENU
+    assert message.sent[-1]["reply_markup"] is keyboards.MAIN_MENU
+
+
+async def test_generate_ktp_dialog_back_navigation(isolated_env):
+    _create_teacher(779)
+    state = _state()
+
+    await cmd_generate_ktp(FakeMessage(text="/generate_ktp", user_id=779), state)
+    assert await state.get_state() == GenerateKTP.waiting_for_predmet.state
+
+    await generate_ktp_predmet_received(FakeMessage(text="Физика", user_id=779), state)
+    await generate_ktp_klass_received(FakeMessage(text="10А", user_id=779), state)
+    await generate_ktp_hours_week_received(FakeMessage(text="2", user_id=779), state)
+    await generate_ktp_hours_year_received(FakeMessage(text="68", user_id=779), state)
+    await generate_ktp_topics_received(FakeMessage(text="-", user_id=779), state)
+    assert await state.get_state() == GenerateKTP.waiting_for_confirmation.state
+
+    message = FakeMessage(user_id=779)
+    await back_button_pressed(message, state)
+    assert await state.get_state() == GenerateKTP.waiting_for_topics.state
+
+    await back_button_pressed(message, state)
+    assert await state.get_state() == GenerateKTP.waiting_for_hours_year.state
+
+    data = await state.get_data()
+    assert data["predmet"] == "Физика"
+    assert data["klass"] == "10А"
+    assert data["chasov_v_nedelu"] == 2
+
+
+async def test_generate_ktp_back_via_callback_matches_message_back(isolated_env):
+    """back_callback_pressed (inline-кнопка «← Назад» на шаге подтверждения)
+    должен вести себя идентично текстовой кнопке — общий _handle_go_back."""
+    _create_teacher(780)
+    state = _state()
+    await cmd_generate_ktp(FakeMessage(text="/generate_ktp", user_id=780), state)
+    await generate_ktp_predmet_received(FakeMessage(text="Физика", user_id=780), state)
+    await generate_ktp_klass_received(FakeMessage(text="10А", user_id=780), state)
+    await generate_ktp_hours_week_received(FakeMessage(text="2", user_id=780), state)
+    await generate_ktp_hours_year_received(FakeMessage(text="68", user_id=780), state)
+    await generate_ktp_topics_received(FakeMessage(text="-", user_id=780), state)
+    assert await state.get_state() == GenerateKTP.waiting_for_confirmation.state
+
+    callback_message = FakeMessage(user_id=780)
+    callback = FakeCallbackQuery(data="nav_back", message=callback_message, user_id=780)
+    await back_callback_pressed(callback, state)
+
+    assert await state.get_state() == GenerateKTP.waiting_for_topics.state
+    assert len(callback.answered) == 1
+
+
+async def test_teacher_dialog_back_preserves_name(isolated_env):
+    state = _state()
+    await cmd_teacher(FakeMessage(text="/teacher", user_id=781), state)
+    await teacher_name_received(FakeMessage(text="Иванов И.И.", user_id=781), state)
+    assert await state.get_state() == TeacherProfile.waiting_for_subject.state
+
+    message = FakeMessage(user_id=781)
+    await back_button_pressed(message, state)
+    assert await state.get_state() == TeacherProfile.waiting_for_name.state
+    data = await state.get_data()
+    assert data["name"] == "Иванов И.И."
+    assert "Иванов И.И." in message.sent[-1]["text"]
+
+
+async def test_upload_ksp_back_removes_last_file_not_step(isolated_env):
+    """М3.3, ловушка: в UploadKSP «Назад» убирает последний файл, а не
+    переключает шаг (шаг там один)."""
+    teacher_id = _create_teacher(782)
+    state = _state()
+    await state.set_state(UploadKSP.collecting_files)
+    await state.update_data(teacher_id=teacher_id, file_paths=["/tmp/fake1.docx", "/tmp/fake2.docx"])
+
+    message = FakeMessage(user_id=782)
+    await back_button_pressed(message, state)
+
+    # состояние осталось тем же (не переключилось никуда)
+    assert await state.get_state() == UploadKSP.collecting_files.state
+    data = await state.get_data()
+    assert data["file_paths"] == ["/tmp/fake1.docx"]
+    assert "fake2.docx" in message.sent[-1]["text"]
+
+
+async def test_upload_ksp_back_with_no_files_does_not_crash():
+    state = _state()
+    await state.set_state(UploadKSP.collecting_files)
+    await state.update_data(teacher_id=1, file_paths=[])
+
+    message = FakeMessage(user_id=783)
+    await back_button_pressed(message, state)
+
+    assert await state.get_state() == UploadKSP.collecting_files.state
+    assert message.sent[-1]["text"] == texts.UPLOAD_KSP_NOTHING_TO_REMOVE
+
+
+async def test_back_command_synonym_works_same_as_button():
+    """/back — синоним кнопки «← Назад» (М3.2)."""
+    state = _state()
+    await state.set_state(UploadKSP.collecting_files)
+    await state.update_data(teacher_id=1, file_paths=["/tmp/fake1.docx"])
+
+    message = FakeMessage(text="/back", user_id=784)
+    await back_button_pressed(message, state)
+
+    data = await state.get_data()
+    assert data["file_paths"] == []
+
+
+async def test_cancel_button_mid_dialog_clears_state():
+    state = _state()
+    await state.set_state(Generate.waiting_for_topic)
+    message = FakeMessage(text=texts.BUTTON_CANCEL, user_id=785)
+    await cancel_button_pressed(message, state)
+    assert await state.get_state() is None
+    assert message.sent[-1]["text"] == texts.CANCEL_DONE

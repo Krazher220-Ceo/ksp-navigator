@@ -9,15 +9,16 @@ bot/handlers.py — там же, где текст ответа. Здесь — 
 
 Что осознанно не делает: не содержит текстов кнопок (bot/texts.py,
 PLAN_STAGE1.md Б8.1) и не решает, что происходит по нажатию — это
-bot/handlers.py. Не содержит одноразовых inline-клавиатур (выбор
-конкретного шаблона, конкретной генерации из истории, подтверждение) —
-их структура зависит от данных запроса, они по-прежнему собираются на
-месте.
+bot/handlers.py. Одноразовые inline-клавиатуры, чья структура зависит
+от данных запроса (выбор конкретного шаблона, конкретной генерации из
+истории), по-прежнему собираются на месте в bot/handlers.py — здесь для
+них только вспомогательный `with_back_row`, добавляющий одинаковый на
+всех шагах ряд «← Назад» (М3.2).
 
 На что опирается: bot.texts (тексты кнопок).
 """
 
-from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 
 from bot import texts
 
@@ -61,3 +62,27 @@ MAIN_MENU_BUTTON_TEXTS = {
     texts.MENU_BUTTON_UPLOAD_KSP,
     texts.MENU_BUTTON_UPLOAD_KTP,
 }
+
+
+# --- М3.2: клавиатуры шагов диалога с кнопкой «Назад» ---
+
+
+def back_cancel_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура для шагов с текстовым вводом: «← Назад» и «Отменить» в
+    одном ряду. Новый объект на каждый вызов (не константа модуля, в
+    отличие от MAIN_MENU) — ReplyKeyboardMarkup неизменяем содержательно
+    здесь, но так проще расширить, если в будущем кнопки станут зависеть
+    от контекста шага."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=texts.BUTTON_BACK), KeyboardButton(text=texts.BUTTON_CANCEL)]],
+        resize_keyboard=True,
+    )
+
+
+def with_back_row(rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
+    """Добавляет ряд «← Назад» под уже собранной inline-клавиатурой шага
+    (выбор шаблона, подтверждение генерации/КТП) — callback_data="nav_back",
+    один и тот же на все такие шаги (М3.2)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[*rows, [InlineKeyboardButton(text=texts.BUTTON_BACK, callback_data="nav_back")]]
+    )

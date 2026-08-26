@@ -46,6 +46,7 @@ from aiogram.types import (
 )
 
 from bot import keyboards, texts
+from bot.navigation import go_back, go_to
 from bot.states import Generate, GenerateKTP, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
 from core.config import settings
 from core.db import execute, query
@@ -168,36 +169,109 @@ async def menu_button_pressed(message: Message, state: FSMContext) -> None:
 
 
 # =====================================================================
+# М3.2 — «Назад»: один обработчик на все диалоги, зарегистрирован здесь,
+# ДО любых хендлеров с фильтром по состоянию — та же ловушка порядка
+# регистрации, что и у menu_button_pressed выше (М2.1/М3.2).
+#
+# _BACK_ASK_HANDLERS заполняется внизу файла, когда все функции "спросить
+# шаг заново" уже определены — тем же способом, что и _MENU_BUTTON_HANDLERS.
+#
+# UploadKSP.collecting_files — единственное исключение из общего правила
+# "Назад = предыдущий шаг": там всего один шаг и файлы копятся, поэтому
+# "Назад" означает "убрать последний загруженный файл" (М3.3, ловушка).
+# Это одна ветка в одном обработчике, а не второй обработчик и не 16 копий.
+# =====================================================================
+
+
+async def _handle_go_back(message: Message, state: FSMContext) -> None:
+    previous = await go_back(state)
+    if previous is None:
+        await message.answer(texts.NAV_BACK_TO_MENU, reply_markup=keyboards.MAIN_MENU)
+        return
+    ask_again = _BACK_ASK_HANDLERS.get(previous)
+    if ask_again is None:
+        # Защитная ветка: состояние есть в стеке, но для него не заведена
+        # функция "спросить заново" — не должно происходить в проде, но
+        # честная ошибка лучше молчаливого зависания диалога.
+        logger.error("нет обработчика 'спросить заново' для состояния %s из стека навигации", previous)
+        await message.answer(texts.MENU_DIALOG_INTERRUPTED)
+        await state.clear()
+        return
+    await ask_again(message, state)
+
+
+@router.message(Command("back"))
+@router.message(F.text == texts.BUTTON_BACK)
+async def back_button_pressed(message: Message, state: FSMContext) -> None:
+    current = await state.get_state()
+    if current == UploadKSP.collecting_files.state:
+        await _upload_ksp_remove_last_file(message, state)
+        return
+    await _handle_go_back(message, state)
+
+
+@router.callback_query(F.data == "nav_back")
+async def back_callback_pressed(callback: CallbackQuery, state: FSMContext) -> None:
+    await _handle_go_back(callback.message, state)
+    await callback.answer()
+
+
+@router.message(F.text == texts.BUTTON_CANCEL)
+async def cancel_button_pressed(message: Message, state: FSMContext) -> None:
+    await cmd_cancel(message, state)
+
+
+# =====================================================================
 # /teacher
 # =====================================================================
 
 
+async def _ask_teacher_name(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.TEACHER_ASK_NAME
+    if data.get("name"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["name"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_teacher_subject(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.TEACHER_ASK_SUBJECT
+    if data.get("subject"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["subject"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_teacher_school(message: Message, state: FSMContext) -> None:
+    await message.answer(texts.TEACHER_ASK_SCHOOL, reply_markup=keyboards.back_cancel_keyboard())
+
+
 @router.message(Command("teacher"))
 async def cmd_teacher(message: Message, state: FSMContext) -> None:
-    await state.set_state(TeacherProfile.waiting_for_name)
-    await message.answer(texts.TEACHER_ASK_NAME)
+    await go_to(state, TeacherProfile.waiting_for_name)
+    await _ask_teacher_name(message, state)
 
 
 @router.message(TeacherProfile.waiting_for_name)
 async def teacher_name_received(message: Message, state: FSMContext) -> None:
     name = (message.text or "").strip()
     if not name:
-        await message.answer(texts.TEACHER_ASK_NAME)
+        await _ask_teacher_name(message, state)
         return
     await state.update_data(name=name)
-    await state.set_state(TeacherProfile.waiting_for_subject)
-    await message.answer(texts.TEACHER_ASK_SUBJECT)
+    await go_to(state, TeacherProfile.waiting_for_subject)
+    await _ask_teacher_subject(message, state)
 
 
 @router.message(TeacherProfile.waiting_for_subject)
 async def teacher_subject_received(message: Message, state: FSMContext) -> None:
     subject = (message.text or "").strip()
     if not subject:
-        await message.answer(texts.TEACHER_ASK_SUBJECT)
+        await _ask_teacher_subject(message, state)
         return
     await state.update_data(subject=subject)
-    await state.set_state(TeacherProfile.waiting_for_school)
-    await message.answer(texts.TEACHER_ASK_SCHOOL)
+    await go_to(state, TeacherProfile.waiting_for_school)
+    await _ask_teacher_school(message, state)
 
 
 @router.message(TeacherProfile.waiting_for_school)
@@ -234,7 +308,7 @@ async def teacher_school_received(message: Message, state: FSMContext) -> None:
         response = texts.TEACHER_CREATED
 
     await state.clear()
-    await message.answer(response.format(name=name, subject=subject))
+    await message.answer(response.format(name=name, subject=subject), reply_markup=keyboards.MAIN_MENU)
 
 
 # =====================================================================
@@ -249,7 +323,30 @@ async def cmd_upload_ksp(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(UploadKSP.collecting_files)
     await state.update_data(teacher_id=teacher["id"], file_paths=[])
-    await message.answer(texts.UPLOAD_KSP_PROMPT)
+    await message.answer(texts.UPLOAD_KSP_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _upload_ksp_remove_last_file(message: Message, state: FSMContext) -> None:
+    """М3.3, ловушка: в этом диалоге один шаг, файлы копятся — «Назад»
+    здесь означает «убрать последний загруженный файл», а не переключение
+    состояния (переключать некуда, шаг один)."""
+    data = await state.get_data()
+    file_paths = list(data.get("file_paths", []))
+    if not file_paths:
+        await message.answer(texts.UPLOAD_KSP_NOTHING_TO_REMOVE, reply_markup=keyboards.back_cancel_keyboard())
+        return
+
+    removed_path = file_paths.pop()
+    await state.update_data(file_paths=file_paths)
+    try:
+        Path(removed_path).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("не удалось удалить файл %s при отмене загрузки КСП", removed_path)
+
+    await message.answer(
+        texts.UPLOAD_KSP_LAST_FILE_REMOVED.format(filename=Path(removed_path).name, count=len(file_paths)),
+        reply_markup=keyboards.back_cancel_keyboard(),
+    )
 
 
 @router.message(UploadKSP.collecting_files, F.document)
@@ -284,7 +381,8 @@ async def upload_ksp_file_received(message: Message, state: FSMContext, bot: Bot
     file_paths.append(str(dest))
     await state.update_data(file_paths=file_paths)
     await message.answer(
-        texts.UPLOAD_KSP_FILE_ACCEPTED.format(n=len(file_paths), max=MAX_KSP_FILES, filename=filename)
+        texts.UPLOAD_KSP_FILE_ACCEPTED.format(n=len(file_paths), max=MAX_KSP_FILES, filename=filename),
+        reply_markup=keyboards.back_cancel_keyboard(),
     )
 
 
@@ -294,7 +392,9 @@ async def upload_ksp_done(message: Message, state: FSMContext) -> None:
     file_paths = data.get("file_paths", [])
 
     if len(file_paths) < MIN_KSP_FILES:
-        await message.answer(texts.UPLOAD_KSP_TOO_FEW.format(count=len(file_paths)))
+        await message.answer(
+            texts.UPLOAD_KSP_TOO_FEW.format(count=len(file_paths)), reply_markup=keyboards.back_cancel_keyboard()
+        )
         return
 
     enqueue(
@@ -303,12 +403,12 @@ async def upload_ksp_done(message: Message, state: FSMContext) -> None:
         chat_id=message.chat.id,
     )
     await state.clear()
-    await message.answer(texts.UPLOAD_KSP_QUEUED.format(count=len(file_paths)))
+    await message.answer(texts.UPLOAD_KSP_QUEUED.format(count=len(file_paths)), reply_markup=keyboards.MAIN_MENU)
 
 
 @router.message(UploadKSP.collecting_files)
 async def upload_ksp_wrong_input(message: Message) -> None:
-    await message.answer(texts.UPLOAD_KSP_PROMPT)
+    await message.answer(texts.UPLOAD_KSP_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
 
 
 # =====================================================================
@@ -323,7 +423,7 @@ async def cmd_upload_ktp(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(UploadKTP.waiting_for_file)
     await state.update_data(teacher_id=teacher["id"])
-    await message.answer(texts.UPLOAD_KTP_PROMPT)
+    await message.answer(texts.UPLOAD_KTP_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
 
 
 @router.message(UploadKTP.waiting_for_file, F.document)
@@ -356,7 +456,7 @@ async def upload_ktp_file_received(message: Message, state: FSMContext, bot: Bot
         entries = parse_ktp_file(dest)
         result = save_ktp_entries(teacher_id, entries)
     except KTPParseError as exc:
-        await message.answer(texts.UPLOAD_KTP_PARSE_ERROR.format(error=str(exc)))
+        await message.answer(texts.UPLOAD_KTP_PARSE_ERROR.format(error=str(exc)), reply_markup=keyboards.MAIN_MENU)
         await state.clear()
         return
 
@@ -369,14 +469,15 @@ async def upload_ktp_file_received(message: Message, state: FSMContext, bot: Bot
     await message.answer(
         texts.UPLOAD_KTP_SUCCESS.format(
             inserted=result["inserted"], replaced_note=replaced_note, codes_warning=warning
-        )
+        ),
+        reply_markup=keyboards.MAIN_MENU,
     )
     await state.clear()
 
 
 @router.message(UploadKTP.waiting_for_file)
 async def upload_ktp_wrong_input(message: Message) -> None:
-    await message.answer(texts.UPLOAD_KTP_PROMPT)
+    await message.answer(texts.UPLOAD_KTP_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
 
 
 # =====================================================================
@@ -458,7 +559,7 @@ async def cmd_upload_template(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(UploadTemplate.waiting_for_file)
     await state.update_data(teacher_id=teacher["id"])
-    await message.answer(texts.UPLOAD_TEMPLATE_PROMPT)
+    await message.answer(texts.UPLOAD_TEMPLATE_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
 
 
 @router.message(UploadTemplate.waiting_for_file, F.document)
@@ -493,17 +594,21 @@ async def upload_template_file_received(message: Message, state: FSMContext, bot
             save_user_template, data["teacher_id"], dest, Path(filename).stem
         )
     except (KSPConversionError, KSPParseError) as exc:
-        await message.answer(texts.UPLOAD_TEMPLATE_PARSE_ERROR.format(error=str(exc)))
+        await message.answer(
+            texts.UPLOAD_TEMPLATE_PARSE_ERROR.format(error=str(exc)), reply_markup=keyboards.MAIN_MENU
+        )
         await state.clear()
         return
 
-    await message.answer(texts.UPLOAD_TEMPLATE_SUCCESS.format(template_name=template["name"]))
+    await message.answer(
+        texts.UPLOAD_TEMPLATE_SUCCESS.format(template_name=template["name"]), reply_markup=keyboards.MAIN_MENU
+    )
     await state.clear()
 
 
 @router.message(UploadTemplate.waiting_for_file)
 async def upload_template_wrong_input(message: Message) -> None:
-    await message.answer(texts.UPLOAD_TEMPLATE_PROMPT)
+    await message.answer(texts.UPLOAD_TEMPLATE_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
 
 
 # =====================================================================
@@ -621,22 +726,90 @@ def _format_extra_options_summary(options_dict: dict | None) -> str:
     return texts.GENERATE_EXTRA_OPTIONS_LINE.format(summary="; ".join(bits))
 
 
+async def _ask_generate_topic(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.GENERATE_ASK_TOPIC
+    if data.get("topic"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["topic"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_objective_code(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.GENERATE_ASK_OBJECTIVE_CODE
+    if data.get("objective_code"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["objective_code"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_razdel(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.GENERATE_ASK_RAZDEL
+    if data.get("razdel"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["razdel"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_klass(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.GENERATE_ASK_KLASS
+    if data.get("klass"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["klass"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_duration(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.GENERATE_ASK_DURATION
+    if data.get("duration_minutes"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["duration_minutes"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_textbook_photos(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    count = len(data.get("textbook_photo_paths") or [])
+    text = texts.GENERATE_ASK_TEXTBOOK_PHOTOS
+    if count:
+        text += texts.CURRENT_VALUE_NOTE.format(value=f"{count} фото принято", back="/done")
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_extra_options(message: Message, state: FSMContext) -> None:
+    await message.answer(texts.GENERATE_ASK_EXTRA_OPTIONS, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_template(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    templates_list = list_templates(data["teacher_id"])
+    if not templates_list:
+        await message.answer(texts.GENERATE_NO_TEMPLATES, reply_markup=keyboards.MAIN_MENU)
+        await state.clear()
+        return
+
+    rows = [
+        [InlineKeyboardButton(text=t["name"], callback_data=f"gen_tpl:{t['id']}")]
+        for t in templates_list
+    ]
+    await message.answer(texts.GENERATE_ASK_TEMPLATE, reply_markup=keyboards.with_back_row(rows))
+
+
 @router.message(Command("generate"))
 async def cmd_generate(message: Message, state: FSMContext) -> None:
     teacher = await _require_teacher(message)
     if teacher is None:
         return
     await state.clear()
-    await state.set_state(Generate.waiting_for_topic)
+    await go_to(state, Generate.waiting_for_topic)
     await state.update_data(teacher_id=teacher["id"], subject=teacher["subject"])
-    await message.answer(texts.GENERATE_ASK_TOPIC)
+    await _ask_generate_topic(message, state)
 
 
 @router.message(Generate.waiting_for_topic)
 async def generate_topic_received(message: Message, state: FSMContext) -> None:
     topic = (message.text or "").strip()
     if not topic:
-        await message.answer(texts.GENERATE_ASK_TOPIC)
+        await _ask_generate_topic(message, state)
         return
 
     data = await state.get_data()
@@ -645,11 +818,11 @@ async def generate_topic_received(message: Message, state: FSMContext) -> None:
 
     if code:
         await message.answer(texts.GENERATE_OBJECTIVE_AUTO_FOUND.format(code=code))
-        await state.set_state(Generate.waiting_for_razdel)
-        await message.answer(texts.GENERATE_ASK_RAZDEL)
+        await go_to(state, Generate.waiting_for_razdel)
+        await _ask_generate_razdel(message, state)
     else:
-        await state.set_state(Generate.waiting_for_objective_code)
-        await message.answer(texts.GENERATE_ASK_OBJECTIVE_CODE)
+        await go_to(state, Generate.waiting_for_objective_code)
+        await _ask_generate_objective_code(message, state)
 
 
 @router.message(Generate.waiting_for_objective_code)
@@ -657,30 +830,30 @@ async def generate_objective_code_received(message: Message, state: FSMContext) 
     text = (message.text or "").strip()
     code = None if text in ("-", "") else text
     await state.update_data(objective_code=code)
-    await state.set_state(Generate.waiting_for_razdel)
-    await message.answer(texts.GENERATE_ASK_RAZDEL)
+    await go_to(state, Generate.waiting_for_razdel)
+    await _ask_generate_razdel(message, state)
 
 
 @router.message(Generate.waiting_for_razdel)
 async def generate_razdel_received(message: Message, state: FSMContext) -> None:
     razdel = (message.text or "").strip()
     if not razdel:
-        await message.answer(texts.GENERATE_ASK_RAZDEL)
+        await _ask_generate_razdel(message, state)
         return
     await state.update_data(razdel=razdel)
-    await state.set_state(Generate.waiting_for_klass)
-    await message.answer(texts.GENERATE_ASK_KLASS)
+    await go_to(state, Generate.waiting_for_klass)
+    await _ask_generate_klass(message, state)
 
 
 @router.message(Generate.waiting_for_klass)
 async def generate_klass_received(message: Message, state: FSMContext) -> None:
     klass = (message.text or "").strip()
     if not klass:
-        await message.answer(texts.GENERATE_ASK_KLASS)
+        await _ask_generate_klass(message, state)
         return
     await state.update_data(klass=klass)
-    await state.set_state(Generate.waiting_for_duration)
-    await message.answer(texts.GENERATE_ASK_DURATION)
+    await go_to(state, Generate.waiting_for_duration)
+    await _ask_generate_duration(message, state)
 
 
 @router.message(Generate.waiting_for_duration)
@@ -691,9 +864,10 @@ async def generate_duration_received(message: Message, state: FSMContext) -> Non
         return
 
     await state.update_data(duration_minutes=int(text))
-    await state.set_state(Generate.waiting_for_textbook_photos)
-    await state.update_data(textbook_photo_paths=[])
-    await message.answer(texts.GENERATE_ASK_TEXTBOOK_PHOTOS)
+    await go_to(state, Generate.waiting_for_textbook_photos)
+    if not (await state.get_data()).get("textbook_photo_paths"):
+        await state.update_data(textbook_photo_paths=[])
+    await _ask_generate_textbook_photos(message, state)
 
 
 _TEXTBOOK_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
@@ -709,14 +883,14 @@ MAX_TEXTBOOK_PHOTOS = 3
 @router.message(Generate.waiting_for_textbook_photos, Command("skip"))
 async def generate_textbook_photos_skipped(message: Message, state: FSMContext) -> None:
     await state.update_data(textbook_photo_paths=[])
-    await state.set_state(Generate.waiting_for_extra_options)
-    await message.answer(texts.GENERATE_ASK_EXTRA_OPTIONS)
+    await go_to(state, Generate.waiting_for_extra_options)
+    await _ask_generate_extra_options(message, state)
 
 
 @router.message(Generate.waiting_for_textbook_photos, Command("done"))
 async def generate_textbook_photos_done(message: Message, state: FSMContext) -> None:
-    await state.set_state(Generate.waiting_for_extra_options)
-    await message.answer(texts.GENERATE_ASK_EXTRA_OPTIONS)
+    await go_to(state, Generate.waiting_for_extra_options)
+    await _ask_generate_extra_options(message, state)
 
 
 @router.message(Generate.waiting_for_textbook_photos, F.photo)
@@ -741,7 +915,9 @@ async def generate_textbook_photo_received(message: Message, state: FSMContext, 
     await bot.download(largest, destination=dest)
     paths.append(str(dest))
     await state.update_data(textbook_photo_paths=paths)
-    await message.answer(texts.GENERATE_TEXTBOOK_PHOTO_ACCEPTED.format(n=len(paths)))
+    await message.answer(
+        texts.GENERATE_TEXTBOOK_PHOTO_ACCEPTED.format(n=len(paths)), reply_markup=keyboards.back_cancel_keyboard()
+    )
 
 
 @router.message(Generate.waiting_for_textbook_photos, F.document)
@@ -770,12 +946,14 @@ async def generate_textbook_photo_document_received(message: Message, state: FSM
     await bot.download(document, destination=dest)
     paths.append(str(dest))
     await state.update_data(textbook_photo_paths=paths)
-    await message.answer(texts.GENERATE_TEXTBOOK_PHOTO_ACCEPTED.format(n=len(paths)))
+    await message.answer(
+        texts.GENERATE_TEXTBOOK_PHOTO_ACCEPTED.format(n=len(paths)), reply_markup=keyboards.back_cancel_keyboard()
+    )
 
 
 @router.message(Generate.waiting_for_textbook_photos)
 async def generate_textbook_photos_wrong_input(message: Message) -> None:
-    await message.answer(texts.GENERATE_TEXTBOOK_PHOTO_UNSUPPORTED_FORMAT)
+    await message.answer(texts.GENERATE_TEXTBOOK_PHOTO_UNSUPPORTED_FORMAT, reply_markup=keyboards.back_cancel_keyboard())
 
 
 @router.message(Generate.waiting_for_extra_options)
@@ -799,37 +977,38 @@ async def generate_extra_options_received(message: Message, state: FSMContext) -
     data = await state.get_data()
 
     # Шаблон мог быть выбран заранее в Mini App (templates_web_app_choice) —
-    # тогда спрашивать его второй раз незачем, сразу к подтверждению.
+    # тогда спрашивать его второй раз незачем, сразу к подтверждению. Стек
+    # навигации при этом фиксирует РЕАЛЬНЫЙ путь (extra_options -> confirmation,
+    # без промежуточного template) — «Назад» с подтверждения в этом случае
+    # вернёт сюда, а не на несуществующий для этого пути выбор шаблона
+    # (М3.1, обоснование "почему стек, а не список").
     if data.get("template_id"):
-        await _ask_generate_confirmation(message, state, data["template_id"])
+        shown = await _enter_generate_confirmation(message, state, data["template_id"])
+        if not shown:
+            await message.answer(texts.GENERATE_NO_TEMPLATES, reply_markup=keyboards.MAIN_MENU)
+            await state.clear()
         return
 
-    templates_list = list_templates(data["teacher_id"])
-    if not templates_list:
-        await message.answer(texts.GENERATE_NO_TEMPLATES)
-        await state.clear()
-        return
-
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=t["name"], callback_data=f"gen_tpl:{t['id']}")]
-            for t in templates_list
-        ]
-    )
-    await state.set_state(Generate.waiting_for_template)
-    await message.answer(texts.GENERATE_ASK_TEMPLATE, reply_markup=keyboard)
+    await go_to(state, Generate.waiting_for_template)
+    await _ask_generate_template(message, state)
 
 
-async def _ask_generate_confirmation(message: Message, state: FSMContext, template_id: int) -> bool:
-    """Показывает сводку перед генерацией и кнопки да/нет. Общий шаг для
-    двух путей выбора шаблона: инлайн-кнопкой в боте и заранее — в Mini
-    App. Возвращает False, если шаблон за это время исчез."""
+async def _render_generate_confirmation(message: Message, state: FSMContext) -> bool:
+    """Строит и отправляет сводку + кнопки да/нет/назад по текущим данным
+    состояния — БЕЗ переключения состояния. Используется и для входа в шаг
+    (после _enter_generate_confirmation переключит состояние), и для
+    повторного показа при «Назад» с более позднего шага (тогда состояние
+    уже переключено самим go_back, второй раз переключать нельзя — иначе
+    в стек попадёт дубль). Возвращает False, если шаблон не найден или не
+    выбран вовсе (защитная ветка — на реальном пути такого не бывает,
+    т.к. _enter_generate_confirmation не пускает сюда без template_id)."""
+    data = await state.get_data()
+    template_id = data.get("template_id")
+    if template_id is None:
+        return False
     template = get_template(template_id)
     if template is None:
         return False
-
-    await state.update_data(template_id=template_id)
-    data = await state.get_data()
 
     photo_paths = data.get("textbook_photo_paths") or []
     summary = texts.GENERATE_CONFIRM_SUMMARY.format(
@@ -845,24 +1024,36 @@ async def _ask_generate_confirmation(message: Message, state: FSMContext, templa
     if not _has_style_profile(data["teacher_id"]):
         summary += texts.GENERATE_NO_STYLE_PROFILE_NOTE
 
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=texts.GENERATE_CONFIRM_BUTTON, callback_data="gen_confirm"),
-                InlineKeyboardButton(text=texts.GENERATE_CANCEL_BUTTON, callback_data="gen_cancel"),
-            ]
+    rows = [
+        [
+            InlineKeyboardButton(text=texts.GENERATE_CONFIRM_BUTTON, callback_data="gen_confirm"),
+            InlineKeyboardButton(text=texts.GENERATE_CANCEL_BUTTON, callback_data="gen_cancel"),
         ]
-    )
-    await state.set_state(Generate.waiting_for_confirmation)
-    await message.answer(summary, reply_markup=keyboard)
+    ]
+    await message.answer(summary, reply_markup=keyboards.with_back_row(rows))
     return True
+
+
+async def _enter_generate_confirmation(message: Message, state: FSMContext, template_id: int) -> bool:
+    """Переход НА шаг подтверждения (в отличие от _render_generate_confirmation
+    выше) — вызывается из forward-хода диалога (выбор шаблона инлайн-кнопкой,
+    или шаблон уже был выбран в Mini App), сам кладёт текущее состояние в
+    стек через go_to. Возвращает False, если шаблон за это время исчез —
+    вызывающий код должен сообщить об этом и сам решить, что делать дальше
+    (см. два разных сообщения об ошибке у двух мест вызова)."""
+    template = get_template(template_id)
+    if template is None:
+        return False
+    await go_to(state, Generate.waiting_for_confirmation)
+    await state.update_data(template_id=template_id)
+    return await _render_generate_confirmation(message, state)
 
 
 @router.callback_query(Generate.waiting_for_template, F.data.startswith("gen_tpl:"))
 async def generate_template_chosen(callback: CallbackQuery, state: FSMContext) -> None:
     template_id = int(callback.data.split(":", 1)[1])
 
-    shown = await _ask_generate_confirmation(callback.message, state, template_id)
+    shown = await _enter_generate_confirmation(callback.message, state, template_id)
     if not shown:
         await callback.answer("Такого шаблона больше нет, попробуйте /generate заново", show_alert=True)
         return
@@ -873,7 +1064,7 @@ async def generate_template_chosen(callback: CallbackQuery, state: FSMContext) -
 @router.callback_query(Generate.waiting_for_confirmation, F.data == "gen_cancel")
 async def generate_cancelled(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.answer(texts.GENERATE_CANCELLED)
+    await callback.message.answer(texts.GENERATE_CANCELLED, reply_markup=keyboards.MAIN_MENU)
     await callback.answer()
 
 
@@ -894,7 +1085,7 @@ async def generate_confirmed(callback: CallbackQuery, state: FSMContext) -> None
     }
     enqueue("generate_ksp", payload, chat_id=callback.message.chat.id)
     await state.clear()
-    await callback.message.answer(texts.GENERATE_QUEUED)
+    await callback.message.answer(texts.GENERATE_QUEUED, reply_markup=keyboards.MAIN_MENU)
     await callback.answer()
 
 
@@ -911,37 +1102,96 @@ async def generate_confirmed(callback: CallbackQuery, state: FSMContext) -> None
 # =====================================================================
 
 
+async def _ask_generate_ktp_predmet(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.GENERATE_KTP_ASK_PREDMET
+    if data.get("predmet"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["predmet"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_ktp_klass(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.GENERATE_KTP_ASK_KLASS
+    if data.get("klass"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["klass"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_ktp_hours_week(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.GENERATE_KTP_ASK_HOURS_WEEK
+    if data.get("chasov_v_nedelu"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["chasov_v_nedelu"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_ktp_hours_year(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.GENERATE_KTP_ASK_HOURS_YEAR
+    if data.get("chasov_v_god"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["chasov_v_god"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_ktp_topics(message: Message, state: FSMContext) -> None:
+    await message.answer(texts.GENERATE_KTP_ASK_TOPICS, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_generate_ktp_confirmation(message: Message, state: FSMContext) -> None:
+    """Строит сводку по текущим данным состояния — без переключения
+    состояния. В отличие от Generate.waiting_for_confirmation здесь только
+    один путь входа (после /generate_ktp темы всегда спрашиваются), поэтому
+    не нужен отдельный "enter"-вариант с параметром — всё уже в data."""
+    data = await state.get_data()
+    topics = data.get("topics") or []
+    summary = texts.GENERATE_KTP_CONFIRM_SUMMARY.format(
+        predmet=data["predmet"],
+        klass=data["klass"],
+        hours_week=data["chasov_v_nedelu"],
+        hours_year=data["chasov_v_god"],
+        topics_count=len(topics) if topics else "не даны, составлю сам",
+    )
+    rows = [
+        [
+            InlineKeyboardButton(text=texts.GENERATE_KTP_CONFIRM_BUTTON, callback_data="genktp_confirm"),
+            InlineKeyboardButton(text=texts.GENERATE_KTP_CANCEL_BUTTON, callback_data="genktp_cancel"),
+        ]
+    ]
+    await message.answer(summary, reply_markup=keyboards.with_back_row(rows))
+
+
 @router.message(Command("generate_ktp"))
 async def cmd_generate_ktp(message: Message, state: FSMContext) -> None:
     teacher = await _require_teacher(message)
     if teacher is None:
         return
     await state.clear()
-    await state.set_state(GenerateKTP.waiting_for_predmet)
+    await go_to(state, GenerateKTP.waiting_for_predmet)
     await state.update_data(teacher_id=teacher["id"])
-    await message.answer(texts.GENERATE_KTP_ASK_PREDMET)
+    await _ask_generate_ktp_predmet(message, state)
 
 
 @router.message(GenerateKTP.waiting_for_predmet)
 async def generate_ktp_predmet_received(message: Message, state: FSMContext) -> None:
     predmet = (message.text or "").strip()
     if not predmet:
-        await message.answer(texts.GENERATE_KTP_ASK_PREDMET)
+        await _ask_generate_ktp_predmet(message, state)
         return
     await state.update_data(predmet=predmet)
-    await state.set_state(GenerateKTP.waiting_for_klass)
-    await message.answer(texts.GENERATE_KTP_ASK_KLASS)
+    await go_to(state, GenerateKTP.waiting_for_klass)
+    await _ask_generate_ktp_klass(message, state)
 
 
 @router.message(GenerateKTP.waiting_for_klass)
 async def generate_ktp_klass_received(message: Message, state: FSMContext) -> None:
     klass = (message.text or "").strip()
     if not klass:
-        await message.answer(texts.GENERATE_KTP_ASK_KLASS)
+        await _ask_generate_ktp_klass(message, state)
         return
     await state.update_data(klass=klass)
-    await state.set_state(GenerateKTP.waiting_for_hours_week)
-    await message.answer(texts.GENERATE_KTP_ASK_HOURS_WEEK)
+    await go_to(state, GenerateKTP.waiting_for_hours_week)
+    await _ask_generate_ktp_hours_week(message, state)
 
 
 @router.message(GenerateKTP.waiting_for_hours_week)
@@ -951,8 +1201,8 @@ async def generate_ktp_hours_week_received(message: Message, state: FSMContext) 
         await message.answer(texts.GENERATE_KTP_HOURS_NOT_A_NUMBER)
         return
     await state.update_data(chasov_v_nedelu=int(text))
-    await state.set_state(GenerateKTP.waiting_for_hours_year)
-    await message.answer(texts.GENERATE_KTP_ASK_HOURS_YEAR)
+    await go_to(state, GenerateKTP.waiting_for_hours_year)
+    await _ask_generate_ktp_hours_year(message, state)
 
 
 @router.message(GenerateKTP.waiting_for_hours_year)
@@ -962,8 +1212,8 @@ async def generate_ktp_hours_year_received(message: Message, state: FSMContext) 
         await message.answer(texts.GENERATE_KTP_HOURS_NOT_A_NUMBER)
         return
     await state.update_data(chasov_v_god=int(text))
-    await state.set_state(GenerateKTP.waiting_for_topics)
-    await message.answer(texts.GENERATE_KTP_ASK_TOPICS)
+    await go_to(state, GenerateKTP.waiting_for_topics)
+    await _ask_generate_ktp_topics(message, state)
 
 
 @router.message(GenerateKTP.waiting_for_topics)
@@ -971,31 +1221,14 @@ async def generate_ktp_topics_received(message: Message, state: FSMContext) -> N
     text = (message.text or "").strip()
     topics = [] if text in ("-", "") else [line.strip() for line in text.splitlines() if line.strip()]
     await state.update_data(topics=topics)
-
-    data = await state.get_data()
-    summary = texts.GENERATE_KTP_CONFIRM_SUMMARY.format(
-        predmet=data["predmet"],
-        klass=data["klass"],
-        hours_week=data["chasov_v_nedelu"],
-        hours_year=data["chasov_v_god"],
-        topics_count=len(topics) if topics else "не даны, составлю сам",
-    )
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text=texts.GENERATE_KTP_CONFIRM_BUTTON, callback_data="genktp_confirm"),
-                InlineKeyboardButton(text=texts.GENERATE_KTP_CANCEL_BUTTON, callback_data="genktp_cancel"),
-            ]
-        ]
-    )
-    await state.set_state(GenerateKTP.waiting_for_confirmation)
-    await message.answer(summary, reply_markup=keyboard)
+    await go_to(state, GenerateKTP.waiting_for_confirmation)
+    await _ask_generate_ktp_confirmation(message, state)
 
 
 @router.callback_query(GenerateKTP.waiting_for_confirmation, F.data == "genktp_cancel")
 async def generate_ktp_cancelled(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.answer(texts.GENERATE_KTP_CANCELLED)
+    await callback.message.answer(texts.GENERATE_KTP_CANCELLED, reply_markup=keyboards.MAIN_MENU)
     await callback.answer()
 
 
@@ -1012,7 +1245,7 @@ async def generate_ktp_confirmed(callback: CallbackQuery, state: FSMContext) -> 
     }
     enqueue("generate_ktp", payload, chat_id=callback.message.chat.id)
     await state.clear()
-    await callback.message.answer(texts.GENERATE_KTP_QUEUED)
+    await callback.message.answer(texts.GENERATE_KTP_QUEUED, reply_markup=keyboards.MAIN_MENU)
     await callback.answer()
 
 
@@ -1139,6 +1372,42 @@ async def history_resend(callback: CallbackQuery, bot: Bot) -> None:
 
     await callback.message.answer_document(FSInputFile(docx_path))
     await callback.answer()
+
+
+# =====================================================================
+# М3.2 — таблица «имя состояния из стека -> функция "спросить заново"»,
+# для _handle_go_back выше. Строится здесь, когда все функции уже
+# определены (тем же способом, что и _MENU_BUTTON_HANDLERS). Ключи — не
+# сами объекты State, а их .state (строка вида "Generate:waiting_for_topic") —
+# именно так go_back/go_to хранят их в стеке (aiogram FSMContext сериализует
+# состояние в строку, не в объект).
+#
+# UploadKSP/UploadKTP/UploadTemplate — однoшаговые диалоги, они не вызывают
+# go_to ни разу, поэтому их состояния никогда не попадают в стек навигации
+# и не нуждаются в записи здесь (см. cmd_upload_ksp/cmd_upload_ktp/
+# cmd_upload_template — там по-прежнему прямой state.set_state).
+# =====================================================================
+
+_BACK_ASK_HANDLERS = {
+    TeacherProfile.waiting_for_name.state: _ask_teacher_name,
+    TeacherProfile.waiting_for_subject.state: _ask_teacher_subject,
+    TeacherProfile.waiting_for_school.state: _ask_teacher_school,
+    Generate.waiting_for_topic.state: _ask_generate_topic,
+    Generate.waiting_for_objective_code.state: _ask_generate_objective_code,
+    Generate.waiting_for_razdel.state: _ask_generate_razdel,
+    Generate.waiting_for_klass.state: _ask_generate_klass,
+    Generate.waiting_for_duration.state: _ask_generate_duration,
+    Generate.waiting_for_textbook_photos.state: _ask_generate_textbook_photos,
+    Generate.waiting_for_extra_options.state: _ask_generate_extra_options,
+    Generate.waiting_for_template.state: _ask_generate_template,
+    Generate.waiting_for_confirmation.state: _render_generate_confirmation,
+    GenerateKTP.waiting_for_predmet.state: _ask_generate_ktp_predmet,
+    GenerateKTP.waiting_for_klass.state: _ask_generate_ktp_klass,
+    GenerateKTP.waiting_for_hours_week.state: _ask_generate_ktp_hours_week,
+    GenerateKTP.waiting_for_hours_year.state: _ask_generate_ktp_hours_year,
+    GenerateKTP.waiting_for_topics.state: _ask_generate_ktp_topics,
+    GenerateKTP.waiting_for_confirmation.state: _ask_generate_ktp_confirmation,
+}
 
 
 # =====================================================================
