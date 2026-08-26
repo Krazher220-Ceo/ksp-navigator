@@ -554,3 +554,40 @@ async def test_client_logs_usage_without_crashing_when_fields_missing(no_real_sl
 
     assert result == {"answer": "ok"}
     assert any("токены_из_кэша=None" in record.message for record in caplog.records)
+
+
+# =====================================================================
+# М6: LLMClient.total_tokens_used — накопление за время жизни клиента
+# =====================================================================
+
+
+async def test_total_tokens_used_accumulates_across_calls(no_real_sleep):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": '{"answer": "ok"}'}}],
+                "usage": {"total_tokens": 100},
+            },
+        )
+
+    provider = make_provider("primary", "https://primary.test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LLMClient(providers=[provider], http_client=http)
+        assert client.total_tokens_used == 0
+        await client.complete_json("система", "вопрос", SCHEMA)
+        await client.complete_json("система", "вопрос2", SCHEMA)
+
+    assert client.total_tokens_used == 200
+
+
+async def test_total_tokens_used_not_incremented_when_provider_does_not_report(no_real_sleep):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"answer": "ok"}'}}]})
+
+    provider = make_provider("primary", "https://primary.test")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = LLMClient(providers=[provider], http_client=http)
+        await client.complete_json("система", "вопрос", SCHEMA)
+
+    assert client.total_tokens_used == 0

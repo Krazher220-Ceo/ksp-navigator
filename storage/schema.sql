@@ -94,6 +94,22 @@ CREATE TABLE IF NOT EXISTS tasks (
     updated_at TIMESTAMP
 );
 
+-- usage_daily — дневные лимиты на аккаунт (блок М6, PLAN_STAGE2.md).
+-- Ключ — telegram_user_id, НЕ teacher_id: учитель может не иметь профиля
+-- (core/dashboard.py и весь остальной проект так и живут — отсутствие
+-- профиля не ошибка), а telegram_user_id есть у любого сообщения всегда.
+-- Отклонение от черновой формулировки блока М6 в самом плане (там в
+-- одном месте написано "teacher_id") — решение в пользу ловушки М6.1,
+-- которая как раз это и разбирает; см. NIGHT_REPORT_STAGE2.md.
+CREATE TABLE IF NOT EXISTS usage_daily (
+    telegram_user_id INTEGER NOT NULL,
+    day TEXT NOT NULL,             -- ГГГГ-ММ-ДД по времени Костаная (UTC+5)
+    operation TEXT NOT NULL,       -- 'generate_ksp' | 'generate_ktp' | ...
+    count INTEGER NOT NULL DEFAULT 0,
+    tokens INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (telegram_user_id, day, operation)
+);
+
 -- Индексы сверх документа (PLAN_STAGE1.md, задача Б1.1)
 CREATE INDEX IF NOT EXISTS idx_ktp_teacher ON ktp_entries(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);

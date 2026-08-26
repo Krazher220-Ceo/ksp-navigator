@@ -244,3 +244,31 @@ def test_style_profile_reflects_existing_profile(db_path):
     )
     result = collect(teacher_id, db_path=db_path)
     assert result["style_profile"] == {"exists": True, "samples_count": 3}
+
+
+# =====================================================================
+# М6.3 — остаток дневного лимита в дашборде
+# =====================================================================
+
+
+def test_usage_today_reflects_recorded_generations(db_path):
+    from core.limits import record_usage
+
+    teacher_id = _create_teacher(db_path, telegram_user_id=888)
+    record_usage(888, "generate_ksp", count_delta=3, db_path=db_path)
+    record_usage(888, "generate_ktp", count_delta=1, db_path=db_path)
+
+    result = collect(teacher_id, db_path=db_path)
+    assert result["usage_today"] == {
+        "generate_ksp": 3,
+        "generate_ktp": 1,
+        "generate_ksp_limit": 5,
+        "generate_ktp_limit": 2,
+    }
+
+
+def test_usage_today_zero_when_nothing_recorded(db_path):
+    teacher_id = _create_teacher(db_path)
+    result = collect(teacher_id, db_path=db_path)
+    assert result["usage_today"]["generate_ksp"] == 0
+    assert result["usage_today"]["generate_ksp_limit"] == 5

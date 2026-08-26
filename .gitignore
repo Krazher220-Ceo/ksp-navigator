@@ -6,10 +6,16 @@ storage/app.db
 storage/app.db-journal
 storage/app.db-wal
 storage/app.db-shm
+# Бэкапы перед миграциями (протокол PLAN_STAGE2.md, К2.1) — реальные
+# данные учителя, не должны попасть в коммит так же, как сама app.db.
+storage/app.db.bak.*
 
 # Загруженные и сгенерированные файлы пользователей
 storage/uploads/
 storage/generated/
+
+# Бэкапы БД (scripts/backup_db.sh, блок Б11)
+backup/
 
 # Python
 __pycache__/

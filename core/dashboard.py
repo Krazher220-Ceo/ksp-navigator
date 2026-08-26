@@ -96,6 +96,7 @@ def collect(teacher_id: int | None, db_path=None) -> dict:
             "upcoming_lessons_without_ksp": [],
             "unparsed_planned_dates": 0,
             "style_profile": {"exists": False, "samples_count": None},
+            "usage_today": {"generate_ksp": 0, "generate_ktp": 0, "generate_ksp_limit": 0, "generate_ktp_limit": 0},
         }
 
     now = datetime.now()
@@ -106,6 +107,7 @@ def collect(teacher_id: int | None, db_path=None) -> dict:
     generated_ksp = _collect_generated_ksp(teacher_id, since_7d, since_30d, db_path=db_path)
     ktp_coverage, upcoming, unparsed = _collect_ktp_coverage(teacher_id, db_path=db_path)
     style_profile = _collect_style_profile(teacher_id, db_path=db_path)
+    usage_today = _collect_usage_today(teacher_id, db_path=db_path)
 
     return {
         "has_profile": True,
@@ -115,6 +117,31 @@ def collect(teacher_id: int | None, db_path=None) -> dict:
         "upcoming_lessons_without_ksp": upcoming,
         "unparsed_planned_dates": unparsed,
         "style_profile": style_profile,
+        "usage_today": usage_today,
+    }
+
+
+def _collect_usage_today(teacher_id: int, db_path=None) -> dict:
+    """М6.3: остаток дневного лимита для дашборда. Ключ usage_daily —
+    telegram_user_id, не teacher_id (core/limits.py, ловушка "что такое
+    аккаунт") — резолвится тем же способом, что и очередь задач."""
+    # Импорт внутри функции, не на уровне модуля: core.limits не должен
+    # быть обязательной зависимостью для тех, кто использует только
+    # collect() без блока М6 (например, будущие тесты этого модуля,
+    # написанные раньше М6 — не роняем их лишним импортом).
+    from core.limits import DAILY_COUNT_LIMITS, get_usage_today
+
+    chat_id = _resolve_telegram_chat_id(teacher_id, db_path=db_path)
+    if chat_id is None:
+        return {"generate_ksp": 0, "generate_ktp": 0, "generate_ksp_limit": 0, "generate_ktp_limit": 0}
+
+    usage = get_usage_today(chat_id, db_path=db_path)
+    counts = usage["counts"]
+    return {
+        "generate_ksp": counts.get("generate_ksp", 0),
+        "generate_ktp": counts.get("generate_ktp", 0),
+        "generate_ksp_limit": DAILY_COUNT_LIMITS["generate_ksp"],
+        "generate_ktp_limit": DAILY_COUNT_LIMITS["generate_ktp"],
     }
 
 

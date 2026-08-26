@@ -51,6 +51,7 @@ from bot.states import Generate, GenerateKTP, TeacherProfile, UploadKSP, UploadK
 from core.config import settings
 from core.dashboard import collect as collect_dashboard
 from core.db import execute, query
+from core.limits import DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_token_limit, get_usage_today, record_usage
 from core.ksp_generator import (
     MAX_VIDY_DEYATELNOSTI,
     LessonOptions,
@@ -66,7 +67,7 @@ from core.ksp_parser import (
 )
 from core.ktp_generator import generate_and_save_ktp
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
-from core.llm_client import LLMError
+from core.llm_client import LLMClient, LLMError
 from core.pdf_export import PdfExportError, convert_docx_to_pdf
 from core.queue import MAX_RETRIES, enqueue
 from core.templates import get_template, list_templates, save_user_template
@@ -113,6 +114,33 @@ async def _require_teacher(message: Message) -> dict | None:
     if teacher is None:
         await message.answer(texts.ERROR_NO_TEACHER_PROFILE)
     return teacher
+
+
+_LIMIT_OPERATION_LABELS = {"generate_ksp": "КСП", "generate_ktp": "КТП"}
+
+
+async def _check_and_report_limits(message: Message, telegram_user_id: int, operation: str) -> bool:
+    """М6.2: проверка обоих лимитов (по количеству операции и общего
+    потолка токенов) ДО постановки задачи в очередь. Возвращает False и
+    сама сообщает пользователю причину отказа, если хоть один лимит
+    исчерпан — вызывающий код просто прерывает диалог, не решая, что
+    писать (М6.3: не "лимит исчерпан", а сколько потрачено и когда
+    сбросится)."""
+    try:
+        check_count_limit(telegram_user_id, operation)
+        check_token_limit(telegram_user_id)
+    except LimitExceeded as exc:
+        reset_time = exc.reset_at.strftime("%H:%M")
+        if operation in DAILY_COUNT_LIMITS and exc.limit == DAILY_COUNT_LIMITS[operation]:
+            text = texts.LIMIT_COUNT_EXCEEDED.format(
+                operation_label=_LIMIT_OPERATION_LABELS.get(operation, operation),
+                used=exc.used, limit=exc.limit, reset_time=reset_time,
+            )
+        else:
+            text = texts.LIMIT_TOKENS_EXCEEDED.format(used=exc.used, limit=exc.limit, reset_time=reset_time)
+        await message.answer(text, reply_markup=keyboards.MAIN_MENU)
+        return False
+    return True
 
 
 # =====================================================================
@@ -1071,6 +1099,13 @@ async def generate_cancelled(callback: CallbackQuery, state: FSMContext) -> None
 
 @router.callback_query(Generate.waiting_for_confirmation, F.data == "gen_confirm")
 async def generate_confirmed(callback: CallbackQuery, state: FSMContext) -> None:
+    # М6.2: проверка ДО постановки в очередь — после генерации уже
+    # потратили бы то, что хотели сэкономить.
+    if not await _check_and_report_limits(callback.message, callback.from_user.id, "generate_ksp"):
+        await state.clear()
+        await callback.answer()
+        return
+
     data = await state.get_data()
     payload = {
         "teacher_id": data["teacher_id"],
@@ -1235,6 +1270,11 @@ async def generate_ktp_cancelled(callback: CallbackQuery, state: FSMContext) -> 
 
 @router.callback_query(GenerateKTP.waiting_for_confirmation, F.data == "genktp_confirm")
 async def generate_ktp_confirmed(callback: CallbackQuery, state: FSMContext) -> None:
+    if not await _check_and_report_limits(callback.message, callback.from_user.id, "generate_ktp"):
+        await state.clear()
+        await callback.answer()
+        return
+
     data = await state.get_data()
     payload = {
         "teacher_id": data["teacher_id"],
@@ -1347,6 +1387,12 @@ def format_dashboard_text(data: dict) -> str:
         text += texts.DASHBOARD_STYLE_PROFILE_YES.format(samples_count=style["samples_count"])
     else:
         text += texts.DASHBOARD_STYLE_PROFILE_NO
+
+    usage = data["usage_today"]
+    text += texts.DASHBOARD_USAGE_TODAY.format(
+        ksp_used=usage["generate_ksp"], ksp_limit=usage["generate_ksp_limit"],
+        ktp_used=usage["generate_ktp"], ktp_limit=usage["generate_ktp_limit"],
+    )
 
     return text
 
@@ -1579,19 +1625,38 @@ def make_generate_ksp_handler(bot: Bot):
             payload.get("textbook_photo_paths") or []
         )
 
-        result = await generate_and_save_ksp(
-            teacher_id=payload["teacher_id"],
-            template_id=payload["template_id"],
-            topic=payload["topic"],
-            razdel=payload["razdel"],
-            subject=payload["subject"],
-            klass=payload["klass"],
-            duration_minutes=payload["duration_minutes"],
-            objective_code=payload.get("objective_code"),
-            ktp_entry_id=payload.get("ktp_entry_id"),
-            options=options,
-            textbook_text=textbook_text,
-        )
+        # М6.2: свой клиент, а не тот, что generate_and_save_ksp создал бы
+        # сам — чтобы после генерации прочитать total_tokens_used и
+        # записать реальный расход (record_usage), а не выдуманную оценку.
+        # Владеем клиентом сами (llm_client передан явно) — значит и
+        # закрываем сами, generate_ksp этого не сделает за нас.
+        llm_client = LLMClient()
+        try:
+            result = await generate_and_save_ksp(
+                teacher_id=payload["teacher_id"],
+                template_id=payload["template_id"],
+                topic=payload["topic"],
+                razdel=payload["razdel"],
+                subject=payload["subject"],
+                klass=payload["klass"],
+                duration_minutes=payload["duration_minutes"],
+                objective_code=payload.get("objective_code"),
+                ktp_entry_id=payload.get("ktp_entry_id"),
+                options=options,
+                textbook_text=textbook_text,
+                llm_client=llm_client,
+            )
+        finally:
+            # count_delta=1 только здесь, ПОСЛЕ успеха — М6.2, ловушка 2:
+            # провалившаяся генерация не должна списывать квоту по
+            # количеству. Токены, наоборот, пишем в finally безусловно —
+            # они потрачены независимо от исхода (тот же принцип, что и
+            # в core/limits.py, record_usage). Ключ — telegram_chat_id
+            # задачи: для приватного чата с ботом это то же число, что
+            # telegram_user_id учителя (см. core/dashboard.py, тот же приём).
+            record_usage(chat_id, "generate_ksp", tokens_delta=llm_client.total_tokens_used)
+            await llm_client.aclose()
+        record_usage(chat_id, "generate_ksp", count_delta=1)
 
         docx_path = Path(result["docx_path"])
         caption = texts.GENERATE_RESULT_CAPTION.format(topic=payload["topic"])
@@ -1633,14 +1698,24 @@ def make_generate_ktp_handler(bot: Bot):
         payload = task["payload"]
         chat_id = task["telegram_chat_id"]
 
-        result = await generate_and_save_ktp(
-            teacher_id=payload["teacher_id"],
-            predmet=payload["predmet"],
-            klass=payload["klass"],
-            chasov_v_nedelu=payload["chasov_v_nedelu"],
-            chasov_v_god=payload["chasov_v_god"],
-            topics=payload.get("topics"),
-        )
+        # М6.2 — тот же приём, что и в make_generate_ksp_handler: свой
+        # клиент, чтобы прочитать total_tokens_used и записать реальный
+        # расход, count_delta=1 только после успеха.
+        llm_client = LLMClient()
+        try:
+            result = await generate_and_save_ktp(
+                teacher_id=payload["teacher_id"],
+                predmet=payload["predmet"],
+                klass=payload["klass"],
+                chasov_v_nedelu=payload["chasov_v_nedelu"],
+                chasov_v_god=payload["chasov_v_god"],
+                topics=payload.get("topics"),
+                llm_client=llm_client,
+            )
+        finally:
+            record_usage(chat_id, "generate_ktp", tokens_delta=llm_client.total_tokens_used)
+            await llm_client.aclose()
+        record_usage(chat_id, "generate_ktp", count_delta=1)
 
         docx_path = Path(result["docx_path"])
         caption = texts.GENERATE_KTP_RESULT_CAPTION.format(

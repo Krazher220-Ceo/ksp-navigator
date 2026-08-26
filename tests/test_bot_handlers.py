@@ -11,6 +11,7 @@ finally (fixture isolated_env). Реальные Telegram/LLM вызовы не
 """
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -62,6 +63,7 @@ from core import ksp_generator as ksp_generator_module
 from core.config import settings
 from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
 from core.db import execute, init_db, query
+from core.limits import get_usage_today, record_usage
 from core.templates import list_templates, load_builtin_templates
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1658,3 +1660,80 @@ async def test_dashboard_menu_button_dispatches_to_cmd_dashboard(isolated_env):
     message = FakeMessage(text=texts.MENU_BUTTON_DASHBOARD, user_id=903)
     await menu_button_pressed(message, _state())
     assert texts.DASHBOARD_HEADER in message.sent[0]["text"]
+
+
+# =====================================================================
+# М6.2/М6.3 — дневные лимиты: интеграционный прогон через реальный диалог
+# =====================================================================
+
+
+async def _run_generate_dialog_to_confirmation(user_id: int, chat_id: int, state):
+    """Доводит /generate до callback-подтверждения, возвращает
+    FakeCallbackQuery с data='gen_confirm', готовый к generate_confirmed."""
+    await cmd_generate(FakeMessage(text="/generate", user_id=user_id, chat_id=chat_id), state)
+    await generate_topic_received(FakeMessage(text="Тема урока", user_id=user_id, chat_id=chat_id), state)
+    await generate_objective_code_received(FakeMessage(text="-", user_id=user_id, chat_id=chat_id), state)
+    await generate_razdel_received(FakeMessage(text="Раздел", user_id=user_id, chat_id=chat_id), state)
+    await generate_klass_received(FakeMessage(text="10А", user_id=user_id, chat_id=chat_id), state)
+    await generate_duration_received(FakeMessage(text="40", user_id=user_id, chat_id=chat_id), state)
+    await generate_textbook_photos_skipped(FakeMessage(text="/skip", user_id=user_id, chat_id=chat_id), state)
+    await generate_extra_options_received(FakeMessage(text="-", user_id=user_id, chat_id=chat_id), state)
+
+    template_id = query("SELECT id FROM templates WHERE is_builtin = 1")[0]["id"]
+    message = FakeMessage(user_id=user_id, chat_id=chat_id)
+    template_callback = FakeCallbackQuery(data=f"gen_tpl:{template_id}", message=message, user_id=user_id)
+    await generate_template_chosen(template_callback, state)
+
+    return FakeCallbackQuery(data="gen_confirm", message=message, user_id=user_id)
+
+
+async def test_sixth_generate_ksp_confirm_blocked_by_daily_limit(isolated_env):
+    """М6.3 КГ, дословно из плана: пятая генерация КСП проходит, шестая
+    отказывает с внятным текстом (не 'лимит исчерпан', а сколько
+    потрачено и когда сбросится)."""
+    _create_teacher(950)
+    for i in range(5):
+        record_usage(950, "generate_ksp", count_delta=1)
+
+    from bot.handlers import generate_confirmed
+
+    state = _state()
+    confirm_callback = await _run_generate_dialog_to_confirmation(950, 950, state)
+    await generate_confirmed(confirm_callback, state)
+
+    tasks = query("SELECT * FROM tasks WHERE type = 'generate_ksp'")
+    assert len(tasks) == 0, "шестая генерация не должна была уйти в очередь"
+
+    answer_text = confirm_callback.message.sent[-1]["text"]
+    # М6.3, требование дословно: не голое "лимит исчерпан", а сколько
+    # потрачено (5/5) и когда сбросится (время в формате ЧЧ:ММ).
+    assert "5/5" in answer_text
+    assert re.search(r"\d{2}:\d{2}", answer_text), f"нет времени сброса лимита в тексте: {answer_text!r}"
+    assert answer_text != texts.STATUS_EMPTY  # сигнал, что не подставился текст другого экрана
+
+
+async def test_fifth_generate_ksp_confirm_still_passes(isolated_env):
+    _create_teacher(951)
+    for i in range(4):
+        record_usage(951, "generate_ksp", count_delta=1)
+
+    from bot.handlers import generate_confirmed
+
+    state = _state()
+    confirm_callback = await _run_generate_dialog_to_confirmation(951, 951, state)
+    await generate_confirmed(confirm_callback, state)
+
+    tasks = query("SELECT * FROM tasks WHERE type = 'generate_ksp'")
+    assert len(tasks) == 1
+
+
+async def test_limit_check_does_not_consume_quota_by_itself(isolated_env):
+    """Сама проверка лимита (check_count_limit) — только чтение, не
+    списание: повторный вызов той же самой проверки не меняет счётчик."""
+    from core.limits import check_count_limit
+
+    _create_teacher(952)
+    check_count_limit(952, "generate_ksp")
+    check_count_limit(952, "generate_ksp")
+    usage = get_usage_today(952)
+    assert usage["counts"].get("generate_ksp", 0) == 0

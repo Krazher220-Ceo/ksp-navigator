@@ -392,6 +392,14 @@ class LLMClient:
         self._providers = providers if providers is not None else _load_providers_from_settings()
         self._http_client = http_client or httpx.AsyncClient(timeout=request_timeout)
         self._owns_http_client = http_client is None
+        # М6 (PLAN_STAGE2.md): суммарные токены за время жизни клиента —
+        # для дневного потолка (core.limits). Не меняет публичный API
+        # complete_json/complete_json_with_image (оба по-прежнему
+        # возвращают только dict — десятки существующих вызывающих мест
+        # и тестов полагаются на это), вызывающий код, которому нужен
+        # расход, читает total_tokens_used после вызова(ов) на этом же
+        # экземпляре клиента.
+        self.total_tokens_used = 0
 
     async def aclose(self) -> None:
         """Закрывает http-клиент, если его создал сам LLMClient (а не
@@ -608,6 +616,11 @@ class LLMClient:
                     provider.name, provider.model, attempt, max_retries,
                     usage.total, usage.prompt, usage.completion, usage.prompt_cached, duration_ms,
                 )
+                # М6: копится даже если usage.total is None (провайдер не
+                # сообщил) — тогда просто не растёт на этом вызове, а не
+                # роняет счётчик в None и не падает.
+                if usage.total is not None:
+                    self.total_tokens_used += usage.total
                 return text
 
             retryable = _is_retryable_status(response.status_code)
