@@ -70,7 +70,7 @@ from core.ktp_generator import generate_and_save_ktp
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMClient, LLMError
 from core.konspekt_builder import build_konspekt_docx, build_konspekt_filename
-from core.konspekt_generator import KonspektGenerationError, generate_konspekt
+from core.konspekt_generator import CELI_NOT_STATED_NOTE, KonspektGenerationError, generate_konspekt
 from core.transcriber import TranscriptionError, probe_duration_seconds, transcribe
 from core.pdf_export import PdfExportError, convert_docx_to_pdf
 from core.queue import MAX_RETRIES, enqueue
@@ -2196,10 +2196,15 @@ def format_konspekt_text(content: dict) -> str:
     блоке К6, здесь пока только текст сообщения."""
     lines = [f"📝 Конспект: {content['tema']}", ""]
 
+    lines.append("Цели:")
     if content.get("celi"):
-        lines.append("Цели:")
         lines.extend(f"• {c}" for c in content["celi"])
-        lines.append("")
+    else:
+        # Аудит этапа 2, находка 1: пустые цели — законный результат, а не
+        # недоделка. Раздел показываем всегда, чтобы читатель не гадал,
+        # целей не было или модель их потеряла.
+        lines.append(f"• {CELI_NOT_STATED_NOTE}")
+    lines.append("")
 
     if content.get("glavnoe"):
         lines.append("Главное:")

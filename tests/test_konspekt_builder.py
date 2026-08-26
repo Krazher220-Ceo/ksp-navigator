@@ -6,6 +6,7 @@ from datetime import date
 
 from docx import Document
 
+from core.konspekt_generator import CELI_NOT_STATED_NOTE
 from core.konspekt_builder import (
     DRAFT_NOTICE_TEXT,
     TITLE_TEXT,
@@ -77,7 +78,12 @@ def test_all_sections_with_data_are_rendered(tmp_path):
 
 def test_empty_sections_are_not_rendered(tmp_path):
     """Б6.2/К4.1 честность распространяется и на .docx: пустое поле —
-    просто нет раздела, не выдуманное содержимое и не пустой заголовок."""
+    просто нет раздела, не выдуманное содержимое и не пустой заголовок.
+
+    Единственное исключение — «Цели» (аудит этапа 2, находка 1): там
+    молчание неотличимо от потери данных, поэтому раздел остаётся и прямо
+    говорит, что целей на записи не прозвучало. Проверяется отдельно в
+    test_empty_celi_renders_honest_note_not_silent_skip."""
     minimal_content = {
         "tema": "Тема без деталей",
         "celi": [],
@@ -93,7 +99,6 @@ def test_empty_sections_are_not_rendered(tmp_path):
 
     document = Document(str(out_path))
     text = _all_text(document)
-    assert "Цели:" not in text
     assert "Формулы:" not in text
     assert "Примеры:" not in text
     assert "Термины:" not in text
@@ -137,3 +142,30 @@ def test_topic_with_quotes_slashes_colons_does_not_break_actual_save(tmp_path):
     out_path = tmp_path / filename
     build_konspekt_docx(content, out_path)
     assert out_path.exists()
+
+
+# --- аудит этапа 2, находка 1: пустые цели показываются честной строкой ---
+
+
+def test_empty_celi_renders_honest_note_not_silent_skip(tmp_path):
+    """Пустой 'celi' — законный результат (целей на записи не звучало).
+    Раздел обязан остаться и сказать об этом прямо: до правки он молча
+    исчезал, и читатель не отличал «целей не было» от «модель потеряла»."""
+    content = dict(SAMPLE_CONTENT)
+    content["celi"] = []
+    out_path = tmp_path / "konspekt_bez_celey.docx"
+    build_konspekt_docx(content, out_path)
+
+    text = _all_text(Document(str(out_path)))
+    assert "Цели:" in text
+    assert CELI_NOT_STATED_NOTE in text
+
+
+def test_non_empty_celi_still_rendered_as_before(tmp_path):
+    """Граница правки: когда цели есть, честная строка не появляется."""
+    out_path = tmp_path / "konspekt_s_celyami.docx"
+    build_konspekt_docx(SAMPLE_CONTENT, out_path)
+
+    text = _all_text(Document(str(out_path)))
+    assert "Различать путь и перемещение" in text
+    assert CELI_NOT_STATED_NOTE not in text

@@ -10,14 +10,20 @@ core/konspekt_builder.py — сборка .docx конспекта урока (�
 Что осознанно не делает: не проверяет содержательную корректность content
 (это уже сделал core.konspekt_generator при валидации ответа LLM) — если
 поле пустое, в документе просто не будет соответствующего раздела, а не
-выдуманное значение. Не пишет свою конвертацию в PDF — core.pdf_export
-уже умеет конвертировать любой .docx, второй код для этого не нужен
-(bot/handlers.py вызывает его напрямую, тем же _try_send_pdf, что и КСП/КТП).
+выдуманное значение. Единственное исключение — раздел «Цели»: он печатается
+всегда, потому что пустые цели это законный результат (на записи их не
+прозвучало), и молчание здесь неотличимо от потерянных данных — см.
+CELI_NOT_STATED_NOTE в core.konspekt_generator. Не пишет свою конвертацию
+в PDF — core.pdf_export уже умеет конвертировать любой .docx, второй код
+для этого не нужен (bot/handlers.py вызывает его напрямую, тем же
+_try_send_pdf, что и КСП/КТП).
 
 На что опирается: python-docx (та же библиотека, что и core.docx_builder);
 переиспользует оттуда настройку страницы и транслитерацию имени файла
 (_apply_page_setup/_transliterate/_strip_unsafe_filename_chars) — не
 копирует их второй раз, тот же приём, каким уже пользуется core.ktp_builder.
+core.konspekt_generator — за строкой CELI_NOT_STATED_NOTE (одна строка на
+оба представления конспекта, чтобы текст в чате и в .docx не разошёлся).
 """
 
 from pathlib import Path
@@ -27,6 +33,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, RGBColor
 
 from core.docx_builder import _apply_page_setup, _strip_unsafe_filename_chars, _transliterate
+from core.konspekt_generator import CELI_NOT_STATED_NOTE
 
 # К6, ловушка из плана: пометка F7 у КСП ("ЧЕРНОВИК. Требует проверки и
 # утверждения педагогом.") — про отчётный документ, который кто-то
@@ -89,9 +96,11 @@ def build_konspekt_docx(content: dict, out_path: Path | str) -> Path:
     _add_notice(document)
     _add_title(document, content.get("tema", ""))
 
-    if content.get("celi"):
-        _add_heading(document, "Цели:")
-        _add_bullets(document, content["celi"])
+    # Аудит этапа 2, находка 1: раздел «Цели» печатается всегда — пустые
+    # цели это законный результат (на записи их не прозвучало), а не
+    # потерянные данные, и читатель документа должен видеть разницу.
+    _add_heading(document, "Цели:")
+    _add_bullets(document, content.get("celi") or [CELI_NOT_STATED_NOTE])
 
     if content.get("glavnoe"):
         _add_heading(document, "Главное:")

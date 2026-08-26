@@ -73,7 +73,7 @@ from core import ksp_generator as ksp_generator_module
 from core.config import settings
 from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
 from core.db import execute, init_db, query
-from core.konspekt_generator import KonspektGenerationError
+from core.konspekt_generator import CELI_NOT_STATED_NOTE, KonspektGenerationError
 from core.limits import get_usage_today, record_usage
 from core.transcriber import TranscriptionError
 from core.templates import list_templates, load_builtin_templates
@@ -2349,6 +2349,21 @@ def test_format_konspekt_text_includes_all_sections():
     # пустые секции (primery, domashnee_zadanie) не оставляют "хвостов" в тексте
     assert "Примеры:" not in text
     assert "Домашнее задание:" not in text
+
+
+def test_format_konspekt_text_empty_celi_says_so_instead_of_hiding_section():
+    """Аудит этапа 2, находка 1: пустые цели — законный результат, а не
+    недоделка. В тексте для чата раздел остаётся и прямо это говорит."""
+    content = {**_SAMPLE_KONSPEKT_CONTENT, "celi": []}
+    text = format_konspekt_text(content)
+    assert "Цели:" in text
+    assert CELI_NOT_STATED_NOTE in text
+
+
+def test_format_konspekt_text_with_celi_has_no_honest_note():
+    """Граница правки: есть цели — честной строки быть не должно."""
+    text = format_konspekt_text(_SAMPLE_KONSPEKT_CONTENT)
+    assert CELI_NOT_STATED_NOTE not in text
 
 
 # =====================================================================

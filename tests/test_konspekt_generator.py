@@ -9,6 +9,7 @@ import pytest
 from core.db import execute, init_db
 from core.konspekt_generator import (
     KonspektGenerationError,
+    _validate_konspekt_content,
     build_prompt,
     check_coverage,
     generate_konspekt,
@@ -119,6 +120,39 @@ async def test_generate_konspekt_second_failure_raises_error():
 
     with pytest.raises(KonspektGenerationError):
         await generate_konspekt("текст расшифровки", llm_client=fake)
+
+
+async def test_generate_konspekt_empty_celi_is_accepted_not_invented():
+    """Аудит этапа 2, находка 1. Учителя обычно не проговаривают цели урока
+    вслух — они пишутся в плане. Честный ответ модели с пустым 'celi' обязан
+    приниматься как есть, ОДНИМ вызовом: до правки он отклонялся, уходил на
+    ремонт и заканчивался KonspektGenerationError, то есть честность
+    наказывалась потерей всего конспекта."""
+    honest = {**VALID_CONTENT, "celi": []}
+    fake = _ScriptedLLMClient([honest])
+
+    result = await generate_konspekt("расшифровка без озвученных целей", llm_client=fake)
+
+    assert result == honest
+    assert result["celi"] == []  # пустое осталось пустым, ничего не дописано
+    assert len(fake.calls) == 1  # ремонтного вызова не было — платить дважды не за что
+
+
+async def test_validate_konspekt_content_does_not_complain_about_empty_celi():
+    """Та же находка на уровне самого валидатора, без обхода через LLM."""
+    problems = _validate_konspekt_content({**VALID_CONTENT, "celi": []})
+    assert problems == []
+
+
+async def test_generate_konspekt_empty_glavnoe_still_rejected_after_celi_fix():
+    """Граница правки находки 1: смягчили ТОЛЬКО 'celi'. Пустой 'glavnoe'
+    по-прежнему невалиден — конспект без главных тезисов бессмыслен, это
+    обосновано в самом коде и правкой не затронуто."""
+    broken = {**VALID_CONTENT, "glavnoe": [], "celi": []}
+    fake = _ScriptedLLMClient([broken, VALID_CONTENT])
+    result = await generate_konspekt("текст расшифровки", llm_client=fake)
+    assert result == VALID_CONTENT
+    assert len(fake.calls) == 2  # ремонт был вызван именно из-за glavnoe
 
 
 async def test_generate_konspekt_empty_glavnoe_list_is_rejected():
