@@ -755,7 +755,7 @@ async def cmd_konspekt(message: Message, state: FSMContext) -> None:
     await state.update_data(teacher_id=teacher["id"], audio_paths=[], audio_durations=[])
     await message.answer(
         texts.KONSPEKT_PROMPT.format(max_parts=MAX_KONSPEKT_PARTS),
-        reply_markup=keyboards.back_cancel_keyboard(),
+        reply_markup=keyboards.konspekt_collecting_keyboard(),
     )
 
 
@@ -769,7 +769,7 @@ async def _konspekt_remove_last_part(message: Message, state: FSMContext) -> Non
     paths = list(data.get("audio_paths", []))
     durations = list(data.get("audio_durations", []))
     if not paths:
-        await message.answer(texts.KONSPEKT_NOTHING_TO_REMOVE, reply_markup=keyboards.back_cancel_keyboard())
+        await message.answer(texts.KONSPEKT_NOTHING_TO_REMOVE, reply_markup=keyboards.konspekt_collecting_keyboard())
         return
 
     removed_path = paths.pop()
@@ -783,7 +783,7 @@ async def _konspekt_remove_last_part(message: Message, state: FSMContext) -> Non
 
     await message.answer(
         texts.KONSPEKT_LAST_PART_REMOVED.format(count=len(paths)),
-        reply_markup=keyboards.back_cancel_keyboard(),
+        reply_markup=keyboards.konspekt_collecting_keyboard(),
     )
 
 
@@ -849,17 +849,18 @@ async def konspekt_document_received(message: Message, state: FSMContext, bot: B
     document = message.document
     mime_type = document.mime_type or ""
     if not mime_type.startswith("audio/"):
-        await message.answer(texts.KONSPEKT_UNSUPPORTED_INPUT, reply_markup=keyboards.back_cancel_keyboard())
+        await message.answer(texts.KONSPEKT_UNSUPPORTED_INPUT, reply_markup=keyboards.konspekt_collecting_keyboard())
         return
     await _konspekt_store_part(message, state, bot, document, document.file_name, mime_type, None)
 
 
+@router.message(Konspekt.collecting_audio, F.text == texts.KONSPEKT_START_BUTTON)
 @router.message(Konspekt.collecting_audio, Command("done"))
 async def konspekt_done(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
     paths = data.get("audio_paths", [])
     if not paths:
-        await message.answer(texts.KONSPEKT_NO_PARTS_YET, reply_markup=keyboards.back_cancel_keyboard())
+        await message.answer(texts.KONSPEKT_NO_PARTS_YET, reply_markup=keyboards.konspekt_collecting_keyboard())
         return
 
     enqueue(
@@ -873,7 +874,7 @@ async def konspekt_done(message: Message, state: FSMContext) -> None:
 
 @router.message(Konspekt.collecting_audio)
 async def konspekt_wrong_input(message: Message) -> None:
-    await message.answer(texts.KONSPEKT_UNSUPPORTED_INPUT, reply_markup=keyboards.back_cancel_keyboard())
+    await message.answer(texts.KONSPEKT_UNSUPPORTED_INPUT, reply_markup=keyboards.konspekt_collecting_keyboard())
 
 
 # =====================================================================

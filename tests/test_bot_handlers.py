@@ -2807,3 +2807,85 @@ async def test_oversized_docx_upload_keeps_plain_message(isolated_env):
     await upload_ksp_file_received(message, state, FakeBot())
 
     assert "моно" not in message.sent[-1]["text"]
+
+
+# =====================================================================
+# Кнопка «Начать расшифровку» — /done одним нажатием
+# =====================================================================
+
+
+async def test_start_button_launches_transcription_like_done(isolated_env):
+    """Шаг сбора записи сам не двигается дальше и таймера не имеет —
+    без явной команды расшифровка не начнётся вообще. Кнопка делает то
+    же, что /done, чтобы команду не приходилось помнить."""
+    state, paths = await _konspekt_with_parts(990, parts=2)
+
+    message = FakeMessage(text=texts.KONSPEKT_START_BUTTON, user_id=990, chat_id=990)
+    await konspekt_done(message, state)
+
+    tasks = query("SELECT * FROM tasks WHERE type = 'transcribe'")
+    assert len(tasks) == 1
+    assert json.loads(tasks[0]["payload"])["audio_paths"] == [str(p) for p in paths]
+    assert await state.get_state() is None
+
+
+async def test_start_button_is_actually_wired_to_router(isolated_env):
+    """Кнопка бесполезна, если её текст не привязан к хендлеру в роутере:
+    сообщение уйдёт в konspekt_wrong_input («не похоже на аудио»).
+    Проверяем именно привязку — прогоняем текст кнопки через настоящие
+    фильтры роутера, а не зовём функцию напрямую."""
+    from types import SimpleNamespace
+
+    from bot.handlers import router
+
+    event = SimpleNamespace(
+        text=texts.KONSPEKT_START_BUTTON, voice=None, audio=None, document=None, caption=None
+    )
+    matched = []
+    for handler in router.message.handlers:
+        for f in handler.filters:
+            if "MagicFilter" not in str(f.callback):
+                continue  # фильтр состояния/команды — не про текст
+            try:
+                if f.callback(event):
+                    matched.append(handler.callback.__name__)
+            except Exception:
+                pass
+
+    assert "konspekt_done" in matched, "текст кнопки не привязан ни к одному хендлеру"
+    # и порядок: кнопка обязана стоять выше «не похоже на аудио»
+    names = [
+        h.callback.__name__
+        for h in router.message.handlers
+        if any("Konspekt" in str(f.callback) for f in h.filters)
+    ]
+    assert names.index("konspekt_done") < names.index("konspekt_wrong_input")
+
+
+async def test_collecting_keyboard_offers_start_button(isolated_env):
+    """Кнопка должна реально приходить пользователю на этом шаге —
+    иначе нажимать нечего."""
+    _create_teacher(991)
+    state = _state()
+    message = FakeMessage(text="/konspekt", user_id=991)
+    await cmd_konspekt(message, state)
+
+    keyboard = message.sent[-1]["reply_markup"]
+    texts_on_keyboard = [b.text for row in keyboard.keyboard for b in row]
+    assert texts.KONSPEKT_START_BUTTON in texts_on_keyboard
+    assert texts.BUTTON_BACK in texts_on_keyboard      # «Назад» никуда не делся
+    assert texts.BUTTON_CANCEL in texts_on_keyboard
+
+
+async def test_start_button_without_parts_does_not_enqueue(isolated_env):
+    """Граница: нажать кнопку, ничего не прислав — не задача в очередь,
+    а понятный ответ, тот же что у /done."""
+    _create_teacher(992)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=992), state)
+
+    message = FakeMessage(text=texts.KONSPEKT_START_BUTTON, user_id=992, chat_id=992)
+    await konspekt_done(message, state)
+
+    assert query("SELECT * FROM tasks WHERE type = 'transcribe'") == []
+    assert message.sent[-1]["text"] == texts.KONSPEKT_NO_PARTS_YET

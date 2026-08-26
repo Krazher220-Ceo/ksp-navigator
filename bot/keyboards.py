@@ -88,6 +88,25 @@ def back_cancel_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def konspekt_collecting_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура шага сбора записи урока (/konspekt, К2.3).
+
+    Отличается от back_cancel_keyboard одной кнопкой — «Начать
+    расшифровку». Нужна потому, что этот шаг единственный, где диалог сам
+    не двигается дальше: бот ждёт /done и без него ничего не начнёт, а
+    таймера тут нет и быть не должно (расшифровка стоит минут работы, её
+    нельзя запускать за пользователя, пока он, возможно, ещё досылает
+    части). Команду /done приходилось помнить и набирать руками — кнопка
+    делает то же самое одним нажатием."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=texts.KONSPEKT_START_BUTTON)],
+            [KeyboardButton(text=texts.BUTTON_BACK), KeyboardButton(text=texts.BUTTON_CANCEL)],
+        ],
+        resize_keyboard=True,
+    )
+
+
 def with_back_row(rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
     """Добавляет ряд «← Назад» под уже собранной inline-клавиатурой шага
     (выбор шаблона, подтверждение генерации/КТП) — callback_data="nav_back",
