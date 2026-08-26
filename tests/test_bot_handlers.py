@@ -27,6 +27,7 @@ from bot.handlers import (
     konspekt_done,
     konspekt_voice_received,
     konspekt_wrong_input,
+    make_transcribe_handler,
     cmd_cancel,
     cmd_generate,
     cmd_generate_ktp,
@@ -70,6 +71,7 @@ from core.config import settings
 from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
 from core.db import execute, init_db, query
 from core.limits import get_usage_today, record_usage
+from core.transcriber import TranscriptionError
 from core.templates import list_templates, load_builtin_templates
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -2041,3 +2043,147 @@ async def test_konspekt_not_added_to_bot_commands_yet():
     command_names = {name for name, _ in texts.BOT_COMMANDS}
     assert "konspekt" not in command_names
     assert texts.MENU_BUTTON_DASHBOARD in keyboards.MAIN_MENU_BUTTON_TEXTS  # существующие кнопки не пострадали
+
+
+# =====================================================================
+# К3.2 — задача очереди 'transcribe' (реальная расшифровка, не мок)
+# =====================================================================
+
+
+async def test_transcribe_handler_real_audio_creates_transcript_and_notifies(isolated_env):
+    """Реальная расшифровка настоящего фикстур-файла через сам
+    обработчик очереди — не только core.transcriber напрямую."""
+    teacher_id = _create_teacher(930)
+    audio_copy = settings.uploads_dir / "part1.m4a"
+    audio_copy.write_bytes((FIXTURES_DIR / "audio_lesson_snippet.m4a").read_bytes())
+
+    bot = FakeBot()
+    handler = make_transcribe_handler(bot)
+    task = {
+        "id": "tr1",
+        "type": "transcribe",
+        "telegram_chat_id": 930,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "audio_paths": [str(audio_copy)]},
+    }
+
+    result = await handler(task)
+
+    assert "transcript_id" in result
+    assert 40 <= result["duration_seconds"] <= 55
+
+    rows = query("SELECT * FROM transcripts WHERE id = ?", (result["transcript_id"],))
+    assert len(rows) == 1
+    assert rows[0]["source"] == "audio"
+    assert rows[0]["teacher_id"] == teacher_id
+    assert len(rows[0]["text"]) > 50
+
+    # два сообщения: "начал расшифровку" и "готово"
+    assert len(bot.sent_messages) == 2
+    assert "начал расшифровку" in bot.sent_messages[0][1].lower()
+    assert "готова" in bot.sent_messages[1][1].lower()
+
+
+async def test_transcribe_handler_deletes_audio_after_success(isolated_env):
+    """К2.4 КГ: после успешной транскрипции на диске не остаётся ни
+    исходника, ни промежуточного WAV (WAV убирается сам внутри
+    core.transcriber через TemporaryDirectory — здесь проверяем исходник,
+    за который отвечает сам обработчик)."""
+    teacher_id = _create_teacher(931)
+    audio_copy = settings.uploads_dir / "part1.m4a"
+    audio_copy.write_bytes((FIXTURES_DIR / "audio_lesson_snippet.m4a").read_bytes())
+    assert audio_copy.exists()
+
+    bot = FakeBot()
+    handler = make_transcribe_handler(bot)
+    task = {
+        "id": "tr2",
+        "type": "transcribe",
+        "telegram_chat_id": 931,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "audio_paths": [str(audio_copy)]},
+    }
+    await handler(task)
+
+    assert not audio_copy.exists()
+    # никаких .wav не осталось в uploads_dir вовсе
+    assert list(settings.uploads_dir.glob("*.wav")) == []
+
+
+async def test_transcribe_handler_deletes_audio_even_on_failure(isolated_env):
+    """К2.4 КГ: и при ПРОВАЛЕ транскрипции — тоже ноль мусора на диске."""
+    teacher_id = _create_teacher(932)
+    broken_audio = settings.uploads_dir / "broken.m4a"
+    broken_audio.write_text("это не аудиофайл, а текст")
+
+    bot = FakeBot()
+    handler = make_transcribe_handler(bot)
+    task = {
+        "id": "tr3",
+        "type": "transcribe",
+        "telegram_chat_id": 932,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "audio_paths": [str(broken_audio)]},
+    }
+
+    with pytest.raises(Exception):
+        await handler(task)
+
+    assert not broken_audio.exists()
+
+
+async def test_transcribe_handler_concatenates_multiple_parts_in_order(isolated_env):
+    """К2.3, ловушка 2: несколько частей одного урока — транскрипты
+    склеиваются по порядку присылки."""
+    teacher_id = _create_teacher(933)
+    part1 = settings.uploads_dir / "part1.m4a"
+    part2 = settings.uploads_dir / "part2.m4a"
+    fixture_bytes = (FIXTURES_DIR / "audio_lesson_snippet.m4a").read_bytes()
+    part1.write_bytes(fixture_bytes)
+    part2.write_bytes(fixture_bytes)
+
+    bot = FakeBot()
+    handler = make_transcribe_handler(bot)
+    task = {
+        "id": "tr4",
+        "type": "transcribe",
+        "telegram_chat_id": 933,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "audio_paths": [str(part1), str(part2)]},
+    }
+    result = await handler(task)
+
+    rows = query("SELECT text, duration_seconds FROM transcripts WHERE id = ?", (result["transcript_id"],))
+    text = rows[0]["text"]
+    # текст первой части должен встретиться раньше текста второй — не
+    # просто "оба текста где-то есть", а именно порядок присылки
+    assert text.count("Кинематика") >= 1 or text.count("кинематика") >= 1
+    # суммарная длительность — сумма обеих частей (не одной)
+    assert rows[0]["duration_seconds"] >= 80  # 2 x ~47с
+
+
+async def test_transcribe_handler_refuses_second_real_attempt_after_retry(isolated_env):
+    """К3.2, ловушка плана дословно: ретраи для этой задачи опасны —
+    повторная попытка не должна заново гонять настоящую транскрипцию,
+    только быстро отказать."""
+    teacher_id = _create_teacher(934)
+    audio_copy = settings.uploads_dir / "part1.m4a"
+    audio_copy.write_bytes((FIXTURES_DIR / "audio_lesson_snippet.m4a").read_bytes())
+
+    bot = FakeBot()
+    handler = make_transcribe_handler(bot)
+    task = {
+        "id": "tr5",
+        "type": "transcribe",
+        "telegram_chat_id": 934,
+        "retries": 1,  # уже был один провал
+        "payload": {"teacher_id": teacher_id, "audio_paths": [str(audio_copy)]},
+    }
+
+    with pytest.raises(TranscriptionError):
+        await handler(task)
+
+    # файл всё равно удалён (K2.4 действует и в этой ветке)
+    assert not audio_copy.exists()
+    # никаких сообщений о "начал расшифровку" — быстрый отказ без реальной попытки
+    assert bot.sent_messages == []

@@ -27,6 +27,7 @@ from bot.handlers import (
     make_generate_ksp_handler,
     make_generate_ktp_handler,
     make_parse_ksp_handler,
+    make_transcribe_handler,
     router,
 )
 from core.config import settings
@@ -182,6 +183,7 @@ async def run() -> None:
             "parse_ksp": make_parse_ksp_handler(bot),
             "generate_ksp": make_generate_ksp_handler(bot),
             "generate_ktp": make_generate_ktp_handler(bot),
+            "transcribe": make_transcribe_handler(bot),
         },
         notify=lambda chat_id, text: _notify_user(bot, chat_id, text),
         failure_message=_failure_message,

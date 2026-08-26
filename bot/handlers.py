@@ -68,6 +68,7 @@ from core.ksp_parser import (
 from core.ktp_generator import generate_and_save_ktp
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMClient, LLMError
+from core.transcriber import TranscriptionError, probe_duration_seconds, transcribe
 from core.pdf_export import PdfExportError, convert_docx_to_pdf
 from core.queue import MAX_RETRIES, enqueue
 from core.templates import get_template, list_templates, save_user_template
@@ -1920,3 +1921,105 @@ def make_generate_ktp_handler(bot: Bot):
         }
 
     return handler
+
+
+# =====================================================================
+# 'transcribe' — задача очереди (блок К3.2, PLAN_STAGE2.md)
+# =====================================================================
+
+# К3.2, ловушка плана дословно: "ретраи очереди для этой задачи опасны —
+# повторная расшифровка часового файла съест время и упрётся в тот же
+# таймаут. Ограничить число повторов явно." core.queue.QueueWorker не
+# умеет разный MAX_RETRIES по типу задачи (один счётчик на все типы) —
+# не переделываем архитектуру очереди ради одного типа задачи, вместо
+# этого сам обработчик отказывается ПОВТОРНО расшифровывать (task["retries"] > 0
+# означает, что первая попытка уже провалилась): реальная транскрипция
+# происходит максимум один раз, дальше — быстрый отказ с понятным
+# текстом, без траты минут на заведомо тот же результат.
+TRANSCRIBE_REAL_ATTEMPT_LIMIT = 0  # retries > этого числа -> не пробовать заново
+
+
+def _estimate_transcription_minutes(total_duration_seconds: int) -> int:
+    """Грубая оценка для сообщения пользователю ДО начала расшифровки —
+    по живому замеру (KPI_STAGE1.md): 8-11х быстрее реального времени.
+    Берём консервативные 6х (медленнее всех измеренных случаев), чтобы
+    не обещать меньше, чем реально получится."""
+    return max(1, round(total_duration_seconds / 60 / 6))
+
+
+def make_transcribe_handler(bot: Bot):
+    """Расшифровывает все части записи по порядку (К2.3, ловушка 2:
+    склейка транскриптов, не аудиофайлов — каждая часть расшифровывается
+    отдельно, тексты соединяются), удаляет аудио после обработки — и при
+    успехе, и при провале (К2.4, требование MASTER.md: аудиофайлов на
+    диске после обработки — 0), сохраняет готовый транскрипт."""
+
+    async def handler(task: dict) -> dict:
+        payload = task["payload"]
+        chat_id = task["telegram_chat_id"]
+        audio_paths: list[str] = payload["audio_paths"]
+
+        if task.get("retries", 0) > TRANSCRIBE_REAL_ATTEMPT_LIMIT:
+            # Файлы всё равно должны исчезнуть с диска — они уже
+            # обречены на неудачу, и K2.4 требует нулевой мусор на диске
+            # независимо от исхода.
+            for path_str in audio_paths:
+                Path(path_str).unlink(missing_ok=True)
+            raise TranscriptionError(texts.KONSPEKT_TRANSCRIBE_RETRY_DISABLED)
+
+        total_estimate_seconds = sum(await asyncio.gather(*(_safe_probe(p) for p in audio_paths)))
+        await bot.send_message(
+            chat_id,
+            texts.KONSPEKT_TRANSCRIBING_STARTED.format(
+                parts=len(audio_paths),
+                total_duration=_format_duration(total_estimate_seconds),
+                estimated_minutes=_estimate_transcription_minutes(total_estimate_seconds),
+            ),
+        )
+
+        text_parts: list[str] = []
+        total_duration = 0
+        try:
+            for path_str in audio_paths:
+                result = await transcribe(path_str)
+                text_parts.append(result["text"])
+                total_duration += result["duration_seconds"]
+        finally:
+            # К2.4: удаление ИСХОДНИКОВ в finally — и при успехе, и при
+            # провале расшифровки. Промежуточный WAV убирается сам внутри
+            # core.transcriber (TemporaryDirectory), это только исходные
+            # присланные файлы.
+            for path_str in audio_paths:
+                try:
+                    Path(path_str).unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("не удалось удалить аудиофайл %s после транскрипции", path_str)
+
+        full_text = "\n\n".join(text_parts)
+        transcript_id = str(uuid.uuid4())
+        execute(
+            "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+            "VALUES (?, ?, 'audio', ?, ?, ?)",
+            (transcript_id, payload["teacher_id"], full_text, total_duration, "ru"),
+        )
+
+        preview = full_text[:300] + ("…" if len(full_text) > 300 else "")
+        await bot.send_message(
+            chat_id,
+            texts.KONSPEKT_TRANSCRIPT_READY.format(duration=_format_duration(total_duration), preview=preview),
+        )
+
+        return {"transcript_id": transcript_id, "duration_seconds": total_duration}
+
+    return handler
+
+
+async def _safe_probe(path_str: str) -> int:
+    """Длительность части ДО расшифровки, для оценочного сообщения
+    (К3.2). Ошибка здесь не должна сорвать саму транскрипцию — оценка
+    времени необязательна, сама расшифровка обязательна; при сбое проба
+    просто не учитывается в оценке (0), а не роняет всю задачу."""
+    try:
+        return await probe_duration_seconds(path_str)
+    except Exception:
+        return 0
