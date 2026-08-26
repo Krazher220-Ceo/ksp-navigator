@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd/com.alikhan.kspbot.plist — Telegram-бот (блок Б8), запуск и
+  автоматический рестарт при падении.
+
+  Ловушка (PLAN_STAGE1.md, Б11.2): launchd НЕ видит PATH из .zshrc/.bash_profile
+  — он не запускает login-шелл. Поэтому:
+    - python указан абсолютным путём внутри venv, не просто "python3";
+    - запуск через "-m bot.main", а не путём до файла bot/main.py напрямую —
+      иначе Python подставит в sys.path папку bot/, а не корень проекта,
+      и "import core.config" внутри bot/main.py упадёт с ModuleNotFoundError
+      (проверено вручную: `python bot/main.py` действительно падает так,
+      `python -m bot.main` из WorkingDirectory — нет).
+
+  Устанавливается в ~/Library/LaunchAgents/ (см. launchd/README.md).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.alikhan.kspbot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/kr220/Documents/Projects/ksp-navigator/venv/bin/python3.11</string>
+        <string>-m</string>
+        <string>bot.main</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/kr220/Documents/Projects/ksp-navigator</string>
+    <!-- launchd не запускает login-шелл и не читает .zshrc, поэтому PATH у
+         процесса по умолчанию только системный: /usr/bin:/bin:/usr/sbin:/sbin.
+         Homebrew на Apple Silicon ставит всё в /opt/homebrew/bin, которого
+         там нет — и shutil.which() в коде честно возвращает None.
+         Из-за этого (обнаружено вживую 27.08.2026 на первой настоящей
+         записи урока):
+           - ffmpeg/ffprobe/whisper-cli не находились -> транскрипция падала
+             с TranscriberEnvironmentError на каждой попытке;
+           - soffice не находился -> PDF к КСП/КТП молча не собирался
+             (там мягкий отказ, поэтому это никто не замечал), и .doc не
+             конвертировался в .docx при загрузке старых КСП.
+         Абсолютные пути в код зашивать нельзя (ловушка К1.1) — правильное
+         место для них именно здесь. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Не даёт launchd бесконечно быстро рестартовать процесс, который
+         падает сразу после старта (например из-за опечатки в .env) —
+         без этого такой сбой превратился бы в цикл из сотен запусков
+         в минуту и заспамленный лог. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kr220/logs/kspbot.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kr220/logs/kspbot.err.log</string>
+</dict>
+</plist>
