@@ -2513,3 +2513,78 @@ async def test_generate_confirmed_carries_konspekt_text_through_to_task_payload(
     payload = json.loads(tasks[0]["payload"])
     assert payload["topic"] == "Совершенно новая уникальная тема"
     assert "Путь — скаляр, перемещение — вектор" in payload["konspekt_text"]
+
+
+# =====================================================================
+# К6 — конспект файлом (.docx/.pdf)
+# =====================================================================
+
+
+async def test_konspekt_handler_sends_docx_and_pdf(isolated_env, monkeypatch):
+    """К6: после текста в чат уходят .docx и (реальной конвертацией
+    через LibreOffice, тем же _try_send_pdf, что и у КСП/КТП) .pdf."""
+    teacher_id = _create_teacher(960)
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-960', ?, 'audio', 'расшифровка урока про кинематику', 47, 'ru')",
+        (teacher_id,),
+    )
+
+    async def fake_generate_konspekt(transcript_text, *, llm_client=None, **kwargs):
+        return dict(_SAMPLE_KONSPEKT_CONTENT)
+
+    monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
+
+    bot = FakeBot()
+    handler = make_konspekt_handler(bot)
+    task = {
+        "id": "k5",
+        "type": "generate_konspekt",
+        "telegram_chat_id": 960,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "transcript_id": "tr-960"},
+    }
+    result = await handler(task)
+
+    assert result["docx_path"].endswith(".docx")
+    assert Path(result["docx_path"]).exists()
+
+    assert len(bot.sent_documents) == 2
+    docx_sent, pdf_sent = bot.sent_documents
+    assert docx_sent["chat_id"] == 960
+    assert _SAMPLE_KONSPEKT_CONTENT["tema"] in docx_sent["caption"]
+    assert pdf_sent["chat_id"] == 960
+    assert pdf_sent["caption"] == texts.KONSPEKT_PDF_CAPTION
+
+    # текстовые сообщения (К4/К5) никуда не делись
+    assert len(bot.sent_messages) == 1
+    assert _SAMPLE_KONSPEKT_CONTENT["tema"] in bot.sent_messages[0][1]
+
+
+async def test_konspekt_handler_stores_docx_path_in_db(isolated_env, monkeypatch):
+    teacher_id = _create_teacher(961)
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-961', ?, 'audio', 'расшифровка', 47, 'ru')",
+        (teacher_id,),
+    )
+
+    async def fake_generate_konspekt(transcript_text, *, llm_client=None, **kwargs):
+        return dict(_SAMPLE_KONSPEKT_CONTENT)
+
+    monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
+
+    bot = FakeBot()
+    handler = make_konspekt_handler(bot)
+    task = {
+        "id": "k6",
+        "type": "generate_konspekt",
+        "telegram_chat_id": 961,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "transcript_id": "tr-961"},
+    }
+    result = await handler(task)
+
+    rows = query("SELECT docx_path FROM konspekty WHERE id = ?", (result["konspekt_id"],))
+    assert rows[0]["docx_path"] == result["docx_path"]
+    assert Path(rows[0]["docx_path"]).exists()

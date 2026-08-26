@@ -29,6 +29,7 @@ import json
 import logging
 import uuid
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 from aiogram import Bot, F, Router
@@ -68,6 +69,7 @@ from core.ksp_parser import (
 from core.ktp_generator import generate_and_save_ktp
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMClient, LLMError
+from core.konspekt_builder import build_konspekt_docx, build_konspekt_filename
 from core.konspekt_generator import KonspektGenerationError, generate_konspekt
 from core.transcriber import TranscriptionError, probe_duration_seconds, transcribe
 from core.pdf_export import PdfExportError, convert_docx_to_pdf
@@ -2087,13 +2089,18 @@ def make_transcribe_handler(bot: Bot):
 
 def make_konspekt_handler(bot: Bot):
     """Собирает конспект по уже готовому транскрипту (core.konspekt_generator,
-    блок К4) и отправляет текстом — .docx/.pdf появятся в блоке К6.
-    Топик/код цели как вспомогательный контекст в generate_konspekt пока
-    не передаются: /konspekt (К2.3) их не спрашивает — только аудио.
-    Расширить это позже можно без изменения самого генератора, у него
-    оба параметра уже необязательные.
+    блок К4). Топик/код цели как вспомогательный контекст в
+    generate_konspekt пока не передаются: /konspekt (К2.3) их не
+    спрашивает — только аудио. Расширить это позже можно без изменения
+    самого генератора, у него оба параметра уже необязательные.
 
-    К5: последнее сообщение несёт кнопку «Собрать КСП по этому
+    К6: сначала .docx (core.konspekt_builder), следом — .pdf тем же
+    _try_send_pdf, что и у КСП/КТП (мягкий отказ, если LibreOffice
+    недоступен, второй конвертации нет). Текстом в чат конспект тоже
+    приходит (К4) — .docx нужен для печати/архива, текст — для быстрого
+    чтения прямо в Telegram, одно другому не мешает.
+
+    К5: последнее ТЕКСТОВОЕ сообщение несёт кнопку «Собрать КСП по этому
     конспекту» — ведёт в ksp_from_konspekt_pressed."""
 
     async def handler(task: dict) -> dict:
@@ -2116,14 +2123,35 @@ def make_konspekt_handler(bot: Bot):
         record_usage(chat_id, "generate_konspekt", count_delta=1)
 
         konspekt_id = str(uuid.uuid4())
+
+        # К6: .docx собирается синхронно, python-docx здесь ничего не
+        # блокирует надолго (в отличие от whisper/ffmpeg/LibreOffice) —
+        # тот же приём, что уже используют core.ksp_generator.save_generated_ksp
+        # и core.ktp_generator (build_docx без asyncio.to_thread).
+        filename = build_konspekt_filename(content.get("tema", ""), datetime.now().date())
+        docx_path = build_konspekt_docx(content, settings.generated_dir / filename)
+
         execute(
-            "INSERT INTO konspekty (id, teacher_id, transcript_id, tema, content_json) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (konspekt_id, payload["teacher_id"], payload["transcript_id"], content["tema"], json.dumps(content, ensure_ascii=False)),
+            "INSERT INTO konspekty (id, teacher_id, transcript_id, tema, content_json, docx_path) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                konspekt_id,
+                payload["teacher_id"],
+                payload["transcript_id"],
+                content["tema"],
+                json.dumps(content, ensure_ascii=False),
+                str(docx_path),
+            ),
         )
 
-        # К5: кнопка на ПОСЛЕДНЕМ сообщении (не на каждом — при разбивке
-        # на несколько частей одна кнопка под всем конспектом достаточна).
+        await bot.send_document(
+            chat_id, FSInputFile(docx_path), caption=texts.KONSPEKT_DOCX_CAPTION.format(tema=content["tema"])
+        )
+        await _try_send_pdf(bot, chat_id, docx_path, texts.KONSPEKT_PDF_CAPTION)
+
+        # К5: кнопка на ПОСЛЕДНЕМ текстовом сообщении (не на каждом — при
+        # разбивке на несколько частей одна кнопка под всем конспектом
+        # достаточна).
         chunks = _split_for_telegram(format_konspekt_text(content))
         ksp_button = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -2134,7 +2162,7 @@ def make_konspekt_handler(bot: Bot):
             is_last = i == len(chunks) - 1
             await bot.send_message(chat_id, chunk, reply_markup=ksp_button if is_last else None)
 
-        return {"konspekt_id": konspekt_id}
+        return {"konspekt_id": konspekt_id, "docx_path": str(docx_path)}
 
     return handler
 

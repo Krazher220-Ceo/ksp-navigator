@@ -459,3 +459,8 @@ KONSPEKT_TRANSCRIBE_RETRY_DISABLED = (
 
 KSP_FROM_KONSPEKT_BUTTON = "📋 Собрать КСП по этому конспекту"
 KSP_FROM_KONSPEKT_NOT_FOUND = "Не нашёл этот конспект — возможно, он относится к другому профилю."
+
+# --- К6: конспект файлом (.docx/.pdf) ---
+
+KONSPEKT_DOCX_CAPTION = "Конспект: {tema}. Это рабочий материал, не отчётный документ — проверьте перед использованием."
+KONSPEKT_PDF_CAPTION = "То же самое, в PDF."
