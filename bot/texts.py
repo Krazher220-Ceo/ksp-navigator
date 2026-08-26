@@ -335,5 +335,39 @@ BOT_COMMANDS = [
     ("upload_template", "Загрузить свой шаблон"),
     ("status", "Что в очереди"),
     ("history", "История сгенерированных документов"),
+    ("dashboard", "Дашборд — сводка по всему"),
     ("cancel", "Отменить текущий диалог"),
 ]
+
+# --- М5.2: дашборд в боте ---
+
+MENU_BUTTON_DASHBOARD = "📈 Дашборд"
+
+DASHBOARD_NO_PROFILE = (
+    "Дашборд станет полезным, когда заведёте профиль: /teacher.\n"
+    "Пока показывать нечего — цифры привязаны к учителю."
+)
+DASHBOARD_HEADER = "📈 Дашборд"
+DASHBOARD_QUEUE = (
+    "\n\nОчередь:\n"
+    "  в ожидании: {pending}\n"
+    "  выполняется: {processing}\n"
+    "  провалено за 7 дней: {failed_7d}"
+)
+DASHBOARD_GENERATED_KSP = (
+    "\n\nСгенерировано КСП:\n"
+    "  всего: {total}\n"
+    "  за 7 дней: {last_7d}\n"
+    "  за 30 дней: {last_30d}"
+)
+DASHBOARD_KTP_COVERAGE = (
+    "\n\nПокрытие КТП:\n"
+    "  собран КСП: {covered}\n"
+    "  ещё нет: {not_covered}"
+)
+DASHBOARD_UNPARSED_DATES_NOTE = "\n  (дата не распознана: {n} уроков)"
+DASHBOARD_UPCOMING_HEADER = "\n\nБлижайшие уроки без КСП:"
+DASHBOARD_UPCOMING_ROW = "\n  {planned_date} — {topic}"
+DASHBOARD_UPCOMING_EMPTY = "\n\nБлижайших уроков без КСП не видно — либо всё собрано, либо даты в КТП не распознаны."
+DASHBOARD_STYLE_PROFILE_YES = "\n\nПрофиль стиля: есть, собран из {samples_count} файлов."
+DASHBOARD_STYLE_PROFILE_NO = "\n\nПрофиль стиля: нет — /upload_ksp, чтобы КСП собирались в вашей манере."

@@ -245,3 +245,58 @@ table.hod-uroka tr:last-child td {
 .kriterii-list li {
   margin-bottom: 4px;
 }
+
+/* --- Навигация между экранами (М5.3) --- */
+
+.mini-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--tg-section-separator);
+}
+
+.mini-nav-link {
+  color: var(--tg-link);
+  text-decoration: none;
+}
+
+.mini-nav-current {
+  color: var(--tg-hint);
+}
+
+/* --- Экран «Дашборд» (М5.3) --- */
+
+.dash-section {
+  background: var(--tg-secondary-bg);
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.dash-section-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.dash-stat-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 0;
+  font-size: 14px;
+}
+
+.dash-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--tg-section-separator);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.dash-bar-fill {
+  height: 100%;
+  background: var(--tg-link);
+}

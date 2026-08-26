@@ -13,12 +13,61 @@
   <!-- Экран «Шаблоны» (Б10.1). Только выбор — не редактирует и не
        создаёт шаблоны (MASTER.md, п.7.1 и п.11). -->
   <section id="screen-templates" class="screen">
+    <nav class="mini-nav">
+      <span class="mini-nav-current">Шаблоны</span>
+      <a href="?dashboard=1" class="mini-nav-link">Дашборд →</a>
+    </nav>
     <h1>Шаблоны КСП</h1>
     <div id="templates-state" class="state-message">Загружаю…</div>
     <div id="templates-list"></div>
     <button type="button" id="upload-own-button" class="upload-own-link" hidden>
       Загрузить свой шаблон
     </button>
+  </section>
+
+  <!-- Экран «Дашборд» (М5.3, PLAN_STAGE2.md). Третий экран Mini App —
+       отклонение от MASTER.md 7.1/11 ("ровно два экрана"), снято решением
+       автора 26.08.2026, зафиксировано в MASTER.md, раздел 0.6, пункт 3.
+       Только показ — как и остальные экраны, ничего не редактирует. -->
+  <section id="screen-dashboard" class="screen">
+    <nav class="mini-nav">
+      <a href="?" class="mini-nav-link">← Шаблоны</a>
+      <span class="mini-nav-current">Дашборд</span>
+    </nav>
+    <h1>Дашборд</h1>
+    <div id="dashboard-state" class="state-message">Загружаю…</div>
+    <div id="dashboard-content" hidden>
+      <div id="dashboard-no-profile" class="state-message" hidden></div>
+      <div id="dashboard-body" hidden>
+        <div class="dash-section">
+          <div class="dash-section-title">Очередь</div>
+          <div class="dash-stat-row"><span>В ожидании</span><span id="dash-pending"></span></div>
+          <div class="dash-stat-row"><span>Выполняется</span><span id="dash-processing"></span></div>
+          <div class="dash-stat-row"><span>Провалено за 7 дней</span><span id="dash-failed-7d"></span></div>
+        </div>
+        <div class="dash-section">
+          <div class="dash-section-title">Сгенерировано КСП</div>
+          <div class="dash-stat-row"><span>Всего</span><span id="dash-ksp-total"></span></div>
+          <div class="dash-stat-row"><span>За 7 дней</span><span id="dash-ksp-7d"></span></div>
+          <div class="dash-stat-row"><span>За 30 дней</span><span id="dash-ksp-30d"></span></div>
+        </div>
+        <div class="dash-section">
+          <div class="dash-section-title">Покрытие КТП</div>
+          <div class="dash-bar" id="dash-coverage-bar"></div>
+          <div class="dash-stat-row"><span>Собран КСП</span><span id="dash-covered"></span></div>
+          <div class="dash-stat-row"><span>Ещё нет</span><span id="dash-not-covered"></span></div>
+          <div id="dash-unparsed-note" class="state-message" hidden></div>
+        </div>
+        <div class="dash-section">
+          <div class="dash-section-title">Ближайшие уроки без КСП</div>
+          <div id="dash-upcoming-list"></div>
+        </div>
+        <div class="dash-section">
+          <div class="dash-section-title">Профиль стиля</div>
+          <div id="dash-style-profile"></div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- Экран «Предпросмотр» (Б10.2). Только просмотр и скачивание — не

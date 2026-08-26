@@ -161,3 +161,62 @@ def test_templates_endpoint_returns_builtins_for_teacher_without_profile(isolate
 def test_templates_endpoint_requires_auth(isolated_api, client):
     response = client.get("/api/templates")
     assert response.status_code == 401
+
+
+# --- М5.3: /api/dashboard ---
+
+
+def test_dashboard_without_init_data_returns_401(isolated_api, client):
+    response = client.get("/api/dashboard")
+    assert response.status_code == 401
+
+
+def test_dashboard_without_teacher_profile_has_profile_false(isolated_api, client):
+    response = client.get("/api/dashboard", headers=_headers(222))
+    assert response.status_code == 200
+    assert response.json()["has_profile"] is False
+
+
+def test_dashboard_matches_collect_output_exactly(isolated_api, client):
+    """М5.3 КГ (дословно из плана): оба представления на одних и тех же
+    данных показывают одинаковые числа — /api/dashboard не пересчитывает
+    и не переформатирует, отдаёт ровно то, что вернул collect()."""
+    from core.dashboard import collect
+
+    execute(
+        "INSERT INTO teachers (id, name, subject, telegram_user_id) VALUES (1, 'Т', 'физика', 333)",
+        db_path=isolated_api,
+    )
+    execute(
+        "INSERT INTO generated_ksp (id, teacher_id, content_json) VALUES ('ksp1', 1, '{}')",
+        db_path=isolated_api,
+    )
+
+    response = client.get("/api/dashboard", headers=_headers(333))
+    assert response.status_code == 200
+
+    expected = collect(1, db_path=isolated_api)
+    assert response.json() == expected
+
+
+def test_dashboard_bot_text_and_api_json_agree_on_numbers(isolated_api, client):
+    """То же самое, но сверяя с тем, что реально покажет бот
+    (format_dashboard_text) — не только с промежуточным collect()."""
+    from bot.handlers import format_dashboard_text
+
+    execute(
+        "INSERT INTO teachers (id, name, subject, telegram_user_id) VALUES (1, 'Т', 'физика', 444)",
+        db_path=isolated_api,
+    )
+    for i in range(3):
+        execute(
+            f"INSERT INTO generated_ksp (id, teacher_id, content_json) VALUES ('ksp{i}', 1, '{{}}')",
+            db_path=isolated_api,
+        )
+
+    response = client.get("/api/dashboard", headers=_headers(444))
+    api_data = response.json()
+    bot_text = format_dashboard_text(api_data)
+
+    assert f"всего: {api_data['generated_ksp']['total']}" in bot_text
+    assert api_data["generated_ksp"]["total"] == 3

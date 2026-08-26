@@ -49,6 +49,7 @@ from bot import keyboards, texts
 from bot.navigation import go_back, go_to
 from bot.states import Generate, GenerateKTP, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
 from core.config import settings
+from core.dashboard import collect as collect_dashboard
 from core.db import execute, query
 from core.ksp_generator import (
     MAX_VIDY_DEYATELNOSTI,
@@ -1312,6 +1313,52 @@ async def cmd_history(message: Message) -> None:
 
 
 # =====================================================================
+# /dashboard — текстовая сводка (М5.2). core.dashboard.collect() — ЕДИНСТВЕННЫЙ
+# расчёт (М5.1); web/api.py (М5.3) форматирует тот же collect() под JSON,
+# а не считает заново.
+# =====================================================================
+
+
+def format_dashboard_text(data: dict) -> str:
+    """Форматирование текстовой сводки дашборда — используется и /dashboard,
+    и тестами, сверяющими бот с Mini App на одних и тех же данных (М5.3 КГ).
+    Не в core/dashboard.py: там только расчёт, текст для конкретного канала —
+    дело вызывающего кода (см. шапку модуля core/dashboard.py)."""
+    if not data["has_profile"]:
+        return texts.DASHBOARD_NO_PROFILE
+
+    text = texts.DASHBOARD_HEADER
+    text += texts.DASHBOARD_QUEUE.format(**data["queue"])
+    text += texts.DASHBOARD_GENERATED_KSP.format(**data["generated_ksp"])
+    text += texts.DASHBOARD_KTP_COVERAGE.format(**data["ktp_coverage"])
+    if data["unparsed_planned_dates"]:
+        text += texts.DASHBOARD_UNPARSED_DATES_NOTE.format(n=data["unparsed_planned_dates"])
+
+    upcoming = data["upcoming_lessons_without_ksp"]
+    if upcoming:
+        text += texts.DASHBOARD_UPCOMING_HEADER
+        for lesson in upcoming:
+            text += texts.DASHBOARD_UPCOMING_ROW.format(**lesson)
+    else:
+        text += texts.DASHBOARD_UPCOMING_EMPTY
+
+    style = data["style_profile"]
+    if style["exists"]:
+        text += texts.DASHBOARD_STYLE_PROFILE_YES.format(samples_count=style["samples_count"])
+    else:
+        text += texts.DASHBOARD_STYLE_PROFILE_NO
+
+    return text
+
+
+@router.message(Command("dashboard"))
+async def cmd_dashboard(message: Message) -> None:
+    teacher = _get_teacher(message.from_user.id)
+    data = collect_dashboard(teacher["id"] if teacher else None)
+    await message.answer(format_dashboard_text(data), reply_markup=keyboards.MAIN_MENU)
+
+
+# =====================================================================
 # М2.1 — таблица «текст кнопки меню -> обработчик», для menu_button_pressed
 # выше. Три из восьми обработчиков (cmd_templates, cmd_status, cmd_history)
 # принимают только message, без state — под них тонкие обёртки с общей
@@ -1332,6 +1379,10 @@ async def _menu_call_history(message: Message, state: FSMContext) -> None:
     await cmd_history(message)
 
 
+async def _menu_call_dashboard(message: Message, state: FSMContext) -> None:
+    await cmd_dashboard(message)
+
+
 _MENU_BUTTON_HANDLERS = {
     texts.MENU_BUTTON_GENERATE_KSP: cmd_generate,
     texts.MENU_BUTTON_GENERATE_KTP: cmd_generate_ktp,
@@ -1341,6 +1392,7 @@ _MENU_BUTTON_HANDLERS = {
     texts.MENU_BUTTON_HISTORY: _menu_call_history,
     texts.MENU_BUTTON_UPLOAD_KSP: cmd_upload_ksp,
     texts.MENU_BUTTON_UPLOAD_KTP: cmd_upload_ktp,
+    texts.MENU_BUTTON_DASHBOARD: _menu_call_dashboard,
 }
 
 

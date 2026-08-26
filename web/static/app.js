@@ -332,7 +332,88 @@
   }
 
   // =====================================================================
-  // Точка входа: ?preview=<id> -> экран предпросмотра, иначе шаблоны
+  // Экран «Дашборд» (М5.3) — только показ, тот же /api/dashboard, что
+  // бот показывает текстом (core.dashboard.collect — единый расчёт,
+  // М5.1). Никаких графиков библиотеками — простые CSS div-полоски.
+  // =====================================================================
+
+  function renderDashboard(data) {
+    document.getElementById("dashboard-state").hidden = true;
+    document.getElementById("dashboard-content").hidden = false;
+
+    if (!data.has_profile) {
+      const noProfileEl = document.getElementById("dashboard-no-profile");
+      noProfileEl.hidden = false;
+      noProfileEl.textContent =
+        "Дашборд станет полезным, когда заведёте профиль в боте: /teacher.";
+      return;
+    }
+
+    document.getElementById("dashboard-body").hidden = false;
+
+    document.getElementById("dash-pending").textContent = data.queue.pending;
+    document.getElementById("dash-processing").textContent = data.queue.processing;
+    document.getElementById("dash-failed-7d").textContent = data.queue.failed_7d;
+
+    document.getElementById("dash-ksp-total").textContent = data.generated_ksp.total;
+    document.getElementById("dash-ksp-7d").textContent = data.generated_ksp.last_7d;
+    document.getElementById("dash-ksp-30d").textContent = data.generated_ksp.last_30d;
+
+    const covered = data.ktp_coverage.covered;
+    const notCovered = data.ktp_coverage.not_covered;
+    const coverageTotal = covered + notCovered;
+    const coveragePct = coverageTotal ? Math.round((covered / coverageTotal) * 100) : 0;
+    document.getElementById("dash-coverage-bar").innerHTML =
+      '<div class="dash-bar-fill" style="width:' + coveragePct + '%"></div>';
+    document.getElementById("dash-covered").textContent = covered;
+    document.getElementById("dash-not-covered").textContent = notCovered;
+
+    const unparsedEl = document.getElementById("dash-unparsed-note");
+    if (data.unparsed_planned_dates) {
+      unparsedEl.hidden = false;
+      unparsedEl.textContent = "Дата не распознана: " + data.unparsed_planned_dates + " уроков";
+    } else {
+      unparsedEl.hidden = true;
+    }
+
+    const upcomingEl = document.getElementById("dash-upcoming-list");
+    const upcoming = Array.isArray(data.upcoming_lessons_without_ksp) ? data.upcoming_lessons_without_ksp : [];
+    if (upcoming.length) {
+      upcomingEl.innerHTML = upcoming.map(function (lesson) {
+        return (
+          '<div class="dash-stat-row">' +
+            '<span>' + escapeHtml(lesson.planned_date) + '</span>' +
+            '<span>' + escapeHtml(lesson.topic) + '</span>' +
+          '</div>'
+        );
+      }).join("");
+    } else {
+      upcomingEl.innerHTML = '<div class="state-message">Ближайших уроков без КСП не видно.</div>';
+    }
+
+    const styleEl = document.getElementById("dash-style-profile");
+    if (data.style_profile.exists) {
+      styleEl.textContent = "Есть, собран из " + data.style_profile.samples_count + " файлов.";
+    } else {
+      styleEl.textContent = "Нет — /upload_ksp в боте, чтобы КСП собирались в вашей манере.";
+    }
+  }
+
+  function initDashboardScreen() {
+    document.getElementById("screen-dashboard").classList.add("active");
+    apiFetch("/api/dashboard")
+      .then(function (r) { return r.json(); })
+      .then(renderDashboard)
+      .catch(function () {
+        document.getElementById("dashboard-state").textContent =
+          "Не удалось загрузить дашборд. Попробуйте открыть заново из бота.";
+      });
+  }
+
+  // =====================================================================
+  // Точка входа: ?preview=<id> -> предпросмотр, ?dashboard=1 -> дашборд,
+  // иначе шаблоны (М5.3: третий экран добавлен тем же способом
+  // маршрутизации через query-параметр, что и предпросмотр)
   // =====================================================================
 
   function main() {
@@ -341,6 +422,8 @@
     const previewId = params.get("preview");
     if (previewId) {
       initPreviewScreen(previewId);
+    } else if (params.get("dashboard")) {
+      initDashboardScreen();
     } else {
       initTemplatesScreen();
     }

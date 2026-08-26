@@ -1620,3 +1620,41 @@ async def test_cancel_button_mid_dialog_clears_state():
     await cancel_button_pressed(message, state)
     assert await state.get_state() is None
     assert message.sent[-1]["text"] == texts.CANCEL_DONE
+
+
+# =====================================================================
+# М5.2 — /dashboard в боте
+# =====================================================================
+
+
+async def test_dashboard_without_profile_shows_friendly_message_not_generic_error(isolated_env):
+    """Ловушка плана (М5.1, п.2): учитель без профиля — не ошибка,
+    /dashboard не должен показать ERROR_NO_TEACHER_PROFILE, а свой текст."""
+    from bot.handlers import cmd_dashboard
+
+    message = FakeMessage(text="/dashboard", user_id=901)
+    await cmd_dashboard(message)
+    assert message.sent[0]["text"] == texts.DASHBOARD_NO_PROFILE
+    assert message.sent[0]["text"] != texts.ERROR_NO_TEACHER_PROFILE
+
+
+async def test_dashboard_with_profile_shows_real_numbers(isolated_env):
+    from bot.handlers import cmd_dashboard
+
+    teacher_id = _create_teacher(902)
+    execute(
+        "INSERT INTO generated_ksp (id, teacher_id, content_json) VALUES ('ksp1', ?, '{}')",
+        (teacher_id,),
+    )
+    message = FakeMessage(text="/dashboard", user_id=902)
+    await cmd_dashboard(message)
+    text = message.sent[0]["text"]
+    assert "всего: 1" in text
+    assert message.sent[0]["reply_markup"] is keyboards.MAIN_MENU
+
+
+async def test_dashboard_menu_button_dispatches_to_cmd_dashboard(isolated_env):
+    teacher_id = _create_teacher(903)
+    message = FakeMessage(text=texts.MENU_BUTTON_DASHBOARD, user_id=903)
+    await menu_button_pressed(message, _state())
+    assert texts.DASHBOARD_HEADER in message.sent[0]["text"]

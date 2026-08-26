@@ -27,6 +27,7 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from core.dashboard import collect as collect_dashboard
 from core.db import query
 from core.templates import list_templates
 from web.auth import AuthenticatedUser, verify_init_data
@@ -66,6 +67,17 @@ async def api_preview(ksp_id: str, auth: AuthenticatedUser = Depends(verify_init
     teacher_id = _resolve_teacher_id(auth.telegram_user_id)
     row = _get_owned_generated_ksp(ksp_id, teacher_id)
     return json.loads(row["content_json"]) if row["content_json"] else {}
+
+
+@app.get("/api/dashboard")
+async def api_dashboard(auth: AuthenticatedUser = Depends(verify_init_data)) -> dict:
+    """М5.3: третий экран Mini App. Отдаёт РОВНО то, что вернул
+    core.dashboard.collect() — без переформатирования, чтобы бот и
+    Mini App не могли разойтись в числах (М5.1: один расчёт на оба
+    представления). teacher_id=-1 (профиля нет, см. _resolve_teacher_id)
+    превращается в None — collect() сам знает, что это не ошибка."""
+    teacher_id = _resolve_teacher_id(auth.telegram_user_id)
+    return collect_dashboard(teacher_id if teacher_id != -1 else None)
 
 
 @app.get("/api/download/{ksp_id}")
