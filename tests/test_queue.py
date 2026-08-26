@@ -242,6 +242,11 @@ def test_recovered_task_can_be_claimed_and_completed_again(db_path):
 
     # воркер №2 стартует
     recover_stuck_tasks(db_path=db_path)
+    # Восстановление засчитывает израсходованную попытку (аудит этапа 2,
+    # находка 8), поэтому перед повтором действует обычная растущая пауза.
+    # В проде воркер просто заберёт задачу следующим проходом через 10с;
+    # в тесте не ждём реальные секунды, а состариваем отметку.
+    _age_updated_at(task_id, RETRY_DELAYS_SECONDS[0] + 1, db_path)
     task = claim_next(db_path=db_path)
     assert task is not None
     assert task["id"] == task_id
@@ -372,6 +377,11 @@ async def test_worker_recovers_stuck_task_at_startup_and_completes_it(db_path):
 
     notifier = _RecordingNotifier()
     worker2 = QueueWorker({"generate_ksp": handler}, notify=notifier, db_path=db_path)
+    # run_until_idle сам зовёт recover_stuck_tasks, и после него у задачи
+    # есть израсходованная попытка с растущей паузой (аудит, находка 8) —
+    # состариваем отметку, чтобы не ждать 10 реальных секунд в тесте.
+    recover_stuck_tasks(db_path=db_path)
+    _age_updated_at(task_id, RETRY_DELAYS_SECONDS[0] + 1, db_path)
     processed = await worker2.run_until_idle()
 
     assert processed == 1
@@ -657,3 +667,42 @@ def test_every_task_type_has_its_own_stuck_threshold():
 
     missing = types_in_schema - set(STUCK_PROCESSING_MINUTES_BY_TYPE)
     assert not missing, f"нет своего порога зависания для типов задач: {sorted(missing)}"
+
+
+# =====================================================================
+# Аудит этапа 2, находка 8 — восстановление зависшей задачи расходует
+# попытку, иначе обработчик не отличит её от первого запуска
+# =====================================================================
+
+
+async def test_recover_stuck_tasks_counts_the_lost_attempt(db_path):
+    """Зависшая попытка — израсходованная попытка: работа делалась и
+    пропала. Без инкремента обработчик транскрипции получал retries=0,
+    считал заход первым и шёл расшифровывать по файлам, которые прошлая
+    попытка уже удалила."""
+    task_id = enqueue("generate_ksp", {}, chat_id=1, db_path=db_path)
+    execute(
+        "UPDATE tasks SET status = 'processing', updated_at = datetime('now', '-30 minutes') WHERE id = ?",
+        (task_id,),
+        db_path=db_path,
+    )
+
+    assert recover_stuck_tasks(db_path=db_path) == 1
+
+    row = query("SELECT status, retries FROM tasks WHERE id = ?", (task_id,), db_path=db_path)[0]
+    assert row["status"] == "pending"
+    assert row["retries"] == 1
+
+
+async def test_recover_stuck_tasks_counts_attempt_with_explicit_override(db_path):
+    """Тот же учёт в ветке с явным stuck_minutes — она отдельная, и про
+    неё легко забыть."""
+    task_id = enqueue("generate_ksp", {}, chat_id=1, db_path=db_path)
+    execute(
+        "UPDATE tasks SET status = 'processing', updated_at = datetime('now', '-5 minutes') WHERE id = ?",
+        (task_id,),
+        db_path=db_path,
+    )
+
+    assert recover_stuck_tasks(db_path=db_path, stuck_minutes=1) == 1
+    assert query("SELECT retries FROM tasks WHERE id = ?", (task_id,), db_path=db_path)[0]["retries"] == 1

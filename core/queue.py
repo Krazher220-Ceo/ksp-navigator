@@ -207,11 +207,20 @@ def recover_stuck_tasks(db_path=None, stuck_minutes: int | None = None) -> int:
     stuck_minutes — необязательный override ОДНИМ порогом на все типы
     сразу (для тестов и ручной диагностики); без него — пороги по типу
     из STUCK_PROCESSING_MINUTES_BY_TYPE (М7.3, ловушка плана: один порог
-    на всё даёт либо ложные тревоги, либо слепоту)."""
+    на всё даёт либо ложные тревоги, либо слепоту).
+
+    retries увеличивается вместе с возвратом в pending (аудит этапа 2,
+    находка 8). Зависшая попытка — это ИЗРАСХОДОВАННАЯ попытка: работа
+    делалась и пропала. Без инкремента обработчик получал задачу с
+    retries=0 и не мог отличить её от первого запуска — защита
+    TRANSCRIBE_REAL_ATTEMPT_LIMIT (bot/handlers.py, К3.2) молчала, и
+    транскрипция шла заново по файлам, которые предыдущая попытка уже
+    удалила в своём finally. Учитель видел бодрое "Начал расшифровку",
+    а следом техническую ошибку про несуществующий файл."""
     with transaction(db_path) as conn:
         if stuck_minutes is not None:
             cursor = conn.execute(
-                "UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
+                "UPDATE tasks SET status = 'pending', retries = retries + 1, updated_at = CURRENT_TIMESTAMP "
                 "WHERE status = 'processing' AND updated_at <= datetime('now', ?) "
                 "RETURNING id",
                 (f"-{stuck_minutes} minutes",),
@@ -221,20 +230,22 @@ def recover_stuck_tasks(db_path=None, stuck_minutes: int | None = None) -> int:
         total_recovered = 0
         for task_type, minutes in STUCK_PROCESSING_MINUTES_BY_TYPE.items():
             cursor = conn.execute(
-                "UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
+                "UPDATE tasks SET status = 'pending', retries = retries + 1, updated_at = CURRENT_TIMESTAMP "
                 "WHERE status = 'processing' AND type = ? AND updated_at <= datetime('now', ?) "
                 "RETURNING id",
                 (task_type, f"-{minutes} minutes"),
             )
             total_recovered += len(cursor.fetchall())
 
-        # Тип, для которого своего порога ещё не завели (например будущий
-        # 'transcribe' до появления собственного замера в блоке К3) —
-        # старый консервативный STUCK_PROCESSING_MINUTES, не молчание.
+        # Тип, для которого своего порога ещё не завели, — старый
+        # консервативный STUCK_PROCESSING_MINUTES, не молчание. Сейчас
+        # таких типов нет (все из схемы перечислены выше, это проверяет
+        # test_every_task_type_has_its_own_stuck_threshold), ветка
+        # оставлена страховкой на будущий тип задачи.
         known_types = tuple(STUCK_PROCESSING_MINUTES_BY_TYPE.keys())
         placeholders = ",".join("?" * len(known_types))
         cursor = conn.execute(
-            f"UPDATE tasks SET status = 'pending', updated_at = CURRENT_TIMESTAMP "
+            f"UPDATE tasks SET status = 'pending', retries = retries + 1, updated_at = CURRENT_TIMESTAMP "
             f"WHERE status = 'processing' AND type NOT IN ({placeholders}) "
             f"AND updated_at <= datetime('now', ?) RETURNING id",
             (*known_types, f"-{STUCK_PROCESSING_MINUTES} minutes"),

@@ -75,6 +75,7 @@ from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
 from core.db import execute, init_db, query
 from core.konspekt_generator import CELI_NOT_STATED_NOTE, KonspektGenerationError
 from core.limits import get_usage_today, record_usage
+from core.queue import claim_next, enqueue, recover_stuck_tasks
 from core.transcriber import TranscriptionError
 from core.templates import list_templates, load_builtin_templates
 
@@ -2689,3 +2690,37 @@ async def test_done_does_not_delete_audio_parts(isolated_env):
 
     assert all(p.exists() for p in paths)
     assert len(query("SELECT * FROM tasks WHERE type = 'transcribe'")) == 1
+
+
+async def test_recovered_transcribe_task_refuses_second_real_attempt(isolated_env):
+    """Аудит этапа 2, находка 8, смысл целиком. Восстановление зависшей
+    задачи расходует попытку, поэтому обработчик транскрипции узнаёт
+    повторный заход и сразу отказывает понятным текстом. До правки он
+    считал заход первым: слал «Начал расшифровку», а потом падал на
+    файлах, которые прошлая попытка уже удалила."""
+    teacher_id = _create_teacher(975)
+    gone = settings.uploads_dir / "уже-удалён.m4a"  # первая попытка удалила его в finally
+
+    task_id = enqueue(
+        "transcribe", {"teacher_id": teacher_id, "audio_paths": [str(gone)]}, chat_id=975
+    )
+    execute(
+        "UPDATE tasks SET status = 'processing', updated_at = datetime('now', '-90 minutes') WHERE id = ?",
+        (task_id,),
+    )
+    assert recover_stuck_tasks() == 1
+
+    # Следствие той же правки: у восстановленной задачи retries=1, поэтому
+    # claim_next выдерживает перед повтором обычную растущую паузу (10с).
+    # В тесте её не ждём, а состариваем отметку — как и в тестах очереди.
+    execute("UPDATE tasks SET updated_at = datetime('now', '-60 seconds') WHERE id = ?", (task_id,))
+
+    claimed = dict(claim_next())
+    claimed["payload"] = json.loads(claimed["payload"])
+    assert claimed["retries"] == 1, "восстановление не засчитало израсходованную попытку"
+
+    bot = FakeBot()
+    with pytest.raises(TranscriptionError):
+        await make_transcribe_handler(bot)(claimed)
+
+    assert bot.sent_messages == [], "ушло «Начал расшифровку» — значит повторный заход не распознан"
