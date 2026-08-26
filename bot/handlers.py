@@ -68,6 +68,7 @@ from core.ksp_parser import (
 from core.ktp_generator import generate_and_save_ktp
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMClient, LLMError
+from core.konspekt_generator import KonspektGenerationError, generate_konspekt
 from core.transcriber import TranscriptionError, probe_duration_seconds, transcribe
 from core.pdf_export import PdfExportError, convert_docx_to_pdf
 from core.queue import MAX_RETRIES, enqueue
@@ -643,15 +644,17 @@ async def upload_template_wrong_input(message: Message) -> None:
 
 # =====================================================================
 # /konspekt — приём аудио урока (блок К2.3, PLAN_STAGE2.md). Один шаг,
-# файлы (части записи) копятся, как в UploadKSP — до /done. Сама
-# расшифровка (блок К3) и конспект (блок К4) собираются задачей очереди
-# 'transcribe', здесь только приём и постановка в очередь.
+# файлы (части записи) копятся, как в UploadKSP — до /done. Дальше
+# цепочка идёт САМА через очередь задач, без участия пользователя
+# (MASTER.md 0.6, п.2 — "цепочка одна"): 'transcribe' (блок К3) по
+# готовности сама ставит 'generate_konspekt' (блок К4, make_konspekt_handler
+# ниже), учителю не нужно вызывать ничего отдельно.
 #
-# Команда пока НЕ добавлена в BOT_COMMANDS/MAIN_MENU (М1.1/М2.1, принцип
-# "только то, что реально работает уже сейчас") — обработчика задачи
-# 'transcribe' в очереди ещё нет (появится в блоке К3), без него
-# поставленная в очередь задача зависла бы в pending навсегда. Появится
-# в списке команд и в меню в блоке К4, когда весь путь заработает целиком.
+# Команда добавлена в BOT_COMMANDS/MAIN_MENU только в блоке К4 (не в
+# К2.3, когда была написана эта секция) — до того обработчика задачи
+# 'transcribe' в очереди не было, и команда, отправленная раньше времени,
+# поставила бы задачу, зависающую в pending навсегда (принцип М1.1/М2.1:
+# рекламировать только то, что реально работает).
 # =====================================================================
 
 MAX_KONSPEKT_PARTS = 10
@@ -1625,6 +1628,7 @@ _MENU_BUTTON_HANDLERS = {
     texts.MENU_BUTTON_UPLOAD_KSP: cmd_upload_ksp,
     texts.MENU_BUTTON_UPLOAD_KTP: cmd_upload_ktp,
     texts.MENU_BUTTON_DASHBOARD: _menu_call_dashboard,
+    texts.MENU_BUTTON_KONSPEKT: cmd_konspekt,
 }
 
 
@@ -2009,9 +2013,132 @@ def make_transcribe_handler(bot: Bot):
             texts.KONSPEKT_TRANSCRIPT_READY.format(duration=_format_duration(total_duration), preview=preview),
         )
 
+        # К4: цепочка одна (MASTER.md 0.6, п.2) — расшифровка сама
+        # запускает сборку конспекта следующей задачей очереди, учителю
+        # не нужно ничего вызывать отдельно.
+        enqueue(
+            "generate_konspekt",
+            {"teacher_id": payload["teacher_id"], "transcript_id": transcript_id},
+            chat_id=chat_id,
+        )
+
         return {"transcript_id": transcript_id, "duration_seconds": total_duration}
 
     return handler
+
+
+# =====================================================================
+# 'generate_konspekt' — задача очереди (блок К4.3, PLAN_STAGE2.md)
+# =====================================================================
+
+
+def make_konspekt_handler(bot: Bot):
+    """Собирает конспект по уже готовому транскрипту (core.konspekt_generator,
+    блок К4) и отправляет текстом — .docx/.pdf появятся в блоке К6.
+    Топик/код цели как вспомогательный контекст в generate_konspekt пока
+    не передаются: /konspekt (К2.3) их не спрашивает — только аудио.
+    Расширить это позже можно без изменения самого генератора, у него
+    оба параметра уже необязательные."""
+
+    async def handler(task: dict) -> dict:
+        payload = task["payload"]
+        chat_id = task["telegram_chat_id"]
+
+        rows = query("SELECT text FROM transcripts WHERE id = ?", (payload["transcript_id"],))
+        if not rows:
+            raise KonspektGenerationError(
+                f"транскрипт {payload['transcript_id']} не найден — не может собрать по нему конспект"
+            )
+        transcript_text = rows[0]["text"]
+
+        llm_client = LLMClient()
+        try:
+            content = await generate_konspekt(transcript_text, llm_client=llm_client)
+        finally:
+            record_usage(chat_id, "generate_konspekt", tokens_delta=llm_client.total_tokens_used)
+            await llm_client.aclose()
+        record_usage(chat_id, "generate_konspekt", count_delta=1)
+
+        konspekt_id = str(uuid.uuid4())
+        execute(
+            "INSERT INTO konspekty (id, teacher_id, transcript_id, tema, content_json) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (konspekt_id, payload["teacher_id"], payload["transcript_id"], content["tema"], json.dumps(content, ensure_ascii=False)),
+        )
+
+        for chunk in _split_for_telegram(format_konspekt_text(content)):
+            await bot.send_message(chat_id, chunk)
+
+        return {"konspekt_id": konspekt_id}
+
+    return handler
+
+
+_TELEGRAM_MESSAGE_LIMIT = 4000  # с запасом от настоящего лимита Telegram в 4096
+
+
+def _split_for_telegram(text: str) -> list[str]:
+    """Конспект целиком может не влезть в одно сообщение Telegram (лимит
+    4096 символов) — режем по границам строк, не по символам, чтобы не
+    разрывать слово или дескриптор посередине."""
+    if len(text) <= _TELEGRAM_MESSAGE_LIMIT:
+        return [text]
+
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > _TELEGRAM_MESSAGE_LIMIT and current:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def format_konspekt_text(content: dict) -> str:
+    """Текстовое представление конспекта для бота — .docx появится в
+    блоке К6, здесь пока только текст сообщения."""
+    lines = [f"📝 Конспект: {content['tema']}", ""]
+
+    if content.get("celi"):
+        lines.append("Цели:")
+        lines.extend(f"• {c}" for c in content["celi"])
+        lines.append("")
+
+    if content.get("glavnoe"):
+        lines.append("Главное:")
+        lines.extend(f"• {g}" for g in content["glavnoe"])
+        lines.append("")
+
+    if content.get("formuly"):
+        lines.append("Формулы:")
+        for f in content["formuly"]:
+            lines.append(f"• {f['formula']} — {f['znachenie']}")
+        lines.append("")
+
+    if content.get("terminy"):
+        lines.append("Термины:")
+        for t in content["terminy"]:
+            lines.append(f"• {t['termin']}: {t['opredelenie']}")
+        lines.append("")
+
+    if content.get("primery"):
+        lines.append("Примеры:")
+        lines.extend(f"• {p}" for p in content["primery"])
+        lines.append("")
+
+    if content.get("voprosy_dlya_samoproverki"):
+        lines.append("Вопросы для самопроверки:")
+        lines.extend(f"• {q}" for q in content["voprosy_dlya_samoproverki"])
+        lines.append("")
+
+    if content.get("domashnee_zadanie"):
+        lines.append(f"Домашнее задание: {content['domashnee_zadanie']}")
+
+    return "\n".join(lines).strip()
 
 
 async def _safe_probe(path_str: str) -> int:

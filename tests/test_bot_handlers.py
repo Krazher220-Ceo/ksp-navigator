@@ -27,6 +27,8 @@ from bot.handlers import (
     konspekt_done,
     konspekt_voice_received,
     konspekt_wrong_input,
+    format_konspekt_text,
+    make_konspekt_handler,
     make_transcribe_handler,
     cmd_cancel,
     cmd_generate,
@@ -70,6 +72,7 @@ from core import ksp_generator as ksp_generator_module
 from core.config import settings
 from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
 from core.db import execute, init_db, query
+from core.konspekt_generator import KonspektGenerationError
 from core.limits import get_usage_today, record_usage
 from core.transcriber import TranscriptionError
 from core.templates import list_templates, load_builtin_templates
@@ -2037,11 +2040,12 @@ async def test_konspekt_wrong_input_shows_message(isolated_env):
     assert "не похоже на аудио" in message.sent[-1]["text"]
 
 
-async def test_konspekt_not_added_to_bot_commands_yet():
-    """Команда есть, но пока не рекламируется (М1.1 принцип): обработчика
-    задачи 'transcribe' в очереди ещё нет, появится в блоке К3."""
+async def test_konspekt_added_to_bot_commands_and_menu_after_k4():
+    """К4: путь заработал целиком (transcribe -> generate_konspekt), теперь
+    команда рекламируется (М1.1/М2.1 принцип наоборот — теперь МОЖНО)."""
     command_names = {name for name, _ in texts.BOT_COMMANDS}
-    assert "konspekt" not in command_names
+    assert "konspekt" in command_names
+    assert texts.MENU_BUTTON_KONSPEKT in keyboards.MAIN_MENU_BUTTON_TEXTS
     assert texts.MENU_BUTTON_DASHBOARD in keyboards.MAIN_MENU_BUTTON_TEXTS  # существующие кнопки не пострадали
 
 
@@ -2187,3 +2191,159 @@ async def test_transcribe_handler_refuses_second_real_attempt_after_retry(isolat
     assert not audio_copy.exists()
     # никаких сообщений о "начал расшифровку" — быстрый отказ без реальной попытки
     assert bot.sent_messages == []
+
+
+# =====================================================================
+# К4 — задача очереди 'generate_konspekt' (core.konspekt_generator
+# подменяется моком, как и generate_and_save_ksp в тестах Б7 выше —
+# настоящие платные вызовы LLM в тестах не нужны и не разрешены
+# дневным бюджетом, честность самого генератора уже проверена в
+# tests/test_konspekt_generator.py на скриптованном клиенте)
+# =====================================================================
+
+
+_SAMPLE_KONSPEKT_CONTENT = {
+    "tema": "Кинематика: путь и перемещение",
+    "celi": ["Различать путь и перемещение"],
+    "glavnoe": ["Путь — скаляр, перемещение — вектор"],
+    "formuly": [{"formula": "s = v*t", "znachenie": "путь при равномерном движении"}],
+    "primery": [],
+    "terminy": [{"termin": "перемещение", "opredelenie": "вектор из начальной точки в конечную"}],
+    "voprosy_dlya_samoproverki": ["Чем отличается путь от перемещения?"],
+    "domashnee_zadanie": "",
+}
+
+
+async def test_konspekt_handler_generates_and_sends_text(isolated_env, monkeypatch):
+    teacher_id = _create_teacher(940)
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-940', ?, 'audio', 'расшифровка урока про кинематику', 47, 'ru')",
+        (teacher_id,),
+    )
+
+    async def fake_generate_konspekt(transcript_text, *, llm_client=None, **kwargs):
+        assert transcript_text == "расшифровка урока про кинематику"
+        return dict(_SAMPLE_KONSPEKT_CONTENT)
+
+    monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
+
+    bot = FakeBot()
+    handler = make_konspekt_handler(bot)
+    task = {
+        "id": "k1",
+        "type": "generate_konspekt",
+        "telegram_chat_id": 940,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "transcript_id": "tr-940"},
+    }
+
+    result = await handler(task)
+
+    rows = query("SELECT * FROM konspekty WHERE id = ?", (result["konspekt_id"],))
+    assert len(rows) == 1
+    assert rows[0]["teacher_id"] == teacher_id
+    assert rows[0]["transcript_id"] == "tr-940"
+    assert rows[0]["tema"] == "Кинематика: путь и перемещение"
+    assert json.loads(rows[0]["content_json"])["glavnoe"] == _SAMPLE_KONSPEKT_CONTENT["glavnoe"]
+
+    assert len(bot.sent_messages) == 1
+    sent_text = bot.sent_messages[0][1]
+    assert "Кинематика: путь и перемещение" in sent_text
+    assert "Путь — скаляр, перемещение — вектор" in sent_text
+    assert "s = v*t" in sent_text
+
+    usage = get_usage_today(940)
+    assert usage["counts"]["generate_konspekt"] == 1
+
+
+async def test_konspekt_handler_missing_transcript_raises(isolated_env):
+    teacher_id = _create_teacher(941)
+    bot = FakeBot()
+    handler = make_konspekt_handler(bot)
+    task = {
+        "id": "k2",
+        "type": "generate_konspekt",
+        "telegram_chat_id": 941,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "transcript_id": "нет-такого-id"},
+    }
+
+    with pytest.raises(KonspektGenerationError):
+        await handler(task)
+
+    assert query("SELECT * FROM konspekty") == []
+    assert bot.sent_messages == []
+
+
+async def test_konspekt_handler_splits_long_konspekt_into_multiple_messages(isolated_env, monkeypatch):
+    """Реальный урок легко даёт конспект длиннее одного сообщения
+    Telegram (лимит 4096) — проверяем это через сам обработчик, не
+    только через _split_for_telegram напрямую."""
+    teacher_id = _create_teacher(942)
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-942', ?, 'audio', 'длинная расшифровка', 600, 'ru')",
+        (teacher_id,),
+    )
+
+    long_content = dict(_SAMPLE_KONSPEKT_CONTENT)
+    long_content["glavnoe"] = [f"Пункт номер {i} из длинного конспекта урока" for i in range(300)]
+
+    async def fake_generate_konspekt(transcript_text, *, llm_client=None, **kwargs):
+        return long_content
+
+    monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
+
+    bot = FakeBot()
+    handler = make_konspekt_handler(bot)
+    task = {
+        "id": "k3",
+        "type": "generate_konspekt",
+        "telegram_chat_id": 942,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "transcript_id": "tr-942"},
+    }
+    await handler(task)
+
+    assert len(bot.sent_messages) > 1
+    for _, text in bot.sent_messages:
+        assert len(text) <= 4000
+
+
+async def test_transcribe_handler_enqueues_generate_konspekt_task(isolated_env):
+    """К4: цепочка одна (MASTER.md 0.6, п.2) — успешная расшифровка сама
+    ставит задачу сборки конспекта, без ручного шага пользователя."""
+    teacher_id = _create_teacher(943)
+    audio_copy = settings.uploads_dir / "part1.m4a"
+    audio_copy.write_bytes((FIXTURES_DIR / "audio_lesson_snippet.m4a").read_bytes())
+
+    bot = FakeBot()
+    handler = make_transcribe_handler(bot)
+    task = {
+        "id": "tr6",
+        "type": "transcribe",
+        "telegram_chat_id": 943,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "audio_paths": [str(audio_copy)]},
+    }
+    result = await handler(task)
+
+    konspekt_tasks = query("SELECT * FROM tasks WHERE type = 'generate_konspekt'")
+    assert len(konspekt_tasks) == 1
+    assert konspekt_tasks[0]["telegram_chat_id"] == 943
+    payload = json.loads(konspekt_tasks[0]["payload"])
+    assert payload["teacher_id"] == teacher_id
+    assert payload["transcript_id"] == result["transcript_id"]
+
+
+def test_format_konspekt_text_includes_all_sections():
+    text = format_konspekt_text(_SAMPLE_KONSPEKT_CONTENT)
+    assert text.startswith("📝 Конспект: Кинематика: путь и перемещение")
+    assert "Различать путь и перемещение" in text
+    assert "s = v*t — путь при равномерном движении" in text
+    assert "перемещение: вектор из начальной точки в конечную" in text
+    assert "Чем отличается путь от перемещения?" in text
+    # пустые секции (primery, domashnee_zadanie) не оставляют "хвостов" в тексте
+    assert "Примеры:" not in text
+    assert "Домашнее задание:" not in text

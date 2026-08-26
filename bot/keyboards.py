@@ -45,10 +45,11 @@ MAIN_MENU = ReplyKeyboardMarkup(
             KeyboardButton(text=texts.MENU_BUTTON_UPLOAD_KTP),
         ],
         [
-            # М5.2: место рядом было обещано блоку "конспект урока" (К4) в
-            # комментарии М2 — К4 ещё не сделан, дашборд сам по себе не
-            # в паре ни с чем, ряд из одной кнопки.
+            # К4: место было обещано этой кнопке ещё в комментарии блока
+            # М5.2 — теперь /konspekt работает целиком (аудио -> whisper
+            # -> транскрипт -> конспект), заняла обещанное место.
             KeyboardButton(text=texts.MENU_BUTTON_DASHBOARD),
+            KeyboardButton(text=texts.MENU_BUTTON_KONSPEKT),
         ],
     ],
     resize_keyboard=True,
@@ -68,6 +69,7 @@ MAIN_MENU_BUTTON_TEXTS = {
     texts.MENU_BUTTON_UPLOAD_KSP,
     texts.MENU_BUTTON_UPLOAD_KTP,
     texts.MENU_BUTTON_DASHBOARD,
+    texts.MENU_BUTTON_KONSPEKT,
 }
 
 
