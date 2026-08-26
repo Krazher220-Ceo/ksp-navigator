@@ -429,6 +429,8 @@ KONSPEKT_PROMPT = (
 KONSPEKT_PART_ACCEPTED = "Принял часть {n} из {max}: {duration}"
 KONSPEKT_MAX_PARTS_REACHED = "Это уже {max}-я часть, больше не приму. Отправьте /done."
 KONSPEKT_NO_PARTS_YET = "Пока нет ни одной части записи. Пришлите аудио, или /cancel."
+KONSPEKT_LAST_PART_REMOVED = "Убрал последнюю часть записи. Осталось частей: {count}."
+KONSPEKT_NOTHING_TO_REMOVE = "Частей записи ещё нет — нечего убирать. Пришлите аудио или «Отменить»."
 KONSPEKT_UNSUPPORTED_INPUT = (
     "Это не похоже на аудио. Пришлите голосовое сообщение, аудиофайл или "
     "файл со звуком, либо /done, если уже всё прислали, либо /cancel."

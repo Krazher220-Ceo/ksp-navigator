@@ -2603,3 +2603,89 @@ async def test_konspekt_handler_stores_docx_path_in_db(isolated_env, monkeypatch
     rows = query("SELECT docx_path FROM konspekty WHERE id = ?", (result["konspekt_id"],))
     assert rows[0]["docx_path"] == result["docx_path"]
     assert Path(rows[0]["docx_path"]).exists()
+
+
+# =====================================================================
+# Аудит этапа 2, находка 2 — брошенное аудио не остаётся на диске
+# =====================================================================
+
+
+async def _konspekt_with_parts(telegram_id: int, parts: int = 3):
+    """Доводит /konspekt до состояния «принято N частей» и возвращает
+    (state, список путей на диске)."""
+    _create_teacher(telegram_id)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=telegram_id), state)
+    bot = FakeBot()
+    for _ in range(parts):
+        await konspekt_voice_received(
+            FakeMessage(voice=FakeVoice(), user_id=telegram_id), state, bot
+        )
+    paths = [Path(p) for p in (await state.get_data())["audio_paths"]]
+    assert all(p.exists() for p in paths)
+    return state, paths
+
+
+async def test_cancel_deletes_collected_audio_parts(isolated_env):
+    """/cancel посреди сбора записи не должен оставлять части на диске:
+    до правки пути терялись вместе с данными FSM, и файлы (до 20 МБ
+    каждый) не удалял уже никто и никогда."""
+    state, paths = await _konspekt_with_parts(970)
+
+    await cmd_cancel(FakeMessage(text="/cancel", user_id=970), state)
+
+    assert not any(p.exists() for p in paths)
+    assert list(settings.uploads_dir.iterdir()) == []
+
+
+async def test_menu_button_deletes_collected_audio_parts(isolated_env):
+    """Тот же обрыв, но через кнопку постоянного меню (М2.1)."""
+    state, paths = await _konspekt_with_parts(971)
+
+    await menu_button_pressed(
+        FakeMessage(text=texts.MENU_BUTTON_DASHBOARD, user_id=971), state
+    )
+
+    assert not any(p.exists() for p in paths)
+
+
+async def test_back_in_konspekt_removes_only_last_part(isolated_env):
+    """М3.3 (ловушка) для состояния из К2: «Назад» здесь убирает последнюю
+    присланную часть, а не выходит из диалога. До правки «Назад» выходил
+    в меню и бросал на диске все три части."""
+    state, paths = await _konspekt_with_parts(972)
+
+    message = FakeMessage(text=texts.BUTTON_BACK, user_id=972)
+    await back_button_pressed(message, state)
+
+    assert not paths[-1].exists()          # последняя убрана с диска
+    assert all(p.exists() for p in paths[:-1])  # остальные на месте
+    assert await state.get_state() == Konspekt.collecting_audio.state  # из диалога не вышли
+    assert len((await state.get_data())["audio_paths"]) == 2
+    assert "Осталось частей: 2" in message.sent[-1]["text"]
+
+
+async def test_back_in_konspekt_without_parts_says_nothing_to_remove(isolated_env):
+    """Пустой список частей — не ошибка и не выход из диалога, тот же
+    приём, что у UploadKSP."""
+    _create_teacher(973)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=973), state)
+
+    message = FakeMessage(text=texts.BUTTON_BACK, user_id=973)
+    await back_button_pressed(message, state)
+
+    assert message.sent[-1]["text"] == texts.KONSPEKT_NOTHING_TO_REMOVE
+    assert await state.get_state() == Konspekt.collecting_audio.state
+
+
+async def test_done_does_not_delete_audio_parts(isolated_env):
+    """Граница правки: штатный путь /done файлы НЕ трогает — их заберёт и
+    удалит задача очереди (К2.4). Удалить их здесь значило бы сломать
+    расшифровку."""
+    state, paths = await _konspekt_with_parts(974)
+
+    await konspekt_done(FakeMessage(text="/done", user_id=974, chat_id=974), state)
+
+    assert all(p.exists() for p in paths)
+    assert len(query("SELECT * FROM tasks WHERE type = 'transcribe'")) == 1

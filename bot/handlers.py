@@ -163,12 +163,36 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 # =====================================================================
 
 
+async def _discard_pending_audio(state: FSMContext) -> None:
+    """Удаляет части записи, скачанные в /konspekt, но так и не ушедшие в
+    очередь (аудит этапа 2, находка 2).
+
+    Пути к частям живут только в данных FSM, а state.clear() их стирает —
+    после этого файлы на диске не знает никто и не удалит никогда. Для
+    .docx это стоило 40 КБ и терпелось с этапа 1, но часть урока — до
+    20 МБ, а частей до MAX_KONSPEKT_PARTS: один брошенный диалог мог
+    оставить 200 МБ мусора на машине, которая работает круглосуточно.
+    Это же прямо нарушало KPI MASTER.md «аудиофайлов на диске после
+    обработки: 0».
+
+    Вызывать ДО state.clear(), иначе удалять будет уже нечего. Путь
+    /done сюда не попадает и не должен: там файлы уходят в задачу
+    очереди, и удалит их она сама (К2.4)."""
+    data = await state.get_data()
+    for path_str in data.get("audio_paths") or []:
+        try:
+            Path(path_str).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("не удалось удалить брошенную часть записи %s", path_str)
+
+
 @router.message(Command("cancel"))
 async def cmd_cancel(message: Message, state: FSMContext) -> None:
     current = await state.get_state()
     if current is None:
         await message.answer(texts.CANCEL_NOTHING_TO_CANCEL)
         return
+    await _discard_pending_audio(state)
     await state.clear()
     await message.answer(texts.CANCEL_DONE)
 
@@ -195,6 +219,7 @@ async def cmd_cancel(message: Message, state: FSMContext) -> None:
 async def menu_button_pressed(message: Message, state: FSMContext) -> None:
     current = await state.get_state()
     if current is not None:
+        await _discard_pending_audio(state)  # находка 2 аудита: не бросать аудио на диске
         await state.clear()
         await message.answer(texts.MENU_DIALOG_INTERRUPTED)
     handler = _MENU_BUTTON_HANDLERS[message.text]
@@ -209,10 +234,13 @@ async def menu_button_pressed(message: Message, state: FSMContext) -> None:
 # _BACK_ASK_HANDLERS заполняется внизу файла, когда все функции "спросить
 # шаг заново" уже определены — тем же способом, что и _MENU_BUTTON_HANDLERS.
 #
-# UploadKSP.collecting_files — единственное исключение из общего правила
-# "Назад = предыдущий шаг": там всего один шаг и файлы копятся, поэтому
-# "Назад" означает "убрать последний загруженный файл" (М3.3, ловушка).
-# Это одна ветка в одном обработчике, а не второй обработчик и не 16 копий.
+# UploadKSP.collecting_files и Konspekt.collecting_audio — исключения из
+# общего правила "Назад = предыдущий шаг": там всего один шаг и файлы
+# копятся, поэтому "Назад" означает "убрать последний присланный файл"
+# (М3.3, ловушка; для /konspekt добавлено по находке 2 аудита этапа 2 —
+# М3.3 прямо требовал покрыть и состояния из К2, а этого не сделали).
+# Это две ветки в одном обработчике, а не отдельные обработчики и не
+# 16 копий.
 # =====================================================================
 
 
@@ -239,6 +267,9 @@ async def back_button_pressed(message: Message, state: FSMContext) -> None:
     current = await state.get_state()
     if current == UploadKSP.collecting_files.state:
         await _upload_ksp_remove_last_file(message, state)
+        return
+    if current == Konspekt.collecting_audio.state:
+        await _konspekt_remove_last_part(message, state)
         return
     await _handle_go_back(message, state)
 
@@ -701,6 +732,34 @@ async def cmd_konspekt(message: Message, state: FSMContext) -> None:
     await state.update_data(teacher_id=teacher["id"], audio_paths=[], audio_durations=[])
     await message.answer(
         texts.KONSPEKT_PROMPT.format(max_parts=MAX_KONSPEKT_PARTS),
+        reply_markup=keyboards.back_cancel_keyboard(),
+    )
+
+
+async def _konspekt_remove_last_part(message: Message, state: FSMContext) -> None:
+    """«Назад» в /konspekt — убрать последнюю присланную часть записи
+    (аудит этапа 2, находка 2). Шаг здесь один, переключать состояние
+    некуда: ровно та же ситуация и ровно то же решение, что у
+    _upload_ksp_remove_last_file (М3.3, ловушка). Файл удаляется с диска
+    сразу, а не остаётся сиротой."""
+    data = await state.get_data()
+    paths = list(data.get("audio_paths", []))
+    durations = list(data.get("audio_durations", []))
+    if not paths:
+        await message.answer(texts.KONSPEKT_NOTHING_TO_REMOVE, reply_markup=keyboards.back_cancel_keyboard())
+        return
+
+    removed_path = paths.pop()
+    if durations:
+        durations.pop()
+    await state.update_data(audio_paths=paths, audio_durations=durations)
+    try:
+        Path(removed_path).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("не удалось удалить часть записи %s при отмене", removed_path)
+
+    await message.answer(
+        texts.KONSPEKT_LAST_PART_REMOVED.format(count=len(paths)),
         reply_markup=keyboards.back_cancel_keyboard(),
     )
 
