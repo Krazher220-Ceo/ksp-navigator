@@ -800,7 +800,13 @@ async def _konspekt_store_part(
     хендлеров (voice/audio/document), чтобы не дублировать её трижды."""
     size_error = _check_file_size(telegram_file)
     if size_error:
-        await message.answer(size_error)
+        # К2.3, ловушка (восстановлена по находке 7 аудита этапа 2): общий
+        # текст этапа 1 советует «пришлите файл поменьше», а запись урока
+        # короче не станет — дописываем то, что здесь реально помогает.
+        # Проверку размера при этом переиспользуем, второй не заводим.
+        await message.answer(
+            size_error + texts.KONSPEKT_FILE_TOO_LARGE_HINT.format(max_parts=MAX_KONSPEKT_PARTS)
+        )
         return
 
     data = await state.get_data()

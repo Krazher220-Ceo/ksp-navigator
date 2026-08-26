@@ -18,6 +18,7 @@ import pytest
 from openpyxl import Workbook
 
 from bot.handlers import (
+    MAX_KONSPEKT_PARTS,
     back_button_pressed,
     back_callback_pressed,
     cancel_button_pressed,
@@ -2767,3 +2768,43 @@ async def test_menu_command_interrupts_dialog_and_discards_audio(isolated_env):
     assert not any(p.exists() for p in paths)
     assert message.sent[0]["text"] == texts.MENU_DIALOG_INTERRUPTED
     assert message.sent[-1]["reply_markup"] is keyboards.MAIN_MENU
+
+
+# =====================================================================
+# Аудит этапа 2, находка 7 — отказ по размеру объясняет, что делать
+# =====================================================================
+
+
+async def test_oversized_audio_gets_instruction_not_just_refusal(isolated_env):
+    """К2.3 дословно: при превышении лимита выдать не «файл слишком
+    большой», а инструкцию, что делать. Общий текст этапа 1 советует
+    «пришлите файл поменьше» — для уже записанного урока это бесполезно."""
+    _create_teacher(982)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=982), state)
+
+    huge = FakeAudio(file_size=25 * 1024 * 1024)  # 25 МБ, лимит Telegram — 20
+    message = FakeMessage(audio=huge, user_id=982)
+    await konspekt_audio_received(message, state, FakeBot())
+
+    answer = message.sent[-1]["text"]
+    assert "20 МБ" in answer                      # общая часть про лимит осталась
+    assert "моно" in answer                        # что именно делать
+    assert "на части" in answer
+    assert str(MAX_KONSPEKT_PARTS) in answer       # сколько частей можно
+    # файл не приняли и на диск ничего не положили
+    assert (await state.get_data()).get("audio_paths", []) == []
+    assert list(settings.uploads_dir.iterdir()) == []
+
+
+async def test_oversized_docx_upload_keeps_plain_message(isolated_env):
+    """Граница правки: подсказка про части записи — только для аудио.
+    В /upload_ksp остаётся прежний общий текст, его не трогали."""
+    _create_teacher(983)
+    state = _state()
+    await cmd_upload_ksp(FakeMessage(text="/upload_ksp", user_id=983), state)
+
+    message = FakeMessage(document=FakeDocument(file_size=25 * 1024 * 1024), user_id=983)
+    await upload_ksp_file_received(message, state, FakeBot())
+
+    assert "моно" not in message.sent[-1]["text"]
