@@ -20,7 +20,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import ErrorEvent
+from aiogram.types import BotCommand, ErrorEvent
 
 from bot import texts
 from bot.handlers import (
@@ -42,6 +42,17 @@ async def _notify_user(bot: Bot, chat_id: int, text: str) -> None:
         await bot.send_message(chat_id, text)
     except Exception:
         logger.exception("не удалось отправить уведомление о провале задачи в чат %s", chat_id)
+
+
+async def _register_bot_commands(bot: Bot) -> None:
+    """М1.1 (PLAN_STAGE2.md): без этого вызова команды не появляются в
+    подсказках Telegram — пользователь обязан помнить их наизусть. Список
+    берётся из texts.BOT_COMMANDS (единственное место с текстом команд,
+    PLAN_STAGE1.md Б8.1) и передаётся одним вызовом: set_my_commands
+    перезаписывает список целиком, а не дополняет уже выставленный."""
+    await bot.set_my_commands(
+        [BotCommand(command=name, description=description) for name, description in texts.BOT_COMMANDS]
+    )
 
 
 def _failure_message(task: dict, error: str) -> str:
@@ -140,6 +151,7 @@ async def run() -> None:
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
+        await _register_bot_commands(bot)
         await dp.start_polling(bot)
     finally:
         worker.stop()

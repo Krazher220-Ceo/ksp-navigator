@@ -35,6 +35,7 @@ from bot.handlers import (
     history_resend,
     make_generate_ksp_handler,
     make_parse_ksp_handler,
+    router,
     teacher_name_received,
     teacher_school_received,
     teacher_subject_received,
@@ -43,7 +44,7 @@ from bot.handlers import (
     upload_ktp_file_received,
 )
 from bot import texts
-from bot.main import _global_error_handler
+from bot.main import _global_error_handler, _register_bot_commands
 from bot.states import Generate, TeacherProfile
 from core import ksp_generator as ksp_generator_module
 from core.config import settings
@@ -155,6 +156,7 @@ class FakeBot:
         self.downloaded: list[tuple] = []
         self.sent_messages: list[tuple] = []
         self.sent_documents: list[dict] = []
+        self.set_commands_calls: list[list] = []
 
     async def download(self, file, destination):
         Path(destination).write_bytes(b"fake ksp/ktp file content for tests")
@@ -167,6 +169,9 @@ class FakeBot:
         self.sent_documents.append(
             {"chat_id": chat_id, "document": document, "caption": caption, "reply_markup": reply_markup}
         )
+
+    async def set_my_commands(self, commands, **kwargs):
+        self.set_commands_calls.append(commands)
 
 
 def _state():
@@ -1229,3 +1234,42 @@ async def test_global_error_handler_does_not_raise_and_notifies_user():
     bot = FakeBot()
     result = await _global_error_handler(FakeErrorEvent(), bot)
     assert result is True  # aiogram не должен пробрасывать исключение дальше
+
+
+# =====================================================================
+# М1.1 КГ (PLAN_STAGE2.md): set_my_commands вызывается ровно один раз при
+# старте, и ни одна команда из списка не ссылается на несуществующий
+# хендлер
+# =====================================================================
+
+
+async def test_register_bot_commands_calls_set_my_commands_once():
+    bot = FakeBot()
+    await _register_bot_commands(bot)
+    assert len(bot.set_commands_calls) == 1
+
+
+async def test_register_bot_commands_sends_full_list_from_texts():
+    from aiogram.types import BotCommand
+
+    bot = FakeBot()
+    await _register_bot_commands(bot)
+    sent = bot.set_commands_calls[0]
+    expected = [BotCommand(command=name, description=desc) for name, desc in texts.BOT_COMMANDS]
+    assert sent == expected
+
+
+def test_every_bot_command_has_a_registered_handler():
+    """Обходит router так же, как это делает aiogram при матчинге апдейта,
+    и собирает имена команд из flags['commands'] каждого хендлера
+    (aiogram кладёт туда объекты Command из применённых фильтров).
+    Подсказка на несуществующую команду хуже, чем её отсутствие —
+    PLAN_STAGE2.md, М1.1."""
+    registered = set()
+    for handler in router.message.handlers:
+        for command_filter in handler.flags.get("commands", []):
+            registered.update(command_filter.commands)
+
+    declared = {name for name, _ in texts.BOT_COMMANDS}
+    missing = declared - registered
+    assert not missing, f"в BOT_COMMANDS есть команды без хендлера в router: {missing}"
