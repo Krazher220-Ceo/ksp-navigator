@@ -22,6 +22,7 @@ from bot.handlers import (
     back_callback_pressed,
     cancel_button_pressed,
     cmd_konspekt,
+    cmd_menu,
     konspekt_audio_received,
     konspekt_document_received,
     konspekt_done,
@@ -2724,3 +2725,45 @@ async def test_recovered_transcribe_task_refuses_second_real_attempt(isolated_en
         await make_transcribe_handler(bot)(claimed)
 
     assert bot.sent_messages == [], "ушло «Начал расшифровку» — значит повторный заход не распознан"
+
+
+# =====================================================================
+# Аудит этапа 2, находка 6 — команда /menu и порядок BOT_COMMANDS
+# =====================================================================
+
+
+def test_bot_commands_match_plan_order_exactly():
+    """М1.1 дословно: «в этом порядке — Telegram показывает как задано».
+    До правки не было команды menu вовсе, а dashboard стоял в хвосте
+    вместо пятого места."""
+    expected = [
+        "menu", "generate", "konspekt", "generate_ktp", "dashboard", "teacher",
+        "upload_ksp", "upload_ktp", "templates", "upload_template", "status",
+        "history", "cancel",
+    ]
+    assert [name for name, _ in texts.BOT_COMMANDS] == expected
+
+
+async def test_menu_command_returns_keyboard(isolated_env):
+    """Смысл команды: постоянное меню можно свернуть в клиенте, и до
+    правки развернуть его было нечем, кроме /start."""
+    _create_teacher(980)
+    message = FakeMessage(text="/menu", user_id=980)
+    await cmd_menu(message, _state())
+
+    assert message.sent[-1]["reply_markup"] is keyboards.MAIN_MENU
+
+
+async def test_menu_command_interrupts_dialog_and_discards_audio(isolated_env):
+    """Просьба показать меню посреди диалога — это выход из диалога, тем
+    же смыслом, что у кнопок меню. Скачанные части записи при этом не
+    остаются на диске (находка 2 того же аудита)."""
+    state, paths = await _konspekt_with_parts(981)
+
+    message = FakeMessage(text="/menu", user_id=981)
+    await cmd_menu(message, state)
+
+    assert await state.get_state() is None
+    assert not any(p.exists() for p in paths)
+    assert message.sent[0]["text"] == texts.MENU_DIALOG_INTERRUPTED
+    assert message.sent[-1]["reply_markup"] is keyboards.MAIN_MENU

@@ -159,6 +159,29 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
 
 # =====================================================================
+# /menu — вернуть свёрнутую клавиатуру меню (М1.1, восстановлена по
+# находке 6 аудита этапа 2: команда была в списке плана, но не написана).
+#
+# Постоянное меню — ReplyKeyboardMarkup, и пользователь может свернуть её
+# кнопкой в клиенте Telegram. До этой команды развернуть обратно было
+# нечем, кроме /start с полным приветствием на пол-экрана.
+# =====================================================================
+
+
+@router.message(Command("menu"))
+async def cmd_menu(message: Message, state: FSMContext) -> None:
+    current = await state.get_state()
+    if current is not None:
+        # Тот же смысл, что у нажатия кнопки меню (menu_button_pressed):
+        # просьба показать меню посреди диалога — это выход из диалога.
+        # Аудио, уже скачанное в /konspekt, при этом не бросаем (находка 2).
+        await _discard_pending_audio(state)
+        await state.clear()
+        await message.answer(texts.MENU_DIALOG_INTERRUPTED)
+    await message.answer(texts.MENU_SHOWN, reply_markup=keyboards.MAIN_MENU)
+
+
+# =====================================================================
 # /cancel — общий сброс любого диалога
 # =====================================================================
 
