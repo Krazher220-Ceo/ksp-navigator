@@ -826,7 +826,38 @@ def test_parse_lesson_options_text_flags_unknown_value_name():
 
     options, unrecognized = _parse_lesson_options_text("Ценность: Выдуманная ценность")
     assert options.cennost_key is None
-    assert unrecognized == ["Ценность: Выдуманная ценность"]
+    assert "Выдуманная ценность" in unrecognized[0]
+
+
+@pytest.mark.parametrize("key", ["ООП", "СОР", "Физкультминутка"])
+def test_parse_lesson_options_text_rejects_unknown_boolean_value(key):
+    from bot.handlers import _parse_lesson_options_text
+
+    options, errors = _parse_lesson_options_text(f"{key}: ага")
+
+    assert len(errors) == 1
+    assert "ага" in errors[0]
+    assert key in errors[0]
+    assert "да" in errors[0] and "нет" in errors[0]
+    assert options.ima_oop is False
+    assert options.sor_instead_of_reflection is False
+    assert options.fizkultminutka is False
+
+
+@pytest.mark.parametrize(
+    ("line", "bad_value"),
+    [
+        ("Ориентация: квадратная", "квадратная"),
+        ("Тип урока: какой-нибудь", "какой-нибудь"),
+    ],
+)
+def test_parse_lesson_options_text_rejects_invalid_known_value(line, bad_value):
+    from bot.handlers import _parse_lesson_options_text
+
+    _, errors = _parse_lesson_options_text(line)
+
+    assert len(errors) == 1
+    assert bad_value in errors[0]
 
 
 def test_parse_lesson_options_text_truncates_vidy_deyatelnosti_to_three():
@@ -872,7 +903,7 @@ async def test_generate_extra_options_applied_reach_confirmation_summary(isolate
     assert "ООП" in summary_text
 
 
-async def test_generate_extra_options_unrecognized_line_warns_but_continues(isolated_env):
+async def test_generate_extra_options_invalid_line_refuses_and_stays_on_step(isolated_env):
     from bot.handlers import generate_extra_options_received
 
     _create_teacher(1)
@@ -885,8 +916,26 @@ async def test_generate_extra_options_unrecognized_line_warns_but_continues(isol
 
     warning = message.sent[0]["text"]
     assert "Чепуха" in warning
+    assert await state.get_state() == Generate.waiting_for_extra_options.state
     data = await state.get_data()
-    assert data["options"]["ima_oop"] is True  # распознанная строка всё равно применилась
+    assert "options" not in data
+
+
+async def test_generate_extra_options_invalid_known_value_is_explained(isolated_env):
+    from bot.handlers import generate_extra_options_received
+
+    _create_teacher(1)
+    state = _state()
+    await state.update_data(teacher_id=1, topic="Т", razdel="Р", klass="10А", duration_minutes=40)
+    await state.set_state(Generate.waiting_for_extra_options)
+
+    message = FakeMessage(text="ООП: ага")
+    await generate_extra_options_received(message, state)
+
+    assert "ага" in message.sent[0]["text"]
+    assert "ООП" in message.sent[0]["text"]
+    assert "да" in message.sent[0]["text"] and "нет" in message.sent[0]["text"]
+    assert await state.get_state() == Generate.waiting_for_extra_options.state
 
 
 async def test_generate_ktp_hours_week_rejects_non_numeric_input(isolated_env):

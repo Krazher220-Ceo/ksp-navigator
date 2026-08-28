@@ -917,6 +917,10 @@ _EXTRA_OPTION_KEY_ALIASES = {
     "ориентация": "page_orientation",
 }
 _AFFIRMATIVE_VALUES = {"да", "есть", "нужна", "нужно", "нужны", "true", "1", "yes"}
+_NEGATIVE_VALUES = {"нет", "отсутствует", "не нужна", "не нужно", "не нужны", "false", "0", "no"}
+_LESSON_TYPES = {"комбинированный", "изучение нового материала", "закрепление", "контроль"}
+_ALBUM_ORIENTATIONS = {"альбом", "альбомная", "альбомный", "album"}
+_BOOK_ORIENTATIONS = {"книга", "книжная", "книжный", "book"}
 
 
 def _parse_lesson_options_text(text: str) -> tuple[LessonOptions, list[str]]:
@@ -935,7 +939,8 @@ def _parse_lesson_options_text(text: str) -> tuple[LessonOptions, list[str]]:
             continue
 
         key_part, _, value_part = line.partition(":")
-        field = _EXTRA_OPTION_KEY_ALIASES.get(key_part.strip().lower())
+        key_name = key_part.strip()
+        field = _EXTRA_OPTION_KEY_ALIASES.get(key_name.lower())
         value = value_part.strip()
         if field is None or not value:
             unrecognized.append(line)
@@ -944,25 +949,46 @@ def _parse_lesson_options_text(text: str) -> tuple[LessonOptions, list[str]]:
         if field == "cennost":
             key = find_value_key_by_name(value)
             if key is None:
-                unrecognized.append(line)
+                unrecognized.append(f"неизвестное значение «{value}» для «{key_name}»")
                 continue
             options.cennost_key = key
         elif field == "vidy_deyatelnosti":
             options.vidy_deyatelnosti = [v.strip() for v in value.split(",") if v.strip()][:MAX_VIDY_DEYATELNOSTI]
-        elif field == "ima_oop":
-            options.ima_oop = value.lower() in _AFFIRMATIVE_VALUES
-        elif field == "sor":
-            options.sor_instead_of_reflection = value.lower() in _AFFIRMATIVE_VALUES
-        elif field == "fizkultminutka":
-            options.fizkultminutka = value.lower() in _AFFIRMATIVE_VALUES
+        elif field in {"ima_oop", "sor", "fizkultminutka"}:
+            normalized = value.lower()
+            if normalized not in _AFFIRMATIVE_VALUES | _NEGATIVE_VALUES:
+                unrecognized.append(
+                    f"не понял значение «{value}» для «{key_name}» — напишите «да» или «нет»"
+                )
+                continue
+            enabled = normalized in _AFFIRMATIVE_VALUES
+            if field == "ima_oop":
+                options.ima_oop = enabled
+            elif field == "sor":
+                options.sor_instead_of_reflection = enabled
+            else:
+                options.fizkultminutka = enabled
         elif field == "predvaritelnye_znaniya":
             options.predvaritelnye_znaniya = value
         elif field == "tip_uroka":
+            if value.lower() not in _LESSON_TYPES:
+                unrecognized.append(
+                    f"не понял значение «{value}» для «{key_name}» — выберите один из указанных типов урока"
+                )
+                continue
             options.tip_uroka = value
         elif field == "mezhpredmetnye_svyazi":
             options.mezhpredmetnye_svyazi = [v.strip() for v in value.split(",") if v.strip()]
         elif field == "page_orientation":
-            options.page_orientation = "album" if "альбом" in value.lower() else "book"
+            normalized = value.lower()
+            if normalized in _ALBUM_ORIENTATIONS:
+                options.page_orientation = "album"
+            elif normalized in _BOOK_ORIENTATIONS:
+                options.page_orientation = "book"
+            else:
+                unrecognized.append(
+                    f"не понял значение «{value}» для «{key_name}» — напишите «альбомная» или «книжная»"
+                )
 
     # __post_init__ уже отсёк vidy_deyatelnosti сверх лимита при создании
     # объекта конструктором, но поля выше присваивались после — доотсекаем.
@@ -1325,6 +1351,7 @@ async def generate_extra_options_received(message: Message, state: FSMContext) -
             await message.answer(
                 texts.GENERATE_EXTRA_OPTIONS_UNRECOGNIZED_NOTE.format(lines=", ".join(unrecognized))
             )
+            return
     else:
         options = LessonOptions()
 
