@@ -765,12 +765,32 @@ async def cmd_konspekt(message: Message, state: FSMContext) -> None:
     teacher = await _require_teacher(message)
     if teacher is None:
         return
-    await go_to(state, Konspekt.collecting_audio)
+    await go_to(state, Konspekt.choosing_mode)
     await state.update_data(teacher_id=teacher["id"], audio_paths=[], audio_durations=[])
+    await message.answer(
+        texts.KONSPEKT_MODE_PROMPT,
+        reply_markup=keyboards.konspekt_mode_keyboard(),
+    )
+
+
+@router.message(
+    Konspekt.choosing_mode,
+    F.text.in_({texts.KONSPEKT_MODE_STUDENT_BUTTON, texts.KONSPEKT_MODE_TEACHER_BUTTON}),
+)
+async def konspekt_mode_chosen(message: Message, state: FSMContext) -> None:
+    """Сохраняет назначение записи до приёма первого аудиофайла."""
+    mode = "student" if message.text == texts.KONSPEKT_MODE_STUDENT_BUTTON else "teacher"
+    await state.update_data(mode=mode)
+    await go_to(state, Konspekt.collecting_audio)
     await message.answer(
         texts.KONSPEKT_PROMPT.format(max_parts=MAX_KONSPEKT_PARTS),
         reply_markup=keyboards.konspekt_collecting_keyboard(),
     )
+
+
+@router.message(Konspekt.choosing_mode)
+async def konspekt_mode_wrong_input(message: Message) -> None:
+    await message.answer(texts.KONSPEKT_MODE_INVALID, reply_markup=keyboards.konspekt_mode_keyboard())
 
 
 async def _konspekt_remove_last_part(message: Message, state: FSMContext) -> None:
@@ -879,7 +899,7 @@ async def konspekt_done(message: Message, state: FSMContext) -> None:
 
     enqueue(
         "transcribe",
-        {"teacher_id": data["teacher_id"], "audio_paths": paths},
+        {"teacher_id": data["teacher_id"], "audio_paths": paths, "mode": data["mode"]},
         chat_id=message.chat.id,
     )
     await state.clear()
@@ -2166,6 +2186,9 @@ def make_transcribe_handler(bot: Bot):
         payload = task["payload"]
         chat_id = task["telegram_chat_id"]
         audio_paths: list[str] = payload["audio_paths"]
+        # Старые задачи, уже лежащие в очереди на момент миграции, не
+        # содержат mode и продолжают прежний ученический сценарий.
+        mode = payload.get("mode", "student")
 
         if task.get("retries", 0) > TRANSCRIBE_REAL_ATTEMPT_LIMIT:
             # Файлы всё равно должны исчезнуть с диска — они уже
@@ -2206,27 +2229,65 @@ def make_transcribe_handler(bot: Bot):
         full_text = "\n\n".join(text_parts)
         transcript_id = str(uuid.uuid4())
         execute(
-            "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
-            "VALUES (?, ?, 'audio', ?, ?, ?)",
-            (transcript_id, payload["teacher_id"], full_text, total_duration, "ru"),
+            "INSERT INTO transcripts (id, teacher_id, source, mode, text, duration_seconds, language) "
+            "VALUES (?, ?, 'audio', ?, ?, ?, ?)",
+            (transcript_id, payload["teacher_id"], mode, full_text, total_duration, "ru"),
         )
 
-        preview = full_text[:300] + ("…" if len(full_text) > 300 else "")
-        await bot.send_message(
-            chat_id,
-            texts.KONSPEKT_TRANSCRIPT_READY.format(duration=_format_duration(total_duration), preview=preview),
-        )
+        if mode == "student":
+            preview = full_text[:300] + ("…" if len(full_text) > 300 else "")
+            await bot.send_message(
+                chat_id,
+                texts.KONSPEKT_TRANSCRIPT_READY.format(duration=_format_duration(total_duration), preview=preview),
+            )
+            enqueue(
+                "generate_konspekt",
+                {"teacher_id": payload["teacher_id"], "transcript_id": transcript_id, "mode": mode},
+                chat_id=chat_id,
+            )
+        else:
+            # Учительская ветка намеренно не ставит generate_konspekt:
+            # здесь нет ни одного обращения к LLM. Строка konspekty нужна
+            # существующей кнопке перехода к КСП в обоих режимах.
+            konspekt_id = str(uuid.uuid4())
+            content = {
+                "tema": "Расшифровка урока",
+                "transcript_text": full_text,
+            }
+            execute(
+                "INSERT INTO konspekty (id, teacher_id, transcript_id, mode, tema, content_json) "
+                "VALUES (?, ?, ?, 'teacher', ?, ?)",
+                (
+                    konspekt_id,
+                    payload["teacher_id"],
+                    transcript_id,
+                    content["tema"],
+                    json.dumps(content, ensure_ascii=False),
+                ),
+            )
+            chunks = _split_for_telegram(
+                texts.KONSPEKT_TEACHER_TRANSCRIPT_READY.format(
+                    duration=_format_duration(total_duration), transcript=full_text
+                )
+            )
+            ksp_button = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=texts.KSP_FROM_KONSPEKT_BUTTON,
+                            callback_data=f"ksp_from_konspekt:{konspekt_id}",
+                        )
+                    ]
+                ]
+            )
+            for index, chunk in enumerate(chunks):
+                await bot.send_message(
+                    chat_id,
+                    chunk,
+                    reply_markup=ksp_button if index == len(chunks) - 1 else None,
+                )
 
-        # К4: цепочка одна (MASTER.md 0.6, п.2) — расшифровка сама
-        # запускает сборку конспекта следующей задачей очереди, учителю
-        # не нужно ничего вызывать отдельно.
-        enqueue(
-            "generate_konspekt",
-            {"teacher_id": payload["teacher_id"], "transcript_id": transcript_id},
-            chat_id=chat_id,
-        )
-
-        return {"transcript_id": transcript_id, "duration_seconds": total_duration}
+        return {"transcript_id": transcript_id, "duration_seconds": total_duration, "mode": mode}
 
     return handler
 
@@ -2256,7 +2317,7 @@ def make_konspekt_handler(bot: Bot):
         payload = task["payload"]
         chat_id = task["telegram_chat_id"]
 
-        rows = query("SELECT text FROM transcripts WHERE id = ?", (payload["transcript_id"],))
+        rows = query("SELECT text, mode FROM transcripts WHERE id = ?", (payload["transcript_id"],))
         if not rows:
             raise KonspektGenerationError(
                 f"транскрипт {payload['transcript_id']} не найден — не может собрать по нему конспект"
@@ -2281,12 +2342,13 @@ def make_konspekt_handler(bot: Bot):
         docx_path = build_konspekt_docx(content, settings.generated_dir / filename)
 
         execute(
-            "INSERT INTO konspekty (id, teacher_id, transcript_id, tema, content_json, docx_path) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO konspekty (id, teacher_id, transcript_id, mode, tema, content_json, docx_path) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 konspekt_id,
                 payload["teacher_id"],
                 payload["transcript_id"],
+                rows[0]["mode"],
                 content["tema"],
                 json.dumps(content, ensure_ascii=False),
                 str(docx_path),
@@ -2329,12 +2391,20 @@ def _split_for_telegram(text: str) -> list[str]:
     chunks: list[str] = []
     current = ""
     for line in text.split("\n"):
-        candidate = f"{current}\n{line}" if current else line
-        if len(candidate) > _TELEGRAM_MESSAGE_LIMIT and current:
-            chunks.append(current)
-            current = line
-        else:
-            current = candidate
+        # Whisper может вернуть весь часовой урок одним абзацем. Тогда
+        # одной границы строк недостаточно — длинную строку режем жёстко,
+        # иначе Telegram отклонит сообщение целиком.
+        pieces = [
+            line[index : index + _TELEGRAM_MESSAGE_LIMIT]
+            for index in range(0, len(line), _TELEGRAM_MESSAGE_LIMIT)
+        ] or [""]
+        for piece in pieces:
+            candidate = f"{current}\n{piece}" if current else piece
+            if len(candidate) > _TELEGRAM_MESSAGE_LIMIT and current:
+                chunks.append(current)
+                current = piece
+            else:
+                current = candidate
     if current:
         chunks.append(current)
     return chunks

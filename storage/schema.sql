@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     teacher_id INTEGER REFERENCES teachers(id),
     ktp_entry_id INTEGER REFERENCES ktp_entries(id),
     source TEXT,               -- 'audio' | 'manual'
+    mode TEXT NOT NULL DEFAULT 'student' CHECK(mode IN ('student', 'teacher')),
     text TEXT NOT NULL,
     duration_seconds INTEGER,
     language TEXT,
@@ -140,6 +141,7 @@ CREATE TABLE IF NOT EXISTS konspekty (
     id TEXT PRIMARY KEY,
     teacher_id INTEGER REFERENCES teachers(id),
     transcript_id TEXT REFERENCES transcripts(id),
+    mode TEXT NOT NULL DEFAULT 'student' CHECK(mode IN ('student', 'teacher')),
     ktp_entry_id INTEGER REFERENCES ktp_entries(id),
     tema TEXT,
     content_json TEXT NOT NULL,

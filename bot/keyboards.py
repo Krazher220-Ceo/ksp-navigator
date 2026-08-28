@@ -88,6 +88,20 @@ def back_cancel_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def konspekt_mode_keyboard() -> ReplyKeyboardMarkup:
+    """Два продуктовых режима обработки записи урока (К0)."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [
+                KeyboardButton(text=texts.KONSPEKT_MODE_STUDENT_BUTTON),
+                KeyboardButton(text=texts.KONSPEKT_MODE_TEACHER_BUTTON),
+            ],
+            [KeyboardButton(text=texts.BUTTON_CANCEL)],
+        ],
+        resize_keyboard=True,
+    )
+
+
 def konspekt_collecting_keyboard() -> ReplyKeyboardMarkup:
     """Клавиатура шага сбора записи урока (/konspekt, К2.3).
 

@@ -237,6 +237,16 @@ def _state():
     return FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=0, chat_id=1, user_id=1))
 
 
+async def _start_konspekt(state, user_id: int, mode_button: str = "Для ученика"):
+    """Проходит обязательный выбор режима и оставляет FSM на сборе аудио."""
+    from bot.handlers import konspekt_mode_chosen
+
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=user_id), state)
+    mode_message = FakeMessage(text=mode_button, user_id=user_id)
+    await konspekt_mode_chosen(mode_message, state)
+    return mode_message
+
+
 # =====================================================================
 # /start (Б8.1 КГ)
 # =====================================================================
@@ -2011,8 +2021,35 @@ async def test_dashboard_text_shows_ongoing_incident(isolated_env):
 async def test_konspekt_starts_collecting_state(isolated_env):
     _create_teacher(910)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=910), state)
+    message = FakeMessage(text="/konspekt", user_id=910)
+    await cmd_konspekt(message, state)
+
+    assert await state.get_state() == Konspekt.choosing_mode.state
+    buttons = [button.text for row in message.sent[-1]["reply_markup"].keyboard for button in row]
+    assert texts.KONSPEKT_MODE_STUDENT_BUTTON in buttons
+    assert texts.KONSPEKT_MODE_TEACHER_BUTTON in buttons
+
+
+@pytest.mark.parametrize(
+    ("button_text", "expected_mode"),
+    [
+        ("Для ученика", "student"),
+        ("Для учителя", "teacher"),
+    ],
+)
+async def test_konspekt_mode_choice_is_saved_before_audio(isolated_env, button_text, expected_mode):
+    from bot.handlers import konspekt_mode_chosen
+
+    _create_teacher(909)
+    state = _state()
+    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=909), state)
+
+    message = FakeMessage(text=button_text, user_id=909)
+    await konspekt_mode_chosen(message, state)
+
     assert await state.get_state() == Konspekt.collecting_audio.state
+    assert (await state.get_data())["mode"] == expected_mode
+    assert "Пришлите запись урока" in message.sent[-1]["text"]
 
 
 async def test_konspekt_without_profile_shows_error(isolated_env):
@@ -2024,7 +2061,7 @@ async def test_konspekt_without_profile_shows_error(isolated_env):
 async def test_konspekt_accepts_voice_message(isolated_env):
     teacher_id = _create_teacher(911)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=911), state)
+    await _start_konspekt(state, 911)
 
     message = FakeMessage(user_id=911, voice=FakeVoice(duration=125))
     bot = FakeBot()
@@ -2039,7 +2076,7 @@ async def test_konspekt_accepts_voice_message(isolated_env):
 async def test_konspekt_accepts_audio_file(isolated_env):
     _create_teacher(912)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=912), state)
+    await _start_konspekt(state, 912)
 
     message = FakeMessage(user_id=912, audio=FakeAudio(file_name="urok.mp3"))
     bot = FakeBot()
@@ -2053,7 +2090,7 @@ async def test_konspekt_accepts_audio_file(isolated_env):
 async def test_konspekt_rejects_non_audio_document(isolated_env):
     _create_teacher(913)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=913), state)
+    await _start_konspekt(state, 913)
 
     message = FakeMessage(user_id=913, document=FakeDocument(file_name="report.docx", mime_type="application/msword"))
     bot = FakeBot()
@@ -2067,7 +2104,7 @@ async def test_konspekt_rejects_non_audio_document(isolated_env):
 async def test_konspekt_accepts_audio_document_with_correct_mime(isolated_env):
     _create_teacher(914)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=914), state)
+    await _start_konspekt(state, 914)
 
     message = FakeMessage(user_id=914, document=FakeDocument(file_name="urok.wav", mime_type="audio/wav"))
     bot = FakeBot()
@@ -2082,7 +2119,7 @@ async def test_konspekt_multiple_parts_collected_in_order(isolated_env):
     накапливаться по порядку присылки."""
     _create_teacher(915)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=915), state)
+    await _start_konspekt(state, 915)
 
     bot = FakeBot()
     # столько частей, сколько разрешено сейчас, — не жёсткое число, иначе
@@ -2100,7 +2137,7 @@ async def test_konspekt_multiple_parts_collected_in_order(isolated_env):
 async def test_konspekt_max_parts_limit(isolated_env):
     _create_teacher(916)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=916), state)
+    await _start_konspekt(state, 916)
 
     bot = FakeBot()
     from bot.handlers import MAX_KONSPEKT_PARTS
@@ -2119,7 +2156,7 @@ async def test_konspekt_size_limit_reuses_check_file_size(isolated_env):
     _check_file_size, не писать вторую."""
     _create_teacher(917)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=917), state)
+    await _start_konspekt(state, 917)
 
     huge_voice = FakeVoice(file_size=25 * 1024 * 1024)  # 25 МБ, больше лимита в 20
     message = FakeMessage(user_id=917, voice=huge_voice)
@@ -2134,7 +2171,7 @@ async def test_konspekt_size_limit_reuses_check_file_size(isolated_env):
 async def test_konspekt_done_with_no_parts_shows_error(isolated_env):
     _create_teacher(918)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=918), state)
+    await _start_konspekt(state, 918)
 
     message = FakeMessage(text="/done", user_id=918)
     await konspekt_done(message, state)
@@ -2146,7 +2183,7 @@ async def test_konspekt_done_with_no_parts_shows_error(isolated_env):
 async def test_konspekt_done_enqueues_transcribe_task(isolated_env):
     _create_teacher(919)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=919), state)
+    await _start_konspekt(state, 919)
 
     bot = FakeBot()
     await konspekt_voice_received(FakeMessage(user_id=919, voice=FakeVoice(), chat_id=919), state, bot)
@@ -2166,7 +2203,7 @@ async def test_konspekt_done_enqueues_transcribe_task(isolated_env):
 async def test_konspekt_wrong_input_shows_message(isolated_env):
     _create_teacher(920)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=920), state)
+    await _start_konspekt(state, 920)
 
     message = FakeMessage(text="привет", user_id=920)
     await konspekt_wrong_input(message)
@@ -2377,6 +2414,7 @@ async def test_konspekt_handler_generates_and_sends_text(isolated_env, monkeypat
     assert len(rows) == 1
     assert rows[0]["teacher_id"] == teacher_id
     assert rows[0]["transcript_id"] == "tr-940"
+    assert rows[0]["mode"] == "student"
     assert rows[0]["tema"] == "Кинематика: путь и перемещение"
     assert json.loads(rows[0]["content_json"])["glavnoe"] == _SAMPLE_KONSPEKT_CONTENT["glavnoe"]
 
@@ -2468,6 +2506,151 @@ async def test_transcribe_handler_enqueues_generate_konspekt_task(isolated_env):
     payload = json.loads(konspekt_tasks[0]["payload"])
     assert payload["teacher_id"] == teacher_id
     assert payload["transcript_id"] == result["transcript_id"]
+
+
+async def test_same_audio_has_student_and_teacher_paths_without_teacher_llm(isolated_env, monkeypatch):
+    """К0: один файл в ученическом режиме продолжает цепочку с LLM, а в
+    учительском заканчивается сохранённой расшифровкой и кнопкой КСП."""
+    student_id = _create_teacher(944)
+    teacher_id = _create_teacher(945)
+    student_audio = settings.uploads_dir / "student.m4a"
+    teacher_audio = settings.uploads_dir / "teacher.m4a"
+    student_audio.write_bytes(b"same audio")
+    teacher_audio.write_bytes(b"same audio")
+
+    async def fake_probe(_path):
+        return 47
+
+    async def fake_transcribe(_path):
+        return {"text": "Дословная расшифровка одного урока", "duration_seconds": 47}
+
+    monkeypatch.setattr("bot.handlers._safe_probe", fake_probe)
+    monkeypatch.setattr("bot.handlers.transcribe", fake_transcribe)
+
+    class ForbiddenLLMClient:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("учительский путь не должен создавать LLMClient")
+
+    monkeypatch.setattr("bot.handlers.LLMClient", ForbiddenLLMClient)
+
+    bot = FakeBot()
+    handler = make_transcribe_handler(bot)
+    student_result = await handler(
+        {
+            "id": "tr-student",
+            "type": "transcribe",
+            "telegram_chat_id": 944,
+            "retries": 0,
+            "payload": {
+                "teacher_id": student_id,
+                "audio_paths": [str(student_audio)],
+                "mode": "student",
+            },
+        }
+    )
+    teacher_result = await handler(
+        {
+            "id": "tr-teacher",
+            "type": "transcribe",
+            "telegram_chat_id": 945,
+            "retries": 0,
+            "payload": {
+                "teacher_id": teacher_id,
+                "audio_paths": [str(teacher_audio)],
+                "mode": "teacher",
+            },
+        }
+    )
+
+    transcripts = {
+        row["id"]: row for row in query("SELECT id, mode, text FROM transcripts ORDER BY id")
+    }
+    assert transcripts[student_result["transcript_id"]]["mode"] == "student"
+    assert transcripts[teacher_result["transcript_id"]]["mode"] == "teacher"
+
+    tasks = query("SELECT payload FROM tasks WHERE type = 'generate_konspekt'")
+    assert len(tasks) == 1
+    assert json.loads(tasks[0]["payload"])["transcript_id"] == student_result["transcript_id"]
+
+    teacher_rows = query(
+        "SELECT id, mode, content_json FROM konspekty WHERE transcript_id = ?",
+        (teacher_result["transcript_id"],),
+    )
+    assert len(teacher_rows) == 1
+    assert teacher_rows[0]["mode"] == "teacher"
+    assert json.loads(teacher_rows[0]["content_json"])["transcript_text"] == "Дословная расшифровка одного урока"
+
+    teacher_messages = [item for item in bot.sent_messages if item[0] == 945]
+    assert any("Дословная расшифровка одного урока" in item[1] for item in teacher_messages)
+    final_markup = teacher_messages[-1][2]
+    assert final_markup is not None
+    callback_data = final_markup.inline_keyboard[0][0].callback_data
+    assert callback_data.startswith("ksp_from_konspekt:")
+
+    state = _state()
+    callback = FakeCallbackQuery(
+        data=callback_data,
+        message=FakeMessage(user_id=945, chat_id=945),
+        user_id=945,
+    )
+    await ksp_from_konspekt_pressed(callback, state)
+    assert await state.get_state() == Generate.waiting_for_objective_code.state
+    assert callback.answered[-1]["show_alert"] is False
+
+
+async def test_teacher_transcript_without_line_breaks_is_split_for_telegram(isolated_env, monkeypatch):
+    teacher_id = _create_teacher(947)
+    audio_path = settings.uploads_dir / "long-teacher.m4a"
+    audio_path.write_bytes(b"audio")
+    long_transcript = "д" * 8500
+
+    async def fake_probe(_path):
+        return 120
+
+    async def fake_transcribe(_path):
+        return {"text": long_transcript, "duration_seconds": 120}
+
+    monkeypatch.setattr("bot.handlers._safe_probe", fake_probe)
+    monkeypatch.setattr("bot.handlers.transcribe", fake_transcribe)
+
+    bot = FakeBot()
+    await make_transcribe_handler(bot)(
+        {
+            "id": "tr-long-teacher",
+            "type": "transcribe",
+            "telegram_chat_id": 947,
+            "retries": 0,
+            "payload": {
+                "teacher_id": teacher_id,
+                "audio_paths": [str(audio_path)],
+                "mode": "teacher",
+            },
+        }
+    )
+
+    teacher_messages = [item for item in bot.sent_messages if item[0] == 947][1:]
+    assert len(teacher_messages) >= 3
+    assert all(len(item[1]) <= 4000 for item in teacher_messages)
+    assert teacher_messages[-1][2] is not None
+
+
+async def test_konspekt_done_carries_selected_mode_to_queue(isolated_env):
+    teacher_id = _create_teacher(946)
+    state = _state()
+    audio_path = settings.uploads_dir / "teacher-mode.m4a"
+    audio_path.write_bytes(b"audio")
+    await state.set_state(Konspekt.collecting_audio)
+    await state.update_data(
+        teacher_id=teacher_id,
+        mode="teacher",
+        audio_paths=[str(audio_path)],
+        audio_durations=[47],
+    )
+
+    await konspekt_done(FakeMessage(text="/done", user_id=946, chat_id=946), state)
+
+    task = query("SELECT payload FROM tasks WHERE type = 'transcribe'")[0]
+    assert json.loads(task["payload"])["mode"] == "teacher"
 
 
 def test_format_konspekt_text_includes_all_sections():
@@ -2790,7 +2973,7 @@ async def _konspekt_with_parts(telegram_id: int, parts: int | None = None):
     parts = MAX_KONSPEKT_PARTS if parts is None else parts
     _create_teacher(telegram_id)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=telegram_id), state)
+    await _start_konspekt(state, telegram_id)
     bot = FakeBot()
     for _ in range(parts):
         await konspekt_voice_received(
@@ -2847,7 +3030,7 @@ async def test_back_in_konspekt_without_parts_says_nothing_to_remove(isolated_en
     приём, что у UploadKSP."""
     _create_teacher(973)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=973), state)
+    await _start_konspekt(state, 973)
 
     message = FakeMessage(text=texts.BUTTON_BACK, user_id=973)
     await back_button_pressed(message, state)
@@ -2955,7 +3138,7 @@ async def test_oversized_audio_gets_instruction_not_just_refusal(isolated_env):
     «пришлите файл поменьше» — для уже записанного урока это бесполезно."""
     _create_teacher(982)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=982), state)
+    await _start_konspekt(state, 982)
 
     huge = FakeAudio(file_size=25 * 1024 * 1024)  # 25 МБ, лимит Telegram — 20
     message = FakeMessage(audio=huge, user_id=982)
@@ -3042,8 +3225,7 @@ async def test_collecting_keyboard_offers_start_button(isolated_env):
     иначе нажимать нечего."""
     _create_teacher(991)
     state = _state()
-    message = FakeMessage(text="/konspekt", user_id=991)
-    await cmd_konspekt(message, state)
+    message = await _start_konspekt(state, 991)
 
     keyboard = message.sent[-1]["reply_markup"]
     texts_on_keyboard = [b.text for row in keyboard.keyboard for b in row]
@@ -3057,7 +3239,7 @@ async def test_start_button_without_parts_does_not_enqueue(isolated_env):
     а понятный ответ, тот же что у /done."""
     _create_teacher(992)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=992), state)
+    await _start_konspekt(state, 992)
 
     message = FakeMessage(text=texts.KONSPEKT_START_BUTTON, user_id=992, chat_id=992)
     await konspekt_done(message, state)
@@ -3074,7 +3256,7 @@ async def test_konspekt_accepts_no_more_than_two_parts(isolated_env):
 
     _create_teacher(993)
     state = _state()
-    await cmd_konspekt(FakeMessage(text="/konspekt", user_id=993), state)
+    await _start_konspekt(state, 993)
 
     bot = FakeBot()
     third = None
