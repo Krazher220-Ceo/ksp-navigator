@@ -163,6 +163,58 @@ def test_templates_endpoint_requires_auth(isolated_api, client):
     assert response.status_code == 401
 
 
+def test_template_selection_endpoint_requires_auth(isolated_api, client):
+    response = client.post("/api/template-selection", json={"template_id": 1})
+    assert response.status_code == 401
+
+
+def test_template_selection_endpoint_saves_latest_owned_template(isolated_api, client):
+    from core.db import query
+    from core.templates import load_builtin_templates
+
+    execute(
+        "INSERT INTO teachers (id, name, subject, telegram_user_id) VALUES (1, 'Т', 'физика', 555)",
+        db_path=isolated_api,
+    )
+    load_builtin_templates(db_path=isolated_api)
+    template_ids = [row["id"] for row in query("SELECT id FROM templates ORDER BY id", db_path=isolated_api)]
+
+    first = client.post(
+        "/api/template-selection", json={"template_id": template_ids[0]}, headers=_headers(555)
+    )
+    second = client.post(
+        "/api/template-selection", json={"template_id": template_ids[1]}, headers=_headers(555)
+    )
+
+    assert first.status_code == second.status_code == 200
+    rows = query("SELECT * FROM template_selections WHERE telegram_user_id = 555", db_path=isolated_api)
+    assert len(rows) == 1
+    assert rows[0]["template_id"] == template_ids[1]
+    assert rows[0]["selected_at"]
+
+
+def test_template_selection_endpoint_rejects_foreign_template(isolated_api, client):
+    execute(
+        "INSERT INTO teachers (id, name, subject, telegram_user_id) VALUES (1, 'Владелец', 'физика', 111)",
+        db_path=isolated_api,
+    )
+    execute(
+        "INSERT INTO teachers (id, name, subject, telegram_user_id) VALUES (2, 'Чужой', 'физика', 222)",
+        db_path=isolated_api,
+    )
+    execute(
+        "INSERT INTO templates (id, name, is_builtin, uploaded_by, structure_json) "
+        "VALUES (99, 'Личный', 0, 1, '{\"blocks\": []}')",
+        db_path=isolated_api,
+    )
+
+    response = client.post(
+        "/api/template-selection", json={"template_id": 99}, headers=_headers(222)
+    )
+
+    assert response.status_code == 404
+
+
 # --- М5.3: /api/dashboard ---
 
 

@@ -46,6 +46,15 @@ CREATE TABLE IF NOT EXISTS templates (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- И1: выбор из Mini App, открытого синей кнопкой меню, не приходит боту
+-- через sendData. Web API сохраняет его здесь, а следующая /generate
+-- забирает и сразу удаляет. selected_at нужен для короткого срока жизни.
+CREATE TABLE IF NOT EXISTS template_selections (
+    telegram_user_id INTEGER PRIMARY KEY,
+    template_id INTEGER NOT NULL REFERENCES templates(id),
+    selected_at TIMESTAMP NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS curriculum_objectives (
     code TEXT PRIMARY KEY,     -- 10.1.1.1
     grade INTEGER,

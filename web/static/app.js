@@ -55,12 +55,14 @@
 
   // --- общий помощник запросов к /api/* с initData в заголовке ---
 
-  async function apiFetch(path) {
+  async function apiFetch(path, options) {
     const headers = {};
     if (tg && tg.initData) {
       headers["X-Telegram-Init-Data"] = tg.initData;
     }
-    const response = await fetch(path, { headers });
+    const requestOptions = Object.assign({}, options || {});
+    requestOptions.headers = Object.assign({}, requestOptions.headers || {}, headers);
+    const response = await fetch(path, requestOptions);
     if (!response.ok) {
       const err = new Error("Запрос не удался: " + response.status);
       err.status = response.status;
@@ -80,6 +82,7 @@
   // =====================================================================
 
   let selectedTemplateId = null;
+  let selectedTemplateName = "";
 
   function renderTemplates(templates) {
     const listEl = document.getElementById("templates-list");
@@ -115,6 +118,7 @@
     listEl.querySelectorAll(".template-card").forEach(function (card) {
       card.addEventListener("click", function () {
         selectedTemplateId = card.getAttribute("data-id");
+        selectedTemplateName = card.querySelector(".template-card-name").textContent;
         listEl.querySelectorAll(".template-card").forEach(function (c) {
           c.classList.toggle("selected", c === card);
         });
@@ -133,12 +137,38 @@
     tg.MainButton.show();
   }
 
-  function sendSelectedTemplate() {
+  async function sendSelectedTemplate() {
     if (!tg || !selectedTemplateId) return;
-    // tg.sendData доставляет выбор боту как обычное сообщение
-    // (web_app_data) и закрывает Mini App — стандартный способ Telegram
-    // вернуть результат выбора туда, откуда открыли.
-    tg.sendData(JSON.stringify({ template_id: selectedTemplateId }));
+    tg.MainButton.showProgress();
+    try {
+      // Серверный fallback обязателен: sendData работает у reply-кнопки,
+      // но молчит при открытии синей кнопкой меню чата. Сначала сохраняем
+      // одноразовый выбор с TTL, затем пробуем обычную доставку в бот.
+      await apiFetch("/api/template-selection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ template_id: Number(selectedTemplateId) }),
+      });
+
+      const closeAndDeliver = function () {
+        tg.sendData(JSON.stringify({ template_id: selectedTemplateId }));
+        // В контексте меню sendData ничего не делает — закрываем сами.
+        window.setTimeout(function () { tg.close(); }, 250);
+      };
+      const confirmation = "Шаблон выбран: " + selectedTemplateName +
+        ". Если бот не ответит сразу, отправьте /generate.";
+      if (typeof tg.showAlert === "function") {
+        tg.showAlert(confirmation, closeAndDeliver);
+      } else {
+        closeAndDeliver();
+      }
+    } catch (e) {
+      if (typeof tg.showAlert === "function") {
+        tg.showAlert("Не удалось сохранить выбор. Попробуйте ещё раз.");
+      }
+    } finally {
+      tg.MainButton.hideProgress();
+    }
   }
 
   function initTemplatesScreen() {

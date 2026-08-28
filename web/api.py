@@ -21,14 +21,15 @@ Depends(verify_init_data) стоит на КАЖДОМ эндпоинте без
 """
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Body, Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from core.dashboard import collect as collect_dashboard
-from core.db import query
+from core.db import execute, query
 from core.templates import list_templates
 from web.auth import AuthenticatedUser, verify_init_data
 
@@ -60,6 +61,32 @@ def _get_owned_generated_ksp(ksp_id: str, teacher_id: int, db_path=None) -> dict
 async def api_templates(auth: AuthenticatedUser = Depends(verify_init_data)) -> list[dict]:
     teacher_id = _resolve_teacher_id(auth.telegram_user_id)
     return list_templates(teacher_id)
+
+
+@app.post("/api/template-selection")
+async def api_save_template_selection(
+    template_id: int = Body(embed=True),
+    auth: AuthenticatedUser = Depends(verify_init_data),
+) -> dict:
+    """И1: сохраняет выбор для запуска Mini App из меню чата.
+
+    sendData в этом контексте не доставляет сообщение боту, поэтому
+    следующая /generate забирает запись из общей SQLite. Клиентскому id
+    не доверяем: доступны только встроенные и собственные шаблоны учителя.
+    """
+    teacher_id = _resolve_teacher_id(auth.telegram_user_id)
+    available_ids = {template["id"] for template in list_templates(teacher_id)}
+    if template_id not in available_ids:
+        raise HTTPException(status_code=404, detail="шаблон не найден")
+
+    execute(
+        "INSERT INTO template_selections (telegram_user_id, template_id, selected_at) "
+        "VALUES (?, ?, ?) "
+        "ON CONFLICT(telegram_user_id) DO UPDATE SET "
+        "template_id = excluded.template_id, selected_at = excluded.selected_at",
+        (auth.telegram_user_id, template_id, datetime.now(timezone.utc).isoformat()),
+    )
+    return {"template_id": template_id, "saved": True}
 
 
 @app.get("/api/preview/{ksp_id}")

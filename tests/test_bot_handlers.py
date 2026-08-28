@@ -64,6 +64,7 @@ from bot.handlers import (
     teacher_name_received,
     teacher_school_received,
     teacher_subject_received,
+    templates_web_app_choice,
     upload_ksp_done,
     upload_ksp_file_received,
     upload_ktp_file_received,
@@ -1023,6 +1024,69 @@ async def test_templates_without_webapp_url_configured(isolated_env):
         assert message.sent[-1]["text"] == texts.TEMPLATES_NOT_CONFIGURED
     finally:
         object.__setattr__(settings, "webapp_url", original)
+
+
+async def test_generate_consumes_fresh_template_selected_from_chat_menu(isolated_env):
+    """И1: серверный выбор из синей кнопки подхватывается командой /generate."""
+    teacher_id = _create_teacher(1)
+    template = list_templates(teacher_id)[0]
+    execute(
+        "INSERT INTO template_selections (telegram_user_id, template_id, selected_at) "
+        "VALUES (1, ?, CURRENT_TIMESTAMP)",
+        (template["id"],),
+    )
+
+    state = _state()
+    message = FakeMessage(text="/generate", user_id=1)
+    await cmd_generate(message, state)
+
+    data = await state.get_data()
+    assert data["template_id"] == template["id"]
+    assert template["name"] in message.sent[0]["text"]
+    assert message.sent[-1]["text"] == texts.GENERATE_ASK_TOPIC
+    assert query("SELECT * FROM template_selections WHERE telegram_user_id = 1") == []
+
+
+async def test_generate_discards_expired_template_selection(isolated_env):
+    """И1: выбор из Mini App не живёт дольше тридцати минут."""
+    teacher_id = _create_teacher(1)
+    template = list_templates(teacher_id)[0]
+    execute(
+        "INSERT INTO template_selections (telegram_user_id, template_id, selected_at) "
+        "VALUES (1, ?, '2000-01-01 00:00:00')",
+        (template["id"],),
+    )
+
+    state = _state()
+    message = FakeMessage(text="/generate", user_id=1)
+    await cmd_generate(message, state)
+
+    data = await state.get_data()
+    assert "template_id" not in data
+    assert query("SELECT * FROM template_selections WHERE telegram_user_id = 1") == []
+
+
+async def test_reply_web_app_choice_clears_server_fallback(isolated_env):
+    """И1: доставленный sendData не оставляет дублирующий выбор на потом."""
+    teacher_id = _create_teacher(1)
+    template = list_templates(teacher_id)[0]
+    execute(
+        "INSERT INTO template_selections (telegram_user_id, template_id, selected_at) "
+        "VALUES (1, ?, CURRENT_TIMESTAMP)",
+        (template["id"],),
+    )
+
+    message = FakeMessage(user_id=1)
+    message.web_app_data = type(
+        "FakeWebAppData", (), {"data": json.dumps({"template_id": template["id"]})}
+    )()
+    state = _state()
+
+    await templates_web_app_choice(message, state)
+
+    assert query("SELECT * FROM template_selections WHERE telegram_user_id = 1") == []
+    assert (await state.get_data())["template_id"] == template["id"]
+    assert template["name"] in message.sent[0]["text"]
 
 
 # =====================================================================

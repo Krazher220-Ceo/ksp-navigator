@@ -29,7 +29,7 @@ import json
 import logging
 import uuid
 from dataclasses import asdict
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from aiogram import Bot, F, Router
@@ -87,6 +87,7 @@ MIN_KSP_FILES = 2
 MAX_KSP_FILES = 5
 SUPPORTED_KSP_EXTENSIONS = {".doc", ".docx"}
 SUPPORTED_KTP_EXTENSIONS = {".docx", ".xlsx"}
+TEMPLATE_SELECTION_TTL = timedelta(minutes=30)
 
 
 # =====================================================================
@@ -619,6 +620,11 @@ async def templates_web_app_choice(message: Message, state: FSMContext) -> None:
         await message.answer(texts.TEMPLATES_CHOSEN_UNKNOWN, reply_markup=keyboards.MAIN_MENU)
         return
 
+    # app.js всегда сохраняет серверный fallback до попытки sendData.
+    # Если sendData всё-таки доставил выбор, fallback уже не нужен и не
+    # должен повторно всплыть при следующей /generate.
+    execute("DELETE FROM template_selections WHERE telegram_user_id = ?", (message.from_user.id,))
+
     await state.clear()
     await state.set_state(Generate.waiting_for_topic)
     await state.update_data(
@@ -1073,9 +1079,34 @@ async def cmd_generate(message: Message, state: FSMContext) -> None:
     teacher = await _require_teacher(message)
     if teacher is None:
         return
+
+    rows = query(
+        "SELECT template_id, selected_at FROM template_selections WHERE telegram_user_id = ?",
+        (message.from_user.id,),
+    )
+    # Выбор одноразовый: удаляем при первой /generate и при успехе, и при
+    # истечении TTL, и если шаблон с тех пор стал недоступен.
+    execute("DELETE FROM template_selections WHERE telegram_user_id = ?", (message.from_user.id,))
+
+    selected_template = None
+    if rows:
+        selected_at = datetime.fromisoformat(str(rows[0]["selected_at"]).replace("Z", "+00:00"))
+        if selected_at.tzinfo is None:
+            selected_at = selected_at.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - selected_at <= TEMPLATE_SELECTION_TTL:
+            available = {template["id"]: template for template in list_templates(teacher["id"])}
+            selected_template = available.get(rows[0]["template_id"])
+
     await state.clear()
     await go_to(state, Generate.waiting_for_topic)
-    await state.update_data(teacher_id=teacher["id"], subject=teacher["subject"])
+    state_data = {"teacher_id": teacher["id"], "subject": teacher["subject"]}
+    if selected_template is not None:
+        state_data["template_id"] = selected_template["id"]
+        await message.answer(
+            texts.TEMPLATES_CHOSEN.format(template_name=selected_template["name"]),
+            reply_markup=keyboards.MAIN_MENU,
+        )
+    await state.update_data(**state_data)
     await _ask_generate_topic(message, state)
 
 
