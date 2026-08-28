@@ -77,6 +77,7 @@ from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
 from core.db import execute, init_db, query
 from core.konspekt_generator import CELI_NOT_STATED_NOTE, KonspektGenerationError
 from core.limits import get_usage_today, record_usage
+from core.pdf_export import PdfExportError
 from core.queue import claim_next, enqueue, recover_stuck_tasks
 from core.transcriber import TranscriptionError
 from core.templates import list_templates, load_builtin_templates
@@ -916,6 +917,11 @@ async def test_generate_ktp_task_handler_sends_document_and_notes_entries(isolat
 
     monkeypatch.setattr(handlers_module, "generate_and_save_ktp", fake_generate_and_save_ktp)
 
+    async def fail_if_pdf_attempted(*args, **kwargs):
+        raise AssertionError("КТП не должен запускать PDF-конвертацию")
+
+    monkeypatch.setattr(handlers_module, "_try_send_pdf", fail_if_pdf_attempted)
+
     bot = FakeBot()
     handler = make_generate_ktp_handler(bot)
     task = {
@@ -1062,6 +1068,11 @@ async def test_generate_ksp_task_handler_sends_document(isolated_env, monkeypatc
     )
     monkeypatch.setattr("bot.handlers.generate_and_save_ksp", fake_generate_and_save_ksp)
 
+    async def fail_if_pdf_attempted(*args, **kwargs):
+        raise AssertionError("КСП не должен запускать PDF-конвертацию")
+
+    monkeypatch.setattr("bot.handlers._try_send_pdf", fail_if_pdf_attempted)
+
     bot = FakeBot()
     handler = make_generate_ksp_handler(bot)
     task = {
@@ -1083,15 +1094,19 @@ async def test_generate_ksp_task_handler_sends_document(isolated_env, monkeypatc
     assert bot.sent_documents[0]["chat_id"] == 42
 
 
-async def test_generate_ksp_task_handler_sends_pdf_alongside_docx(isolated_env, monkeypatch):
-    """Р10: настоящая конвертация (не /tmp/result.docx, а реальный файл
-    из фикстур) — PDF должен уйти вторым документом в тот же чат."""
+async def test_generate_ksp_task_handler_does_not_attempt_pdf_for_real_docx(isolated_env, monkeypatch):
+    """П1: даже существующий .docx КСП уходит без PDF-конвертации."""
     real_docx = str(FIXTURES_DIR / "ksp_sample_1_single_table.docx")
 
     async def fake_generate_and_save_ksp(**kwargs):
         return {"id": "gen-pdf", "docx_path": real_docx}
 
     monkeypatch.setattr("bot.handlers.generate_and_save_ksp", fake_generate_and_save_ksp)
+
+    async def fail_if_pdf_attempted(*args, **kwargs):
+        raise AssertionError("КСП не должен запускать PDF-конвертацию")
+
+    monkeypatch.setattr("bot.handlers._try_send_pdf", fail_if_pdf_attempted)
 
     bot = FakeBot()
     handler = make_generate_ksp_handler(bot)
@@ -1107,11 +1122,9 @@ async def test_generate_ksp_task_handler_sends_pdf_alongside_docx(isolated_env, 
 
     result = await handler(task)
 
-    assert result["pdf_path"] is not None
-    assert result["pdf_path"].endswith(".pdf")
-    assert len(bot.sent_documents) == 2
-    assert bot.sent_documents[1]["chat_id"] == 42
-    assert bot.sent_documents[1]["caption"] == texts.GENERATE_PDF_CAPTION
+    assert result["pdf_path"] is None
+    assert len(bot.sent_documents) == 1
+    assert bot.sent_documents[0]["chat_id"] == 42
 
 
 # =====================================================================
@@ -2540,9 +2553,8 @@ async def test_generate_confirmed_carries_konspekt_text_through_to_task_payload(
 # =====================================================================
 
 
-async def test_konspekt_handler_sends_docx_and_pdf(isolated_env, monkeypatch):
-    """К6: после текста в чат уходят .docx и (реальной конвертацией
-    через LibreOffice, тем же _try_send_pdf, что и у КСП/КТП) .pdf."""
+async def test_konspekt_handler_sends_docx_and_pdf(isolated_env, monkeypatch, tmp_path):
+    """К6/П1: после текста в чат уходят .docx и .pdf конспекта."""
     teacher_id = _create_teacher(960)
     execute(
         "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
@@ -2554,6 +2566,13 @@ async def test_konspekt_handler_sends_docx_and_pdf(isolated_env, monkeypatch):
         return dict(_SAMPLE_KONSPEKT_CONTENT)
 
     monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
+
+    def fake_convert_docx_to_pdf(docx_path):
+        pdf_path = tmp_path / "konspekt.pdf"
+        pdf_path.write_bytes(b"fake pdf")
+        return pdf_path
+
+    monkeypatch.setattr("bot.handlers.convert_docx_to_pdf", fake_convert_docx_to_pdf)
 
     bot = FakeBot()
     handler = make_konspekt_handler(bot)
@@ -2579,6 +2598,41 @@ async def test_konspekt_handler_sends_docx_and_pdf(isolated_env, monkeypatch):
     # текстовые сообщения (К4/К5) никуда не делись
     assert len(bot.sent_messages) == 1
     assert _SAMPLE_KONSPEKT_CONTENT["tema"] in bot.sent_messages[0][1]
+
+
+async def test_konspekt_handler_survives_optional_pdf_failure(isolated_env, monkeypatch):
+    """П1: ошибка необязательного PDF не отменяет готовый конспект."""
+    teacher_id = _create_teacher(965)
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-965', ?, 'audio', 'расшифровка урока', 47, 'ru')",
+        (teacher_id,),
+    )
+
+    async def fake_generate_konspekt(transcript_text, *, llm_client=None, **kwargs):
+        return dict(_SAMPLE_KONSPEKT_CONTENT)
+
+    def fail_pdf_conversion(docx_path):
+        raise PdfExportError("LibreOffice недоступен")
+
+    monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
+    monkeypatch.setattr("bot.handlers.convert_docx_to_pdf", fail_pdf_conversion)
+
+    bot = FakeBot()
+    handler = make_konspekt_handler(bot)
+    task = {
+        "id": "k5-pdf-failed",
+        "type": "generate_konspekt",
+        "telegram_chat_id": 965,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "transcript_id": "tr-965"},
+    }
+
+    result = await handler(task)
+
+    assert result["docx_path"].endswith(".docx")
+    assert len(bot.sent_documents) == 1
+    assert len(bot.sent_messages) == 1
 
 
 async def test_konspekt_handler_stores_docx_path_in_db(isolated_env, monkeypatch):

@@ -1925,15 +1925,13 @@ async def _recognize_textbook_photos(photo_paths: list[str]) -> tuple[str | None
 
 
 async def _try_send_pdf(bot: Bot, chat_id: int, docx_path: Path, caption: str) -> Path | None:
-    """Конвертирует готовый .docx в .pdf и отправляет вторым файлом
-    (блок Р10 — приказ №130 принимает оба формата). Конвертация через
-    LibreOffice блокирующая — обязательно asyncio.to_thread, иначе
-    заморозим бот на время конвертации (та же ловушка, что уже была у
-    core.ksp_parser.ensure_docx).
+    """Конвертирует готовый конспект из .docx в .pdf и отправляет вторым
+    файлом. Конвертация через LibreOffice блокирующая — обязательно
+    asyncio.to_thread, иначе заморозим бот на время конвертации (та же
+    ловушка, что уже была у core.ksp_parser.ensure_docx).
 
-    Мягкий отказ: .docx уже отправлен и сам по себе достаточен для
-    сдачи — если LibreOffice недоступен или упал, просто не шлём PDF,
-    не роняя всю генерацию."""
+    Мягкий отказ: .docx конспекта уже отправлен — если LibreOffice
+    недоступен или упал, просто не шлём PDF и не роняем всю задачу."""
     try:
         pdf_path = await asyncio.to_thread(convert_docx_to_pdf, docx_path)
     except PdfExportError as exc:
@@ -2019,12 +2017,10 @@ def make_generate_ksp_handler(bot: Bot):
 
         await bot.send_document(chat_id, FSInputFile(docx_path), caption=caption, reply_markup=keyboard)
 
-        pdf_path = await _try_send_pdf(bot, chat_id, docx_path, texts.GENERATE_PDF_CAPTION)
-
         return {
             "generated_ksp_id": result["id"],
             "docx_path": str(docx_path),
-            "pdf_path": str(pdf_path) if pdf_path else None,
+            "pdf_path": None,
         }
 
     return handler
@@ -2068,12 +2064,10 @@ def make_generate_ktp_handler(bot: Bot):
 
         await bot.send_document(chat_id, FSInputFile(docx_path), caption=caption)
 
-        pdf_path = await _try_send_pdf(bot, chat_id, docx_path, texts.GENERATE_KTP_PDF_CAPTION)
-
         return {
             "docx_path": str(docx_path),
             "ktp_entries_inserted": result["ktp_entries_inserted"],
-            "pdf_path": str(pdf_path) if pdf_path else None,
+            "pdf_path": None,
         }
 
     return handler
@@ -2191,11 +2185,11 @@ def make_konspekt_handler(bot: Bot):
     спрашивает — только аудио. Расширить это позже можно без изменения
     самого генератора, у него оба параметра уже необязательные.
 
-    К6: сначала .docx (core.konspekt_builder), следом — .pdf тем же
-    _try_send_pdf, что и у КСП/КТП (мягкий отказ, если LibreOffice
-    недоступен, второй конвертации нет). Текстом в чат конспект тоже
-    приходит (К4) — .docx нужен для печати/архива, текст — для быстрого
-    чтения прямо в Telegram, одно другому не мешает.
+    К6/П1: сначала .docx (core.konspekt_builder), следом — .pdf через
+    _try_send_pdf (мягкий отказ, если LibreOffice недоступен, второй
+    конвертации нет). КСП и КТП в PDF больше не отправляются. Текстом в чат
+    конспект тоже приходит (К4) — .docx нужен для печати/архива, текст —
+    для быстрого чтения прямо в Telegram, одно другому не мешает.
 
     К5: последнее ТЕКСТОВОЕ сообщение несёт кнопку «Собрать КСП по этому
     конспекту» — ведёт в ksp_from_konspekt_pressed."""
