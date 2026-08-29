@@ -588,10 +588,10 @@ def test_cennost_and_predznaniya_appear_only_when_present(db_with_builtins, tmp_
     assert "Основы кинематики" in full_text_with
 
 
-# --- Р5.3: колонка "Дифференциация/ООП" и альбомная ориентация ---
+# --- О1: ООП отдельным блоком под таблицей ---
 
 
-def test_oop_column_appears_only_when_flag_set(db_with_builtins, tmp_path):
+def test_oop_support_is_below_unchanged_lesson_table(db_with_builtins, tmp_path):
     official = next(
         t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
         if t["is_official"] == 1
@@ -612,17 +612,17 @@ def test_oop_column_appears_only_when_flag_set(db_with_builtins, tmp_path):
     table = Document(str(with_oop)).tables[0]
     header_row = next(r for r in table.rows if r.cells[0].text.startswith("Этап"))
     header_texts = [c.text for c in header_row.cells]
-    assert "Дифференциация/ООП" in header_texts
-    assert len(header_texts) == 6  # было 5 официальных колонок, теперь 6
+    assert "Дифференциация/ООП" not in header_texts
+    assert len(header_texts) == 5
 
-    full_text = "\n".join(c.text for row in table.rows for c in row.cells)
+    document = Document(str(with_oop))
+    full_text = "\n".join(paragraph.text for paragraph in document.paragraphs)
+    assert "Поддержка обучающихся с особыми образовательными потребностями" in full_text
     assert "Карточка с укрупнённым шрифтом" in full_text
 
 
-def test_six_columns_widths_sum_to_table_width_in_book_orientation(db_with_builtins, tmp_path):
-    """Р5.3, явная ловушка из плана: колонка ООП увеличивает таблицу до
-    шести колонок — ширины обязаны пересчитаться и уложиться в печатную
-    область A4, не уехать за поля."""
+def test_oop_does_not_change_table_widths_in_book_orientation(db_with_builtins, tmp_path):
+    """О1: поддержка ООП не добавляет шестую колонку в форму №130."""
     official = next(
         t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
         if t["is_official"] == 1
@@ -636,7 +636,7 @@ def test_six_columns_widths_sum_to_table_width_in_book_orientation(db_with_built
     table = document.tables[0]
     header_row = next(r for r in table.rows if r.cells[0].text.startswith("Этап"))
     tcs = header_row._tr.findall(f".//{W_NS}tc")
-    assert len(tcs) == 6
+    assert len(tcs) == 5
 
     section = document.sections[0]
     expected_table_width_cm = (section.page_width.cm) - 2 * MARGIN_CM

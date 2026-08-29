@@ -322,6 +322,28 @@ _CARD_FIELD_LABELS = [
     ("reshenie", "Решение:"),
 ]
 
+OOP_SUPPORT_TITLE = "Поддержка обучающихся с особыми образовательными потребностями"
+
+
+def _add_oop_support_section(document: Document, rows_data: list[dict]) -> None:
+    """Выводит адаптации по этапам после таблицы, не меняя форму таблицы №130."""
+    title = document.add_paragraph()
+    title.add_run(OOP_SUPPORT_TITLE).bold = True
+
+    for entry in rows_data:
+        adaptation = str(entry.get("differenciaciya_oop") or "").strip()
+        if not adaptation:
+            continue
+        stage = str(entry.get("etap_vremya") or "").strip()
+        if not stage:
+            stage = " / ".join(
+                part for part in (str(entry.get("etap") or "").strip(), str(entry.get("vremya") or "").strip()) if part
+            )
+        paragraph = document.add_paragraph(style=None)
+        if stage:
+            paragraph.add_run(f"{stage}: ").bold = True
+        paragraph.add_run(adaptation)
+
 
 def _add_razdatochnye_materialy_section(
     document: Document, cards: list[dict], kriterii_uspeha: list[str]
@@ -404,13 +426,6 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
     hod_uroka_columns = list(blocks.get("hod_uroka", {}).get("columns") or _CANONICAL_HOD_UROKA_COLUMNS)
     primechanie_fields = blocks.get("primechanie", {}).get("fields", [])
 
-    # Р5.3: колонка "Дифференциация/ООП" — не часть шаблона (учитель
-    # решает при каждой генерации, не раз навсегда для всех документов
-    # по этому шаблону), поэтому добавляется здесь, а не в structure_json.
-    # Копия списка выше (list(...)) — не трогаем сам объект шаблона.
-    if content.get("ima_oop") and "differenciaciya_oop" not in hod_uroka_columns:
-        hod_uroka_columns.append("differenciaciya_oop")
-
     if "organizaciya" in shapka_fields:
         _add_underline_field(
             document, content.get("organizaciya", ""), "(наименование организации образования)"
@@ -465,6 +480,9 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
         _add_label_value_row(table, _FIELD_LABELS["predvaritelnye_znaniya"], predvaritelnye)
 
     _add_hod_uroka_section(table, hod_uroka_columns, widths, content.get("hod_uroka", []))
+
+    if content.get("ima_oop"):
+        _add_oop_support_section(document, content.get("hod_uroka") or [])
 
     if "adaptaciya_oop" in primechanie_fields:
         # Оба абзаца идут парой в самом приказе, сразу после "Ход урока" —
