@@ -96,13 +96,14 @@ def load_builtin_templates(db_path=None) -> int:
         structure_json = json.dumps({"blocks": data["blocks"]}, ensure_ascii=False)
         execute(
             "INSERT INTO templates "
-            "(name, description, source, is_official, is_builtin, uploaded_by, structure_json) "
-            "VALUES (?, ?, ?, ?, 1, NULL, ?)",
+            "(name, description, source, is_official, is_builtin, category, uploaded_by, structure_json) "
+            "VALUES (?, ?, ?, ?, 1, ?, NULL, ?)",
             (
                 name,
                 data.get("description"),
                 data["source"],
                 int(data["is_official"]),
+                "official" if data["is_official"] else "sample",
                 structure_json,
             ),
             db_path=db_path,
@@ -120,7 +121,7 @@ def list_templates(teacher_id: int, db_path=None) -> list[dict]:
     is_builtin=1 OR uploaded_by=teacher_id."""
     rows = query(
         "SELECT * FROM templates WHERE is_builtin = 1 OR uploaded_by = ? "
-        "ORDER BY is_official DESC, is_builtin DESC, id",
+        "ORDER BY CASE category WHEN 'official' THEN 0 WHEN 'sample' THEN 1 ELSE 2 END, id",
         (teacher_id,),
         db_path=db_path,
     )
@@ -177,8 +178,8 @@ def save_user_template(
 
     new_id = execute(
         "INSERT INTO templates "
-        "(name, description, source, is_official, is_builtin, uploaded_by, structure_json) "
-        "VALUES (?, ?, ?, 0, 0, ?, ?)",
+        "(name, description, source, is_official, is_builtin, category, uploaded_by, structure_json) "
+        "VALUES (?, ?, ?, 0, 0, 'personal', ?, ?)",
         (
             template_name,
             f"Загружен учителем из файла {Path(docx_path).name}",

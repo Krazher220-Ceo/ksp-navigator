@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS templates (
     source TEXT,               -- откуда взят: приказ №130 / интернет / загружен
     is_official INTEGER DEFAULT 0,   -- соответствует приказу №130
     is_builtin INTEGER DEFAULT 0,    -- встроенный или загружен пользователем
+    category TEXT NOT NULL DEFAULT 'personal' CHECK(category IN ('official', 'sample', 'personal')),
     uploaded_by INTEGER REFERENCES teachers(id),  -- NULL для встроенных
     structure_json TEXT NOT NULL,    -- описание блоков и колонок
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

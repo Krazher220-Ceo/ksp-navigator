@@ -107,6 +107,12 @@ def test_exactly_one_builtin_template_is_official(db_with_two_teachers):
     assert "130" in rows[0]["source"]
 
 
+def test_builtin_templates_receive_categories(db_with_two_teachers):
+    load_builtin_templates(db_path=db_with_two_teachers)
+    rows = query("SELECT category FROM templates WHERE is_builtin = 1", db_path=db_with_two_teachers)
+    assert {row["category"] for row in rows} == {"official", "sample"}
+
+
 # --- Б4.3: list_templates / get_template ---
 
 
