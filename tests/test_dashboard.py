@@ -263,7 +263,7 @@ def test_usage_today_reflects_recorded_generations(db_path):
         "generate_ksp": 3,
         "generate_ktp": 1,
         "generate_ksp_limit": 5,
-        "generate_ktp_limit": 2,
+        "generate_ktp_limit": 1,
     }
 
 

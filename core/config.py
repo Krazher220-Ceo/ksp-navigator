@@ -70,6 +70,7 @@ class Settings:
     # инциденте живучести (core/incidents.py). Не задан — некому слать,
     # бот не падает из-за этого (тот же принцип, что webapp_url).
     admin_telegram_chat_id: int | None
+    admin_password: str | None
 
     # К1 (PLAN_STAGE2.md): whisper.cpp — все три читаются здесь БЕЗ
     # проверки существования (whisper_binary может отсутствовать в PATH,
@@ -169,6 +170,7 @@ def _build_settings() -> Settings:
         webapp_url=_env("WEBAPP_URL"),
         webapp_port=webapp_port,
         admin_telegram_chat_id=admin_telegram_chat_id,
+        admin_password=_env("ADMIN_PASSWORD"),
         whisper_binary=_env("WHISPER_BINARY", "whisper-cli"),
         whisper_model_path=_env("WHISPER_MODEL_PATH"),
         whisper_language=_env("WHISPER_LANGUAGE", "ru"),

@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import re
+import secrets
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -54,7 +55,10 @@ from core.config import settings
 from core.dashboard import collect as collect_dashboard
 from core.db import execute, query
 from core.generation_defaults import collect as collect_generation_defaults
-from core.limits import DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_token_limit, get_usage_today, record_usage
+from core.limits import (
+    DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_token_limit,
+    get_usage_today, grant_admin_access, record_usage,
+)
 from core.ksp_generator import (
     MAX_VIDY_DEYATELNOSTI,
     LessonOptions,
@@ -140,7 +144,13 @@ async def _check_and_report_limits(message: Message, telegram_user_id: int, oper
         check_token_limit(telegram_user_id)
     except LimitExceeded as exc:
         reset_time = exc.reset_at.strftime("%H:%M")
-        if operation in DAILY_COUNT_LIMITS and exc.limit == DAILY_COUNT_LIMITS[operation]:
+        if exc.period == "week":
+            text = texts.LIMIT_WEEKLY_COUNT_EXCEEDED.format(
+                operation_label=_LIMIT_OPERATION_LABELS.get(operation, operation),
+                used=exc.used, limit=exc.limit,
+                reset_date=exc.reset_at.strftime("%d.%m.%Y"), reset_time=reset_time,
+            )
+        elif operation in DAILY_COUNT_LIMITS and exc.limit == DAILY_COUNT_LIMITS[operation]:
             text = texts.LIMIT_COUNT_EXCEEDED.format(
                 operation_label=_LIMIT_OPERATION_LABELS.get(operation, operation),
                 used=exc.used, limit=exc.limit, reset_time=reset_time,
@@ -150,6 +160,35 @@ async def _check_and_report_limits(message: Message, telegram_user_id: int, oper
         await message.answer(text, reply_markup=keyboards.MAIN_MENU)
         return False
     return True
+
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message, bot: Bot) -> None:
+    """Л1: персонально и на сутки снимает лимиты после проверки пароля."""
+    configured_password = settings.admin_password
+    if not configured_password:
+        await message.answer(texts.ADMIN_UNAVAILABLE, reply_markup=keyboards.MAIN_MENU)
+        return
+
+    _, _, supplied_password = (message.text or "").partition(" ")
+    if not supplied_password:
+        await message.answer(texts.ADMIN_USAGE, reply_markup=keyboards.MAIN_MENU)
+        return
+
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception:
+        logger.warning("Не удалось удалить сообщение с паролем команды /admin", exc_info=True)
+
+    if not secrets.compare_digest(supplied_password.strip().encode(), configured_password.encode()):
+        await message.answer(texts.ADMIN_DENIED, reply_markup=keyboards.MAIN_MENU)
+        return
+
+    expires_at = grant_admin_access(message.from_user.id)
+    await message.answer(
+        texts.ADMIN_GRANTED.format(expires_at=expires_at.strftime("%d.%m.%Y %H:%M")),
+        reply_markup=keyboards.MAIN_MENU,
+    )
 
 
 # =====================================================================

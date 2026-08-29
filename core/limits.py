@@ -36,8 +36,8 @@ KOSTANAY_TZ = timezone(timedelta(hours=5))
 # 0.6, п.5: "по количеству не ограничены").
 DAILY_COUNT_LIMITS = {
     "generate_ksp": 5,
-    "generate_ktp": 2,
 }
+WEEKLY_COUNT_LIMITS = {"generate_ktp": 1}
 
 DAILY_TOKEN_LIMIT = 1_000_000
 
@@ -48,11 +48,12 @@ class LimitExceeded(Exception):
     сколько потрачено и сколько разрешено, не просто "лимит исчерпан"
     (М6.3, требование плана)."""
 
-    def __init__(self, message: str, *, reset_at: datetime, used: int, limit: int):
+    def __init__(self, message: str, *, reset_at: datetime, used: int, limit: int, period: str = "day"):
         super().__init__(message)
         self.reset_at = reset_at
         self.used = used
         self.limit = limit
+        self.period = period
 
 
 def _today_kostanay() -> str:
@@ -68,30 +69,78 @@ def next_reset_kostanay() -> datetime:
     return datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=KOSTANAY_TZ)
 
 
+def _week_start_kostanay() -> str:
+    today = datetime.now(KOSTANAY_TZ).date()
+    return (today - timedelta(days=today.weekday())).isoformat()
+
+
+def next_week_reset_kostanay() -> datetime:
+    today = datetime.now(KOSTANAY_TZ).date()
+    next_monday = today + timedelta(days=7 - today.weekday())
+    return datetime(next_monday.year, next_monday.month, next_monday.day, tzinfo=KOSTANAY_TZ)
+
+
+def has_admin_access(telegram_user_id: int, db_path=None) -> bool:
+    rows = query("SELECT expires_at FROM admin_access WHERE telegram_user_id = ?", (telegram_user_id,), db_path=db_path)
+    if not rows:
+        return False
+    expires_at = datetime.fromisoformat(rows[0]["expires_at"])
+    if expires_at <= datetime.now(KOSTANAY_TZ):
+        execute("DELETE FROM admin_access WHERE telegram_user_id = ?", (telegram_user_id,), db_path=db_path)
+        return False
+    return True
+
+
+def grant_admin_access(telegram_user_id: int, db_path=None, duration: timedelta = timedelta(days=1)) -> datetime:
+    expires_at = datetime.now(KOSTANAY_TZ) + duration
+    execute(
+        "INSERT INTO admin_access (telegram_user_id, expires_at) VALUES (?, ?) "
+        "ON CONFLICT(telegram_user_id) DO UPDATE SET expires_at = excluded.expires_at",
+        (telegram_user_id, expires_at.isoformat()), db_path=db_path,
+    )
+    return expires_at
+
+
 def check_count_limit(telegram_user_id: int, operation: str, db_path=None) -> None:
     """Бросает LimitExceeded, если operation уже достигла дневного лимита
     по количеству. Для операций без лимита (нет в DAILY_COUNT_LIMITS) —
     не проверяет вообще, ничего не бросает. Вызывать ДО постановки задачи
     в очередь (М6.2) — проверка после генерации уже потратила бы то, что
     хотели сэкономить."""
-    limit = DAILY_COUNT_LIMITS.get(operation)
-    if limit is None:
+    if has_admin_access(telegram_user_id, db_path=db_path):
         return
-
-    day = _today_kostanay()
-    rows = query(
-        "SELECT count FROM usage_daily WHERE telegram_user_id = ? AND day = ? AND operation = ?",
-        (telegram_user_id, day, operation),
-        db_path=db_path,
-    )
-    used = rows[0]["count"] if rows else 0
-    if used >= limit:
-        raise LimitExceeded(
-            f"дневной лимит операции '{operation}' исчерпан: {used}/{limit}",
-            reset_at=next_reset_kostanay(),
-            used=used,
-            limit=limit,
+    limit = DAILY_COUNT_LIMITS.get(operation)
+    if limit is not None:
+        day = _today_kostanay()
+        rows = query(
+            "SELECT count FROM usage_daily WHERE telegram_user_id = ? AND day = ? AND operation = ?",
+            (telegram_user_id, day, operation),
+            db_path=db_path,
         )
+        used = rows[0]["count"] if rows else 0
+        if used >= limit:
+            raise LimitExceeded(
+                f"дневной лимит операции '{operation}' исчерпан: {used}/{limit}",
+                reset_at=next_reset_kostanay(),
+                used=used,
+                limit=limit,
+            )
+
+    weekly_limit = WEEKLY_COUNT_LIMITS.get(operation)
+    if weekly_limit is None:
+        return
+    rows = query(
+        "SELECT COALESCE(SUM(count), 0) AS total FROM usage_daily "
+        "WHERE telegram_user_id = ? AND operation = ? AND day >= ?",
+        (telegram_user_id, operation, _week_start_kostanay()), db_path=db_path,
+    )
+    used = rows[0]["total"]
+    if used >= weekly_limit:
+        raise LimitExceeded(
+            f"недельный лимит операции '{operation}' исчерпан: {used}/{weekly_limit}",
+            reset_at=next_week_reset_kostanay(), used=used, limit=weekly_limit, period="week",
+        )
+
 
 
 def check_token_limit(telegram_user_id: int, db_path=None) -> None:
@@ -99,6 +148,8 @@ def check_token_limit(telegram_user_id: int, db_path=None) -> None:
     сутки по ВСЕМ операциям сразу, не может учесть токены самого
     предстоящего вызова. Вызывать ДО постановки задачи в очередь, как и
     check_count_limit."""
+    if has_admin_access(telegram_user_id, db_path=db_path):
+        return
     day = _today_kostanay()
     rows = query(
         "SELECT SUM(tokens) AS total FROM usage_daily WHERE telegram_user_id = ? AND day = ?",

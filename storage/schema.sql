@@ -122,6 +122,11 @@ CREATE TABLE IF NOT EXISTS usage_daily (
     PRIMARY KEY (telegram_user_id, day, operation)
 );
 
+CREATE TABLE IF NOT EXISTS admin_access (
+    telegram_user_id INTEGER PRIMARY KEY,
+    expires_at TEXT NOT NULL
+);
+
 -- transcripts/konspekty — аудио урока (блоки К2-К5, PLAN_STAGE2.md).
 -- Цепочка одна: аудиозапись -> whisper.cpp -> transcripts -> konspekty ->
 -- КСП. Конспект БЕЗ транскрипта (source='audio' обязателен на входе)

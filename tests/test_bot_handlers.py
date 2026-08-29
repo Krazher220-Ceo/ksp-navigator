@@ -182,6 +182,7 @@ class FakeMessage:
         self.voice = voice
         self.audio = audio
         self.sent: list[dict] = []
+        self.message_id = 1
 
     async def answer(self, text, reply_markup=None, **kwargs):
         self.sent.append({"text": text, "reply_markup": reply_markup})
@@ -209,6 +210,10 @@ class FakeBot:
         self.sent_documents: list[dict] = []
         self.set_commands_calls: list[list] = []
         self.set_chat_menu_button_calls: list = []
+        self.deleted_messages: list[tuple[int, int]] = []
+
+    async def delete_message(self, chat_id, message_id):
+        self.deleted_messages.append((chat_id, message_id))
 
     async def download(self, file, destination):
         Path(destination).write_bytes(b"fake ksp/ktp file content for tests")
@@ -2023,13 +2028,56 @@ async def test_fifth_generate_ksp_confirm_still_passes(isolated_env):
 async def test_limit_check_does_not_consume_quota_by_itself(isolated_env):
     """Сама проверка лимита (check_count_limit) — только чтение, не
     списание: повторный вызов той же самой проверки не меняет счётчик."""
-    from core.limits import check_count_limit
+    from core.limits import LimitExceeded, check_count_limit
 
     _create_teacher(952)
     check_count_limit(952, "generate_ksp")
     check_count_limit(952, "generate_ksp")
     usage = get_usage_today(952)
     assert usage["counts"].get("generate_ksp", 0) == 0
+
+
+async def test_admin_command_grants_temporary_access_and_deletes_password_message(isolated_env):
+    from bot.handlers import cmd_admin
+    from core.config import settings as core_settings
+    from core.limits import LimitExceeded, check_count_limit
+
+    original_password = core_settings.admin_password
+    object.__setattr__(core_settings, "admin_password", "проверочный-пароль")
+    try:
+        message = FakeMessage(text="/admin проверочный-пароль", user_id=960, chat_id=960)
+        bot = FakeBot()
+        await cmd_admin(message, bot)
+
+        assert bot.deleted_messages == [(960, 1)]
+        assert "сняты" in message.sent[-1]["text"]
+        for _ in range(5):
+            record_usage(960, "generate_ksp", count_delta=1)
+        check_count_limit(960, "generate_ksp")
+    finally:
+        object.__setattr__(core_settings, "admin_password", original_password)
+
+
+async def test_admin_command_rejects_wrong_password_without_bypass(isolated_env):
+    from bot.handlers import cmd_admin
+    from core.config import settings as core_settings
+    from core.limits import LimitExceeded, check_count_limit
+
+    original_password = core_settings.admin_password
+    object.__setattr__(core_settings, "admin_password", "верный")
+    try:
+        message = FakeMessage(text="/admin неверный", user_id=961, chat_id=961)
+        bot = FakeBot()
+        await cmd_admin(message, bot)
+
+        assert bot.deleted_messages == [(961, 1)]
+        assert message.sent[-1]["text"] == texts.ADMIN_DENIED
+        for _ in range(5):
+            record_usage(961, "generate_ksp", count_delta=1)
+        with pytest.raises(LimitExceeded):
+            check_count_limit(961, "generate_ksp")
+    finally:
+        object.__setattr__(core_settings, "admin_password", original_password)
 
 
 # =====================================================================

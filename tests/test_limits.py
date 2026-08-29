@@ -17,11 +17,15 @@ from core.limits import (
     DAILY_TOKEN_LIMIT,
     KOSTANAY_TZ,
     LimitExceeded,
+    WEEKLY_COUNT_LIMITS,
     check_count_limit,
     check_token_limit,
     get_usage_today,
     next_reset_kostanay,
     record_usage,
+    grant_admin_access,
+    has_admin_access,
+    next_week_reset_kostanay,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -52,13 +56,34 @@ def test_generate_ksp_fifth_passes_sixth_raises(db_path):
     assert exc_info.value.limit == 5
 
 
-def test_generate_ktp_limit_is_two(db_path):
-    assert DAILY_COUNT_LIMITS["generate_ktp"] == 2
-    for i in range(2):
-        check_count_limit(111, "generate_ktp", db_path=db_path)
-        record_usage(111, "generate_ktp", count_delta=1, db_path=db_path)
+def test_generate_ktp_limit_is_one_per_calendar_week(db_path):
+    assert WEEKLY_COUNT_LIMITS["generate_ktp"] == 1
+    check_count_limit(111, "generate_ktp", db_path=db_path)
+    record_usage(111, "generate_ktp", count_delta=1, db_path=db_path)
     with pytest.raises(LimitExceeded):
         check_count_limit(111, "generate_ktp", db_path=db_path)
+
+
+def test_weekly_ktp_limit_reports_next_monday_reset(db_path):
+    record_usage(111, "generate_ktp", count_delta=1, db_path=db_path)
+
+    with pytest.raises(LimitExceeded) as exc_info:
+        check_count_limit(111, "generate_ktp", db_path=db_path)
+
+    assert exc_info.value.period == "week"
+    assert exc_info.value.reset_at == next_week_reset_kostanay()
+    assert exc_info.value.reset_at.weekday() == 0
+
+
+def test_temporary_admin_access_bypasses_count_and_token_limits(db_path):
+    for _ in range(5):
+        record_usage(111, "generate_ksp", count_delta=1, db_path=db_path)
+    record_usage(111, "generate_ksp", tokens_delta=DAILY_TOKEN_LIMIT, db_path=db_path)
+    grant_admin_access(111, db_path=db_path)
+
+    assert has_admin_access(111, db_path=db_path) is True
+    check_count_limit(111, "generate_ksp", db_path=db_path)
+    check_token_limit(111, db_path=db_path)
 
 
 def test_operation_without_configured_limit_never_raises(db_path):

@@ -180,7 +180,7 @@ def _collect_usage_today(teacher_id: int, db_path=None) -> dict:
     # быть обязательной зависимостью для тех, кто использует только
     # collect() без блока М6 (например, будущие тесты этого модуля,
     # написанные раньше М6 — не роняем их лишним импортом).
-    from core.limits import DAILY_COUNT_LIMITS, get_usage_today
+    from core.limits import DAILY_COUNT_LIMITS, WEEKLY_COUNT_LIMITS, get_usage_today
 
     chat_id = _resolve_telegram_chat_id(teacher_id, db_path=db_path)
     if chat_id is None:
@@ -192,7 +192,7 @@ def _collect_usage_today(teacher_id: int, db_path=None) -> dict:
         "generate_ksp": counts.get("generate_ksp", 0),
         "generate_ktp": counts.get("generate_ktp", 0),
         "generate_ksp_limit": DAILY_COUNT_LIMITS["generate_ksp"],
-        "generate_ktp_limit": DAILY_COUNT_LIMITS["generate_ktp"],
+        "generate_ktp_limit": WEEKLY_COUNT_LIMITS["generate_ktp"],
     }
 
 
