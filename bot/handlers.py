@@ -78,6 +78,7 @@ from core.pdf_export import PdfExportError, convert_docx_to_pdf
 from core.queue import MAX_RETRIES, enqueue
 from core.templates import get_template, list_templates, save_user_template
 from core.textbook_ocr import TextbookOCRError, recognize_textbook_page
+from core.adal_azamat import find_project_key_by_name, get_project, list_projects
 from core.values import find_value_key_by_name, get_value, list_values
 
 logger = logging.getLogger(__name__)
@@ -946,6 +947,7 @@ async def konspekt_wrong_input(message: Message) -> None:
 # требование блока Р5 ("не превращать диалог в анкету из 30 вопросов").
 _EXTRA_OPTION_KEY_ALIASES = {
     "ценность": "cennost",
+    "проект адал азамат": "adal_azamat_project",
     "виды деятельности": "vidy_deyatelnosti",
     "ооп": "ima_oop",
     "сор": "sor",
@@ -991,6 +993,12 @@ def _parse_lesson_options_text(text: str) -> tuple[LessonOptions, list[str]]:
                 unrecognized.append(f"неизвестное значение «{value}» для «{key_name}»")
                 continue
             options.cennost_key = key
+        elif field == "adal_azamat_project":
+            key = find_project_key_by_name(value)
+            if key is None:
+                unrecognized.append(f"неизвестное значение «{value}» для «{key_name}»")
+                continue
+            options.adal_azamat_project_key = key
         elif field == "vidy_deyatelnosti":
             options.vidy_deyatelnosti = [v.strip() for v in value.split(",") if v.strip()][:MAX_VIDY_DEYATELNOSTI]
         elif field in {"ima_oop", "sor", "fizkultminutka"}:
@@ -1049,6 +1057,10 @@ def _format_extra_options_summary(options_dict: dict | None) -> str:
         value = get_value(options.cennost_key)
         if value:
             bits.append(f"ценность «{value['name']}»")
+    if options.adal_azamat_project_key:
+        project = get_project(options.adal_azamat_project_key)
+        if project:
+            bits.append(f"проект «{project['name']}»")
     if options.vidy_deyatelnosti:
         bits.append("виды деятельности: " + ", ".join(options.vidy_deyatelnosti))
     if options.ima_oop:
@@ -1121,7 +1133,10 @@ async def _ask_generate_textbook_photos(message: Message, state: FSMContext) -> 
 
 
 async def _ask_generate_extra_options(message: Message, state: FSMContext) -> None:
-    await message.answer(texts.GENERATE_OPTIONS_QUICK_PROMPT, reply_markup=keyboards.lesson_options_quick_keyboard(list_values()))
+    await message.answer(
+        texts.GENERATE_OPTIONS_QUICK_PROMPT,
+        reply_markup=keyboards.lesson_options_quick_keyboard(list_values(), list_projects()),
+    )
 
 
 async def _ask_generate_template(message: Message, state: FSMContext) -> None:
@@ -1473,6 +1488,11 @@ async def generate_option_button_pressed(callback: CallbackQuery, state: FSMCont
         options.cennost_key = None if choice == "value:none" else choice.split(":", 1)[1]
         await state.update_data(options=asdict(options))
         await callback.answer(texts.GENERATE_OPTIONS_VALUE_SELECTED)
+        return
+    if choice.startswith("project:"):
+        options.adal_azamat_project_key = None if choice == "project:none" else choice.split(":", 1)[1]
+        await state.update_data(options=asdict(options))
+        await callback.answer(texts.GENERATE_OPTIONS_PROJECT_SELECTED)
         return
     lesson_types = {"type:combined": "комбинированный", "type:new": "изучение нового материала", "type:practice": "закрепление", "type:control": "контроль"}
     if choice in lesson_types:

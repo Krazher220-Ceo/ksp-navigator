@@ -78,6 +78,7 @@ _FIELD_LABELS = {
     "chasy": "Часы:",
     # Р5.1/Р5.3 — не часть официальной формы, content-driven (см. build_docx).
     "cennost_integracii": "Ценность для интеграции:",
+    "proekt_adal_azamat": "Проект программы «Адал Азамат»:",
     "predvaritelnye_znaniya": "Предварительные знания:",
 }
 
@@ -453,6 +454,10 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
     cennost_name = content.get("cennost_integracii")
     if cennost_name:
         _add_label_value_row(table, _FIELD_LABELS["cennost_integracii"], cennost_name)
+
+    adal_azamat_project = content.get("proekt_adal_azamat")
+    if adal_azamat_project:
+        _add_label_value_row(table, _FIELD_LABELS["proekt_adal_azamat"], adal_azamat_project)
 
     # Р5.3: предварительные знания — тоже content-driven, тот же принцип.
     predvaritelnye = content.get("predvaritelnye_znaniya")

@@ -594,6 +594,7 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
         # словарь, а не null.
         "options": {
             "cennost_key": None,
+            "adal_azamat_project_key": None,
             "vidy_deyatelnosti": [],
             "ima_oop": False,
             "sor_instead_of_reflection": False,
@@ -682,6 +683,17 @@ async def test_generate_value_button_sets_same_key_as_text_input(isolated_env):
     await generate_option_button_pressed(callback, state)
 
     assert (await state.get_data())["options"]["cennost_key"] == "zakon_poryadok"
+
+
+async def test_generate_adal_azamat_project_button_sets_project_key(isolated_env):
+    from bot.handlers import generate_option_button_pressed
+
+    state = _state()
+    await state.set_state(Generate.waiting_for_extra_options)
+    callback = FakeCallbackQuery(data="opt:project:smart_bala", message=FakeMessage())
+    await generate_option_button_pressed(callback, state)
+
+    assert (await state.get_data())["options"]["adal_azamat_project_key"] == "smart_bala"
 
 
 async def test_generate_confirmation_shows_source_of_fast_values(isolated_env):

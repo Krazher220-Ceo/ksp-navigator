@@ -28,6 +28,7 @@ from core.db import execute, query
 from core.docx_builder import build_docx, build_filename
 from core.llm_client import LLMClient
 from core.templates import get_template
+from core.adal_azamat import get_project
 from core.values import get_value
 
 # =====================================================================
@@ -70,6 +71,7 @@ class LessonOptions:
     получает ровно тот же результат, что и до блока Р5."""
 
     cennost_key: str | None = None  # ключ из core.values.VALUES
+    adal_azamat_project_key: str | None = None  # ключ из core.adal_azamat.PROJECTS
     vidy_deyatelnosti: list[str] = field(default_factory=list)  # до MAX_VIDY_DEYATELNOSTI
     ima_oop: bool = False
     sor_instead_of_reflection: bool = False
@@ -189,6 +191,11 @@ TASK_FIZKULTMINUTKA_INSTRUCTION = (
 )
 TASK_TIP_UROKA_LABEL = "Тип урока:"
 TASK_MEZHPREDMETNYE_SVYAZI_LABEL = "Учти межпредметные связи с предметами:"
+TASK_ADAL_AZAMAT_INSTRUCTION = (
+    "Проект программы «Адал Азамат»: {name} ({direction}). Упоминай связь "
+    "с проектом только если она действительно следует из темы и содержания урока; "
+    "не придумывай такую связь ради формальности."
+)
 
 # Р6.2: текст страницы учебника, распознанный по фото (core.textbook_ocr).
 TASK_TEXTBOOK_HEADER = (
@@ -219,6 +226,10 @@ def _render_lesson_options(options: "LessonOptions | None") -> str:
     cennost = get_value(options.cennost_key) if options.cennost_key else None
     if cennost:
         lines.append(f"{TASK_CENNOST_LABEL} {cennost['name']} — {cennost['goal']}.")
+
+    project = get_project(options.adal_azamat_project_key) if options.adal_azamat_project_key else None
+    if project:
+        lines.append(TASK_ADAL_AZAMAT_INSTRUCTION.format(**project))
 
     if options.vidy_deyatelnosti:
         lines.append(f"{TASK_VIDY_DEYATELNOSTI_LABEL} {', '.join(options.vidy_deyatelnosti)}.")
@@ -831,7 +842,8 @@ def _fill_header_fields(
     Уже заполненные значения не перетираются: если content почему-то
     пришёл с этими полями, приоритет у него.
 
-    options (Р5.1/Р5.3) — cennost_integracii/predvaritelnye_znaniya/
+    options (Р5.1/Р5.3/А2) — cennost_integracii/proekt_adal_azamat/
+    predvaritelnye_znaniya/
     page_orientation/ima_oop здесь же: их значения система знает сама
     (учитель выбрал ценность из справочника, вписал текст, выбрал
     ориентацию) — модель их не генерирует и не должна, это не то же
@@ -864,6 +876,10 @@ def _fill_header_fields(
             value = get_value(options.cennost_key)
             if value:
                 filled["cennost_integracii"] = value["name"]
+        if options.adal_azamat_project_key:
+            project = get_project(options.adal_azamat_project_key)
+            if project:
+                filled["proekt_adal_azamat"] = project["name"]
         if options.predvaritelnye_znaniya:
             filled["predvaritelnye_znaniya"] = options.predvaritelnye_znaniya
         if options.page_orientation == "album":

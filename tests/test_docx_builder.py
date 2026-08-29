@@ -574,14 +574,17 @@ def test_cennost_and_predznaniya_appear_only_when_present(db_with_builtins, tmp_
     without = build_docx(SAMPLE_CONTENT, official, tmp_path / "without.docx")
     full_text_without = _full_text(tmp_path / "without.docx")
     assert _FIELD_LABELS["cennost_integracii"] not in full_text_without
+    assert _FIELD_LABELS["proekt_adal_azamat"] not in full_text_without
     assert _FIELD_LABELS["predvaritelnye_znaniya"] not in full_text_without
 
     content = dict(SAMPLE_CONTENT)
     content["cennost_integracii"] = "Созидание и новаторство"
+    content["proekt_adal_azamat"] = "Ұшқыр ой алаңы"
     content["predvaritelnye_znaniya"] = "Основы кинематики"
     with_values = build_docx(content, official, tmp_path / "with.docx")
     full_text_with = _full_text(tmp_path / "with.docx")
     assert "Созидание и новаторство" in full_text_with
+    assert "Ұшқыр ой алаңы" in full_text_with
     assert "Основы кинематики" in full_text_with
 
 

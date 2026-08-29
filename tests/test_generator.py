@@ -360,6 +360,17 @@ def test_prompt_includes_cennost_name_and_goal_when_chosen():
     assert "инновационное мышление" in prompt.lower()
 
 
+def test_prompt_includes_selected_adal_azamat_project_without_inventing_connection():
+    prompt = build_prompt(
+        "Тема", "Раздел", None, "10А", DURATION,
+        options=LessonOptions(adal_azamat_project_key="smart_bala"),
+    )
+
+    assert "Smart Bala" in prompt
+    assert "развитие IT-компетенций" in prompt
+    assert "не придумывай такую связь" in prompt
+
+
 def test_prompt_ignores_unknown_cennost_key():
     options = LessonOptions(cennost_key="несуществующий_ключ")
     prompt = build_prompt("Тема", "Раздел", None, "10А", DURATION, options=options)
@@ -402,12 +413,14 @@ def test_prompt_includes_tip_uroka_and_mezhpredmetnye_svyazi():
 def test_fill_header_fields_stamps_cennost_predznaniya_orientation_oop():
     options = LessonOptions(
         cennost_key="edinstvo_solidarnost",
+        adal_azamat_project_key="kamkor",
         predvaritelnye_znaniya="Основы кинематики",
         page_orientation="album",
         ima_oop=True,
     )
     filled = _fill_header_fields({}, teacher_id=1, klass="10А", generated_at="2026-09-01", options=options)
     assert filled["cennost_integracii"] == "Единство и солидарность"
+    assert filled["proekt_adal_azamat"] == "Қамқор"
     assert filled["predvaritelnye_znaniya"] == "Основы кинематики"
     assert filled["page_orientation"] == "album"
     assert filled["ima_oop"] is True
@@ -415,7 +428,7 @@ def test_fill_header_fields_stamps_cennost_predznaniya_orientation_oop():
 
 def test_fill_header_fields_without_options_does_not_add_new_keys():
     filled = _fill_header_fields({}, teacher_id=1, klass="10А", generated_at="2026-09-01")
-    for key in ("cennost_integracii", "predvaritelnye_znaniya", "page_orientation", "ima_oop"):
+    for key in ("cennost_integracii", "proekt_adal_azamat", "predvaritelnye_znaniya", "page_orientation", "ima_oop"):
         assert key not in filled
 
 
