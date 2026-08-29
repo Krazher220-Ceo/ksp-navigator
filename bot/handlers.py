@@ -78,7 +78,7 @@ from core.pdf_export import PdfExportError, convert_docx_to_pdf
 from core.queue import MAX_RETRIES, enqueue
 from core.templates import get_template, list_templates, save_user_template
 from core.textbook_ocr import TextbookOCRError, recognize_textbook_page
-from core.values import find_value_key_by_name, get_value
+from core.values import find_value_key_by_name, get_value, list_values
 
 logger = logging.getLogger(__name__)
 
@@ -1105,7 +1105,7 @@ async def _ask_generate_textbook_photos(message: Message, state: FSMContext) -> 
 
 
 async def _ask_generate_extra_options(message: Message, state: FSMContext) -> None:
-    await message.answer(texts.GENERATE_OPTIONS_QUICK_PROMPT, reply_markup=keyboards.lesson_options_quick_keyboard())
+    await message.answer(texts.GENERATE_OPTIONS_QUICK_PROMPT, reply_markup=keyboards.lesson_options_quick_keyboard(list_values()))
 
 
 async def _ask_generate_template(message: Message, state: FSMContext) -> None:
@@ -1453,6 +1453,11 @@ async def generate_option_button_pressed(callback: CallbackQuery, state: FSMCont
         return
     data = await state.get_data()
     options = LessonOptions(**(data.get("options") or {}))
+    if choice.startswith("value:"):
+        options.cennost_key = None if choice == "value:none" else choice.split(":", 1)[1]
+        await state.update_data(options=asdict(options))
+        await callback.answer(texts.GENERATE_OPTIONS_VALUE_SELECTED)
+        return
     lesson_types = {"type:combined": "комбинированный", "type:new": "изучение нового материала", "type:practice": "закрепление", "type:control": "контроль"}
     if choice in lesson_types:
         options.tip_uroka = lesson_types[choice]

@@ -176,6 +176,8 @@ GENERATE_OPTIONS_ORIENTATION_ALBUM = "Альбомная страница"
 GENERATE_OPTIONS_ORIENTATION_BOOK = "Книжная страница"
 GENERATE_OPTIONS_TYPE_SELECTED = "Тип урока выбран"
 GENERATE_OPTIONS_ORIENTATION_SELECTED = "Альбомная ориентация выбрана"
+GENERATE_OPTIONS_VALUE_NONE = "— Не выбрано —"
+GENERATE_OPTIONS_VALUE_SELECTED = "Ценность выбрана"
 GENERATE_EXTRA_OPTIONS_UNRECOGNIZED_NOTE = (
     "⚠️ Не могу применить настройки: {lines}. Исправьте значения и отправьте сообщение ещё раз."
 )

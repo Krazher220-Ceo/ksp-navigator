@@ -673,6 +673,17 @@ async def test_generate_option_button_sets_lesson_type(isolated_env):
     assert (await state.get_data())["options"]["tip_uroka"] == "контроль"
 
 
+async def test_generate_value_button_sets_same_key_as_text_input(isolated_env):
+    from bot.handlers import generate_option_button_pressed
+
+    state = _state()
+    await state.set_state(Generate.waiting_for_extra_options)
+    callback = FakeCallbackQuery(data="opt:value:zakon_poryadok", message=FakeMessage())
+    await generate_option_button_pressed(callback, state)
+
+    assert (await state.get_data())["options"]["cennost_key"] == "zakon_poryadok"
+
+
 async def test_generate_ktp_full_flow_enqueues_task_with_correct_payload(isolated_env):
     from bot.handlers import (
         cmd_generate_ktp,

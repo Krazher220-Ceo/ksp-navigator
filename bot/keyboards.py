@@ -130,9 +130,9 @@ def with_back_row(rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarku
     )
 
 
-def lesson_options_quick_keyboard() -> InlineKeyboardMarkup:
+def lesson_options_quick_keyboard(values: list[dict] | None = None) -> InlineKeyboardMarkup:
     """Главные настройки Ф2; состояние остаётся одним и тем же."""
-    return with_back_row([
+    rows = [
         [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_OOP, callback_data="opt:ima_oop")],
         [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_SOR, callback_data="opt:sor")],
         [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_FIZ, callback_data="opt:fiz")],
@@ -144,4 +144,10 @@ def lesson_options_quick_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_ORIENTATION_BOOK, callback_data="opt:orientation:book")],
         [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_MORE, callback_data="opt:more")],
         [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_DONE, callback_data="opt:done")],
-    ])
+    ]
+    if values:
+        rows = [[InlineKeyboardButton(text=texts.GENERATE_OPTIONS_VALUE_NONE, callback_data="opt:value:none")]] + [
+            [InlineKeyboardButton(text=value["name"], callback_data=f"opt:value:{value['key']}")]
+            for value in values
+        ] + rows
+    return with_back_row(rows)
