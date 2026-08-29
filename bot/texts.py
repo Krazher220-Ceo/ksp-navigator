@@ -194,6 +194,7 @@ GENERATE_CONFIRM_SUMMARY = (
     "{textbook_photos_line}"
     "{extra_options_line}"
 )
+GENERATE_CONFIRM_SOURCE = " ({source})"
 GENERATE_EXTRA_OPTIONS_LINE = "Доп. настройки: {summary}\n"
 GENERATE_TEXTBOOK_PHOTOS_LINE = "Фото учебника: {count}\n"
 GENERATE_CONFIRM_BUTTON = "✅ Сгенерировать"

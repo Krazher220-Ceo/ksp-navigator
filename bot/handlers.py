@@ -1493,13 +1493,17 @@ async def _render_generate_confirmation(message: Message, state: FSMContext) -> 
         return False
 
     photo_paths = data.get("textbook_photo_paths") or []
+    sources = data.get("sources") or {}
+    def shown(field: str, value: object) -> str:
+        source = sources.get(field)
+        return f"{value}{texts.GENERATE_CONFIRM_SOURCE.format(source=source)}" if source else str(value)
     summary = texts.GENERATE_CONFIRM_SUMMARY.format(
         topic=data["topic"],
-        razdel=data["razdel"],
-        objective_code=data.get("objective_code") or "не указан",
-        klass=data["klass"],
-        duration=data["duration_minutes"],
-        template_name=template["name"],
+        razdel=shown("razdel", data["razdel"]),
+        objective_code=shown("objective_code", data.get("objective_code") or "не указан"),
+        klass=shown("klass", data["klass"]),
+        duration=shown("duration_minutes", data["duration_minutes"]),
+        template_name=shown("template_id", template["name"]),
         textbook_photos_line=texts.GENERATE_TEXTBOOK_PHOTOS_LINE.format(count=len(photo_paths)) if photo_paths else "",
         extra_options_line=_format_extra_options_summary(data.get("options")),
     )

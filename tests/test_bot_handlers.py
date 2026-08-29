@@ -684,6 +684,23 @@ async def test_generate_value_button_sets_same_key_as_text_input(isolated_env):
     assert (await state.get_data())["options"]["cennost_key"] == "zakon_poryadok"
 
 
+async def test_generate_confirmation_shows_source_of_fast_values(isolated_env):
+    from bot.handlers import _render_generate_confirmation
+
+    teacher_id = _create_teacher(98)
+    template_id = query("SELECT id FROM templates WHERE is_builtin = 1")[0]["id"]
+    state = _state()
+    await state.update_data(
+        teacher_id=teacher_id, template_id=template_id, topic="Тема", razdel="Раздел",
+        objective_code="10.1.1.1", klass="10", duration_minutes=45,
+        sources={"razdel": "КТП", "klass": "прошлая генерация"},
+    )
+    message = FakeMessage()
+    assert await _render_generate_confirmation(message, state)
+    assert "Раздел (КТП)" in message.sent[-1]["text"]
+    assert "Класс: 10 (прошлая генерация)" in message.sent[-1]["text"]
+
+
 async def test_generate_ktp_full_flow_enqueues_task_with_correct_payload(isolated_env):
     from bot.handlers import (
         cmd_generate_ktp,
