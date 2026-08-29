@@ -341,7 +341,10 @@
     const bodyEl = document.getElementById("preview-table-body");
     bodyEl.innerHTML = rows.map(function (row) {
       return "<tr>" + HOD_UROKA_COLUMNS.map(function (c) {
-        return "<td>" + escapeHtml(row[c.key]) + "</td>";
+        const mobileClass = c.key === "etap" ? " preview-stage-cell" :
+          (c.key === "vremya" ? " preview-time-cell" : "");
+        return '<td class="preview-cell' + mobileClass + '" data-label="' + escapeHtml(c.label) + '">' +
+          escapeHtml(row[c.key]) + "</td>";
       }).join("") + "</tr>";
     }).join("");
 

@@ -300,6 +300,76 @@ table.hod-uroka tr:last-child td {
   border-bottom: none;
 }
 
+/* М1: в Mini App основной экран — телефон. Вместо постоянной прокрутки
+   широкой таблицы строка урока становится карточкой: этап и время сверху,
+   остальные поля с подписями ниже. На широком экране таблица не меняется. */
+@media (max-width: 600px) {
+  .table-scroll {
+    border: none;
+    overflow: visible;
+  }
+
+  table.hod-uroka {
+    min-width: 0;
+  }
+
+  table.hod-uroka thead {
+    display: none;
+  }
+
+  table.hod-uroka,
+  table.hod-uroka tbody,
+  table.hod-uroka tr,
+  table.hod-uroka td {
+    display: block;
+    width: 100%;
+  }
+
+  table.hod-uroka tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    background: var(--tg-secondary-bg);
+    border-radius: 10px;
+    margin-bottom: 10px;
+    padding: 8px 12px;
+  }
+
+  table.hod-uroka td {
+    border: none;
+    padding: 7px 0;
+    white-space: pre-line;
+    grid-column: 1 / -1;
+  }
+
+  table.hod-uroka td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--tg-hint);
+    font-size: 12px;
+    margin-bottom: 2px;
+  }
+
+  table.hod-uroka td.preview-stage-cell {
+    grid-column: 1;
+    font-weight: 600;
+    font-size: 14px;
+    padding-top: 2px;
+  }
+
+  table.hod-uroka td.preview-stage-cell::before,
+  table.hod-uroka td.preview-time-cell::before {
+    display: none;
+  }
+
+  table.hod-uroka td.preview-time-cell {
+    grid-column: 2;
+    color: var(--tg-hint);
+    font-size: 12px;
+    padding-top: 4px;
+    text-align: right;
+  }
+}
+
 /* --- Р3.3: раздаточные материалы (необязательный блок предпросмотра) --- */
 
 .materialy-card {
