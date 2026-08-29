@@ -289,6 +289,16 @@ def test_build_prompt_includes_konspekt_text_when_given():
     assert "Путь — скаляр" in prompt
 
 
+def test_build_prompt_directs_model_to_use_real_teacher_phrases_from_transcript():
+    """К2: расшифровка — источник реплик педагога, а не повод их выдумать."""
+    prompt = build_prompt(
+        "Кинематика", "Механика", None, "10А", DURATION,
+        konspekt_text="Учитель: Откройте тетради. Запишите тему урока.",
+    )
+    assert "реальные реплики педагога" in prompt
+    assert "Если для этапа реплик нет" in prompt
+
+
 def test_build_prompt_without_konspekt_text_unchanged():
     without = build_prompt("Тема", "Раздел", None, "10А", DURATION)
     with_empty = build_prompt("Тема", "Раздел", None, "10А", DURATION, konspekt_text=None)

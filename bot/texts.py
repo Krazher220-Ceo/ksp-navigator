@@ -496,6 +496,10 @@ KONSPEKT_TRANSCRIBE_RETRY_DISABLED = (
 
 KSP_FROM_KONSPEKT_BUTTON = "📋 Собрать КСП по этому конспекту"
 KSP_FROM_KONSPEKT_NOT_FOUND = "Не нашёл этот конспект — возможно, он относится к другому профилю."
+KSP_FROM_KONSPEKT_LONG_TRANSCRIPT_WARNING = (
+    "Запись длится дольше часа. Передаю расшифровку в КСП целиком: "
+    "проверьте получившиеся реплики педагога особенно внимательно."
+)
 
 # --- К6: конспект файлом (.docx/.pdf) ---
 

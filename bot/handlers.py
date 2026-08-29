@@ -88,6 +88,7 @@ MAX_KSP_FILES = 5
 SUPPORTED_KSP_EXTENSIONS = {".doc", ".docx"}
 SUPPORTED_KTP_EXTENSIONS = {".docx", ".xlsx"}
 TEMPLATE_SELECTION_TTL = timedelta(minutes=30)
+LONG_KONSPEKT_TRANSCRIPT_SECONDS = 60 * 60
 
 
 # =====================================================================
@@ -1180,19 +1181,38 @@ async def ksp_from_konspekt_pressed(callback: CallbackQuery, state: FSMContext) 
     # Отсутствие записи и чужой konspekt_id дают один и тот же ответ — тот
     # же приём, что history_resend (не подтверждаем существование чужой
     # записи чужому пользователю).
-    rows = query("SELECT teacher_id, content_json FROM konspekty WHERE id = ?", (konspekt_id,))
+    rows = query(
+        "SELECT teacher_id, transcript_id, mode, content_json FROM konspekty WHERE id = ?",
+        (konspekt_id,),
+    )
     if not rows or rows[0]["teacher_id"] != teacher["id"]:
         await callback.answer(texts.KSP_FROM_KONSPEKT_NOT_FOUND, show_alert=True)
         return
 
-    content = json.loads(rows[0]["content_json"])
+    konspekt = rows[0]
+    content = json.loads(konspekt["content_json"])
+    konspekt_text = format_konspekt_text(content)
+
+    if konspekt["mode"] == "teacher":
+        transcript_rows = query(
+            "SELECT text, duration_seconds FROM transcripts WHERE id = ? AND teacher_id = ?",
+            (konspekt["transcript_id"], teacher["id"]),
+        )
+        if not transcript_rows:
+            await callback.answer(texts.KSP_FROM_KONSPEKT_NOT_FOUND, show_alert=True)
+            return
+
+        transcript = transcript_rows[0]
+        konspekt_text = transcript["text"]
+        if (transcript["duration_seconds"] or 0) > LONG_KONSPEKT_TRANSCRIPT_SECONDS:
+            await callback.message.answer(texts.KSP_FROM_KONSPEKT_LONG_TRANSCRIPT_WARNING)
 
     await state.clear()
     await go_to(state, Generate.waiting_for_topic)
     await state.update_data(
         teacher_id=teacher["id"],
         subject=teacher["subject"],
-        konspekt_text=format_konspekt_text(content),
+        konspekt_text=konspekt_text,
     )
 
     student_content = content.get("konspekt_uchenika", content)

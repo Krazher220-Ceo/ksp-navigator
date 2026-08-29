@@ -2766,6 +2766,37 @@ async def test_ksp_from_konspekt_pressed_prefills_topic_and_stores_konspekt_text
     assert callback.answered  # callback.answer() вызван — не висит "часиками" в клиенте
 
 
+async def test_ksp_from_teacher_transcript_passes_raw_recording_to_ksp(isolated_env):
+    """К2: учительский режим передаёт в КСП запись как первоисточник, без
+    попытки отформатировать её в ученический конспект."""
+    teacher_id = _create_teacher(957)
+    transcript_id = "tr-957"
+    konspekt_id = "ksp-src-957"
+    transcript_text = "Откройте тетради. Сегодня разберём второй закон Ньютона."
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, mode, text, duration_seconds, language) "
+        "VALUES (?, ?, 'audio', 'teacher', ?, 3700, 'ru')",
+        (transcript_id, teacher_id, transcript_text),
+    )
+    execute(
+        "INSERT INTO konspekty (id, teacher_id, transcript_id, mode, tema, content_json) "
+        "VALUES (?, ?, ?, 'teacher', ?, ?)",
+        (konspekt_id, teacher_id, transcript_id, "Расшифровка урока", json.dumps({
+            "tema": "Расшифровка урока", "transcript_text": transcript_text,
+        }, ensure_ascii=False)),
+    )
+
+    state = _state()
+    message = FakeMessage(user_id=957, chat_id=957)
+    callback = FakeCallbackQuery(data=f"ksp_from_konspekt:{konspekt_id}", message=message, user_id=957)
+    await ksp_from_konspekt_pressed(callback, state)
+
+    data = await state.get_data()
+    assert data["konspekt_text"] == transcript_text
+    assert any("дольше часа" in item["text"] for item in message.sent)
+    assert callback.answered
+
+
 async def test_ksp_from_konspekt_pressed_rejects_foreign_konspekt(isolated_env):
     owner_id = _create_teacher(952)
     stranger_id = _create_teacher(953)
