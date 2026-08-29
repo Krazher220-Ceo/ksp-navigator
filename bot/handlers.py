@@ -1195,7 +1195,8 @@ async def ksp_from_konspekt_pressed(callback: CallbackQuery, state: FSMContext) 
         konspekt_text=format_konspekt_text(content),
     )
 
-    await _proceed_with_topic(callback.message, state, content["tema"])
+    student_content = content.get("konspekt_uchenika", content)
+    await _proceed_with_topic(callback.message, state, student_content["tema"])
     await callback.answer()
 
 
@@ -2338,7 +2339,8 @@ def make_konspekt_handler(bot: Bot):
         # блокирует надолго (в отличие от whisper/ffmpeg/LibreOffice) —
         # тот же приём, что уже используют core.ksp_generator.save_generated_ksp
         # и core.ktp_generator (build_docx без asyncio.to_thread).
-        filename = build_konspekt_filename(content.get("tema", ""), datetime.now().date())
+        student_content = content.get("konspekt_uchenika", content)
+        filename = build_konspekt_filename(student_content.get("tema", ""), datetime.now().date())
         docx_path = build_konspekt_docx(content, settings.generated_dir / filename)
 
         execute(
@@ -2349,14 +2351,14 @@ def make_konspekt_handler(bot: Bot):
                 payload["teacher_id"],
                 payload["transcript_id"],
                 rows[0]["mode"],
-                content["tema"],
+                student_content["tema"],
                 json.dumps(content, ensure_ascii=False),
                 str(docx_path),
             ),
         )
 
         await bot.send_document(
-            chat_id, FSInputFile(docx_path), caption=texts.KONSPEKT_DOCX_CAPTION.format(tema=content["tema"])
+            chat_id, FSInputFile(docx_path), caption=texts.KONSPEKT_DOCX_CAPTION.format(tema=student_content["tema"])
         )
         await _try_send_pdf(bot, chat_id, docx_path, texts.KONSPEKT_PDF_CAPTION)
 
@@ -2413,11 +2415,18 @@ def _split_for_telegram(text: str) -> list[str]:
 def format_konspekt_text(content: dict) -> str:
     """Текстовое представление конспекта для бота — .docx появится в
     блоке К6, здесь пока только текст сообщения."""
-    lines = [f"📝 Конспект: {content['tema']}", ""]
+    student = content.get("konspekt_uchenika", content)
+    lines = ["📝 Конспект урока", "", texts.KONSPEKT_REPLICAS_NOTICE, "", "Опорные реплики учителя:"]
+    replicas = content.get("opornye_repliki") or []
+    if replicas:
+        lines.extend(f"• {replica}" for replica in replicas)
+    else:
+        lines.append("• опорных реплик в записи не нашлось")
+    lines.extend(["", "Конспект для ученика:", f"Тема: {student['tema']}", ""])
 
     lines.append("Цели:")
-    if content.get("celi"):
-        lines.extend(f"• {c}" for c in content["celi"])
+    if student.get("celi"):
+        lines.extend(f"• {c}" for c in student["celi"])
     else:
         # Аудит этапа 2, находка 1: пустые цели — законный результат, а не
         # недоделка. Раздел показываем всегда, чтобы читатель не гадал,
@@ -2425,35 +2434,35 @@ def format_konspekt_text(content: dict) -> str:
         lines.append(f"• {CELI_NOT_STATED_NOTE}")
     lines.append("")
 
-    if content.get("glavnoe"):
+    if student.get("glavnoe"):
         lines.append("Главное:")
-        lines.extend(f"• {g}" for g in content["glavnoe"])
+        lines.extend(f"• {g}" for g in student["glavnoe"])
         lines.append("")
 
-    if content.get("formuly"):
+    if student.get("formuly"):
         lines.append("Формулы:")
-        for f in content["formuly"]:
+        for f in student["formuly"]:
             lines.append(f"• {f['formula']} — {f['znachenie']}")
         lines.append("")
 
-    if content.get("terminy"):
+    if student.get("terminy"):
         lines.append("Термины:")
-        for t in content["terminy"]:
+        for t in student["terminy"]:
             lines.append(f"• {t['termin']}: {t['opredelenie']}")
         lines.append("")
 
-    if content.get("primery"):
+    if student.get("primery"):
         lines.append("Примеры:")
-        lines.extend(f"• {p}" for p in content["primery"])
+        lines.extend(f"• {p}" for p in student["primery"])
         lines.append("")
 
-    if content.get("voprosy_dlya_samoproverki"):
+    if student.get("voprosy_dlya_samoproverki"):
         lines.append("Вопросы для самопроверки:")
-        lines.extend(f"• {q}" for q in content["voprosy_dlya_samoproverki"])
+        lines.extend(f"• {q}" for q in student["voprosy_dlya_samoproverki"])
         lines.append("")
 
-    if content.get("domashnee_zadanie"):
-        lines.append(f"Домашнее задание: {content['domashnee_zadanie']}")
+    if student.get("domashnee_zadanie"):
+        lines.append(f"Домашнее задание: {student['domashnee_zadanie']}")
 
     return "\n".join(lines).strip()
 

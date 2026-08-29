@@ -94,37 +94,44 @@ def build_konspekt_docx(content: dict, out_path: Path | str) -> Path:
     document = Document()
     _apply_page_setup(document)
     _add_notice(document)
-    _add_title(document, content.get("tema", ""))
+    # Старые записи в базе были сохранены до К1 плоским словарём. Они
+    # остаются читаемыми, а новые ответы имеют два явных раздела.
+    student = content.get("konspekt_uchenika", content)
+    _add_title(document, student.get("tema", ""))
+
+    _add_heading(document, "Опорные реплики учителя:")
+    _add_bullets(document, content.get("opornye_repliki") or ["опорных реплик в записи не нашлось"])
+    _add_heading(document, "Конспект для ученика:")
 
     # Аудит этапа 2, находка 1: раздел «Цели» печатается всегда — пустые
     # цели это законный результат (на записи их не прозвучало), а не
     # потерянные данные, и читатель документа должен видеть разницу.
     _add_heading(document, "Цели:")
-    _add_bullets(document, content.get("celi") or [CELI_NOT_STATED_NOTE])
+    _add_bullets(document, student.get("celi") or [CELI_NOT_STATED_NOTE])
 
-    if content.get("glavnoe"):
+    if student.get("glavnoe"):
         _add_heading(document, "Главное:")
-        _add_bullets(document, content["glavnoe"])
+        _add_bullets(document, student["glavnoe"])
 
-    if content.get("formuly"):
+    if student.get("formuly"):
         _add_heading(document, "Формулы:")
-        _add_bullets(document, [f"{f['formula']} — {f['znachenie']}" for f in content["formuly"]])
+        _add_bullets(document, [f"{f['formula']} — {f['znachenie']}" for f in student["formuly"]])
 
-    if content.get("terminy"):
+    if student.get("terminy"):
         _add_heading(document, "Термины:")
-        _add_bullets(document, [f"{t['termin']}: {t['opredelenie']}" for t in content["terminy"]])
+        _add_bullets(document, [f"{t['termin']}: {t['opredelenie']}" for t in student["terminy"]])
 
-    if content.get("primery"):
+    if student.get("primery"):
         _add_heading(document, "Примеры:")
-        _add_bullets(document, content["primery"])
+        _add_bullets(document, student["primery"])
 
-    if content.get("voprosy_dlya_samoproverki"):
+    if student.get("voprosy_dlya_samoproverki"):
         _add_heading(document, "Вопросы для самопроверки:")
-        _add_bullets(document, content["voprosy_dlya_samoproverki"])
+        _add_bullets(document, student["voprosy_dlya_samoproverki"])
 
-    if content.get("domashnee_zadanie"):
+    if student.get("domashnee_zadanie"):
         _add_heading(document, "Домашнее задание:")
-        document.add_paragraph(content["domashnee_zadanie"])
+        document.add_paragraph(student["domashnee_zadanie"])
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)

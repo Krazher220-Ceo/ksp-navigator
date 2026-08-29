@@ -25,6 +25,11 @@ SAMPLE_CONTENT = {
     "domashnee_zadanie": "§12, задачи 1-3",
 }
 
+NESTED_CONTENT = {
+    "opornye_repliki": ["Здравствуйте, начинаем урок.", "Откройте тетради и решите задачу."],
+    "konspekt_uchenika": SAMPLE_CONTENT,
+}
+
 
 def _all_text(document: Document) -> str:
     return "\n".join(p.text for p in document.paragraphs)
@@ -74,6 +79,17 @@ def test_all_sections_with_data_are_rendered(tmp_path):
     assert "Решили задачу про поезд" in text
     assert "Чем отличается путь от перемещения?" in text
     assert "§12, задачи 1-3" in text
+
+
+def test_docx_puts_opornye_repliki_before_student_summary(tmp_path):
+    out_path = tmp_path / "konspekt_s_replikami.docx"
+    build_konspekt_docx(NESTED_CONTENT, out_path)
+
+    text = _all_text(Document(str(out_path)))
+    assert "Опорные реплики учителя:" in text
+    assert "Конспект для ученика:" in text
+    assert text.index("Здравствуйте, начинаем урок.") < text.index("Конспект для ученика:")
+    assert text.index("Конспект для ученика:") < text.index("Главное:")
 
 
 def test_empty_sections_are_not_rendered(tmp_path):

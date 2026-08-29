@@ -2655,7 +2655,8 @@ async def test_konspekt_done_carries_selected_mode_to_queue(isolated_env):
 
 def test_format_konspekt_text_includes_all_sections():
     text = format_konspekt_text(_SAMPLE_KONSPEKT_CONTENT)
-    assert text.startswith("📝 Конспект: Кинематика: путь и перемещение")
+    assert text.startswith("📝 Конспект урока")
+    assert "Конспект для ученика:" in text
     assert "Различать путь и перемещение" in text
     assert "s = v*t — путь при равномерном движении" in text
     assert "перемещение: вектор из начальной точки в конечную" in text
@@ -2663,6 +2664,20 @@ def test_format_konspekt_text_includes_all_sections():
     # пустые секции (primery, domashnee_zadanie) не оставляют "хвостов" в тексте
     assert "Примеры:" not in text
     assert "Домашнее задание:" not in text
+
+
+def test_format_konspekt_text_shows_replics_before_student_summary():
+    content = {
+        "opornye_repliki": ["Здравствуйте, начинаем урок.", "Откройте тетради."],
+        "konspekt_uchenika": dict(_SAMPLE_KONSPEKT_CONTENT),
+    }
+
+    text = format_konspekt_text(content)
+
+    assert "Опорные реплики учителя:" in text
+    assert "Конспект для ученика:" in text
+    assert texts.KONSPEKT_REPLICAS_NOTICE in text
+    assert text.index("Здравствуйте, начинаем урок.") < text.index("Конспект для ученика:")
 
 
 def test_format_konspekt_text_empty_celi_says_so_instead_of_hiding_section():

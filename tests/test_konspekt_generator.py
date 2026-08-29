@@ -29,6 +29,15 @@ VALID_CONTENT = {
     "domashnee_zadanie": "§15, задачи 1-3",
 }
 
+NESTED_CONTENT = {
+    "opornye_repliki": ["Здравствуйте, начинаем урок.", "Откройте тетради и решите задачу.", "На сегодня всё, до свидания."],
+    "konspekt_uchenika": VALID_CONTENT,
+}
+
+
+def _nested(student_content: dict) -> dict:
+    return {"opornye_repliki": list(NESTED_CONTENT["opornye_repliki"]), "konspekt_uchenika": student_content}
+
 
 class _ScriptedLLMClient:
     """Тот же приём, что в tests/test_generator.py — отдаёт заранее
@@ -97,25 +106,39 @@ def test_build_prompt_transcript_is_placed_after_hints():
 
 
 async def test_generate_konspekt_valid_response_passes_without_repair():
-    fake = _ScriptedLLMClient([VALID_CONTENT])
+    fake = _ScriptedLLMClient([NESTED_CONTENT])
     result = await generate_konspekt("текст расшифровки урока", llm_client=fake)
-    assert result == VALID_CONTENT
+    assert result == NESTED_CONTENT
     assert len(fake.calls) == 1
 
 
+def test_schema_requires_two_top_level_sections_and_prompt_limits_replics():
+    from core.konspekt_generator import KONSPEKT_RESPONSE_SCHEMA, SYSTEM_PROMPT
+
+    assert set(KONSPEKT_RESPONSE_SCHEMA["required"]) == {"opornye_repliki", "konspekt_uchenika"}
+    assert "одной-двух реплик" in SYSTEM_PROMPT
+
+
+def test_validate_rejects_too_many_opornye_repliki():
+    from core.konspekt_generator import _validate_konspekt_content
+
+    content = {**NESTED_CONTENT, "opornye_repliki": [f"реплика {index}" for index in range(11)]}
+    assert any("opornye_repliki" in problem for problem in _validate_konspekt_content(content))
+
+
 async def test_generate_konspekt_missing_field_triggers_one_repair_then_succeeds():
-    broken = {k: v for k, v in VALID_CONTENT.items() if k != "glavnoe"}
-    fake = _ScriptedLLMClient([broken, VALID_CONTENT])
+    broken = _nested({k: v for k, v in VALID_CONTENT.items() if k != "glavnoe"})
+    fake = _ScriptedLLMClient([broken, NESTED_CONTENT])
 
     result = await generate_konspekt("текст расшифровки", llm_client=fake)
 
-    assert result == VALID_CONTENT
+    assert result == NESTED_CONTENT
     assert len(fake.calls) == 2
     assert "glavnoe" in fake.calls[1]["user"]  # причина провала попала в повторный промпт
 
 
 async def test_generate_konspekt_second_failure_raises_error():
-    broken = {k: v for k, v in VALID_CONTENT.items() if k != "celi"}
+    broken = _nested({k: v for k, v in VALID_CONTENT.items() if k != "celi"})
     fake = _ScriptedLLMClient([broken, broken])
 
     with pytest.raises(KonspektGenerationError):
@@ -128,19 +151,19 @@ async def test_generate_konspekt_empty_celi_is_accepted_not_invented():
     приниматься как есть, ОДНИМ вызовом: до правки он отклонялся, уходил на
     ремонт и заканчивался KonspektGenerationError, то есть честность
     наказывалась потерей всего конспекта."""
-    honest = {**VALID_CONTENT, "celi": []}
+    honest = _nested({**VALID_CONTENT, "celi": []})
     fake = _ScriptedLLMClient([honest])
 
     result = await generate_konspekt("расшифровка без озвученных целей", llm_client=fake)
 
     assert result == honest
-    assert result["celi"] == []  # пустое осталось пустым, ничего не дописано
+    assert result["konspekt_uchenika"]["celi"] == []  # пустое осталось пустым, ничего не дописано
     assert len(fake.calls) == 1  # ремонтного вызова не было — платить дважды не за что
 
 
 async def test_validate_konspekt_content_does_not_complain_about_empty_celi():
     """Та же находка на уровне самого валидатора, без обхода через LLM."""
-    problems = _validate_konspekt_content({**VALID_CONTENT, "celi": []})
+    problems = _validate_konspekt_content(_nested({**VALID_CONTENT, "celi": []}))
     assert problems == []
 
 
@@ -148,24 +171,24 @@ async def test_generate_konspekt_empty_glavnoe_still_rejected_after_celi_fix():
     """Граница правки находки 1: смягчили ТОЛЬКО 'celi'. Пустой 'glavnoe'
     по-прежнему невалиден — конспект без главных тезисов бессмыслен, это
     обосновано в самом коде и правкой не затронуто."""
-    broken = {**VALID_CONTENT, "glavnoe": [], "celi": []}
-    fake = _ScriptedLLMClient([broken, VALID_CONTENT])
+    broken = _nested({**VALID_CONTENT, "glavnoe": [], "celi": []})
+    fake = _ScriptedLLMClient([broken, NESTED_CONTENT])
     result = await generate_konspekt("текст расшифровки", llm_client=fake)
-    assert result == VALID_CONTENT
+    assert result == NESTED_CONTENT
     assert len(fake.calls) == 2  # ремонт был вызван именно из-за glavnoe
 
 
 async def test_generate_konspekt_empty_glavnoe_list_is_rejected():
     """Конспект без главных тезисов бессмыслен — пустой 'glavnoe'
     считается невалидным ответом, не тихо принимается."""
-    broken = {**VALID_CONTENT, "glavnoe": []}
-    fake = _ScriptedLLMClient([broken, VALID_CONTENT])
+    broken = _nested({**VALID_CONTENT, "glavnoe": []})
+    fake = _ScriptedLLMClient([broken, NESTED_CONTENT])
     result = await generate_konspekt("текст расшифровки", llm_client=fake)
-    assert result == VALID_CONTENT
+    assert result == NESTED_CONTENT
 
 
 async def test_generate_konspekt_passes_topic_and_objective_to_prompt():
-    fake = _ScriptedLLMClient([VALID_CONTENT])
+    fake = _ScriptedLLMClient([NESTED_CONTENT])
     await generate_konspekt(
         "текст расшифровки", topic="Закон Ома", objective_code="10.1.4.1", llm_client=fake
     )
@@ -173,10 +196,10 @@ async def test_generate_konspekt_passes_topic_and_objective_to_prompt():
 
 
 async def test_generate_konspekt_incomplete_formula_triggers_repair():
-    broken = {**VALID_CONTENT, "formuly": [{"formula": "p = m*v"}]}  # нет znachenie
-    fake = _ScriptedLLMClient([broken, VALID_CONTENT])
+    broken = _nested({**VALID_CONTENT, "formuly": [{"formula": "p = m*v"}]})  # нет znachenie
+    fake = _ScriptedLLMClient([broken, NESTED_CONTENT])
     result = await generate_konspekt("текст расшифровки", llm_client=fake)
-    assert result == VALID_CONTENT
+    assert result == NESTED_CONTENT
     assert "formuly" in fake.calls[1]["user"]
 
 

@@ -27,6 +27,9 @@ PLAN_STAGE2.md).
   PLAN_STAGE3.md, отложено до сентября). Формулировка результата —
   "не нашлось упоминания цели X", не "покрытие N%".
 - **Не строит .docx/.pdf** — это core/konspekt_builder.py (блок К6).
+- **Не определяет говорящих.** Диаризации в проекте нет: опорные реплики
+  выделяются по смыслу расшифровки и могут ошибочно попасть не к тому
+  говорящему.
 
 На что опирается: core.llm_client.LLMClient (тот же мультипровайдерный
 клиент, что и core.ksp_generator/core.ktp_generator), core.db (для
@@ -49,12 +52,18 @@ SYSTEM_PROMPT = (
     "своим знаниям предмета. Расшифровка может быть неточной (ошибки "
     "распознавания речи) — если фраза непонятна, пропусти её, а не "
     "додумывай.\n\n"
+    "Сначала выдели опорные реплики: приветствие, объявление темы, постановку "
+    "задачи, формулировку задания и завершение урока. Это не стенограмма: "
+    "не более одной-двух реплик на каждую опорную точку. Реплики "
+    "выделяются по смыслу расшифровки без определения говорящих, поэтому не "
+    "приписывай их конкретному человеку. Можно исправить только очевидную "
+    "ошибку распознавания в понятном контексте; непонятную фразу пропусти.\n\n"
     "Формулы пиши обычным текстом (например: p = m*v), без специальной "
     "разметки — LaTeX и подобный рендер здесь не поддерживается.\n\n"
     "Отвечай строго в формате JSON по заданной схеме, без пояснений."
 )
 
-KONSPEKT_RESPONSE_SCHEMA = {
+KONSPEKT_UCHENIKA_SCHEMA = {
     "type": "object",
     "properties": {
         "tema": {"type": "string", "description": "Тема урока, как она следует из расшифровки."},
@@ -104,7 +113,21 @@ KONSPEKT_RESPONSE_SCHEMA = {
     "required": ["tema", "celi", "glavnoe", "voprosy_dlya_samoproverki", "domashnee_zadanie"],
 }
 
-_REQUIRED_TOP_LEVEL_KEYS = tuple(KONSPEKT_RESPONSE_SCHEMA["required"])
+KONSPEKT_RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "opornye_repliki": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Опорные реплики по ходу урока, не более одной-двух на точку, без стенограммы.",
+        },
+        "konspekt_uchenika": KONSPEKT_UCHENIKA_SCHEMA,
+    },
+    "required": ["opornye_repliki", "konspekt_uchenika"],
+}
+
+_REQUIRED_STUDENT_KEYS = tuple(KONSPEKT_UCHENIKA_SCHEMA["required"])
+_MAX_OPORNYE_REPLIKI = 10
 
 # Что показать вместо раздела «Цели», когда целей на записи не прозвучало
 # (аудит этапа 2, находка 1). Молча пропустить раздел здесь нельзя: читатель
@@ -164,14 +187,14 @@ def _build_repair_prompt(original_prompt: str, problems: list[str]) -> str:
     return f"{original_prompt}\n\n{REPAIR_HEADER}\n{problems_text}\n\n{REPAIR_INSTRUCTION}"
 
 
-def _validate_konspekt_content(content: dict) -> list[str]:
+def _validate_konspekt_uchenika(content: dict) -> list[str]:
     """Возвращает список найденных проблем (пустой = валидно). Ничего не
     чинит и не дописывает заглушками — только диагностика, решение
     (повтор/ошибка) принимает вызывающий код (тот же принцип, что
     core.ksp_generator._validate_ksp_content, Б6.2)."""
     problems: list[str] = []
 
-    for key in _REQUIRED_TOP_LEVEL_KEYS:
+    for key in _REQUIRED_STUDENT_KEYS:
         if key not in content:
             problems.append(f"отсутствует обязательное поле '{key}'")
     if problems:
@@ -209,6 +232,29 @@ def _validate_konspekt_content(content: dict) -> list[str]:
         if not termin.get("termin") or not termin.get("opredelenie"):
             problems.append(f"terminy[{i}] неполный (нужны termin и opredelenie)")
 
+    return problems
+
+
+def _validate_konspekt_content(content: dict) -> list[str]:
+    """Проверяет две части конспекта, не дописывая отсутствующее."""
+    problems: list[str] = []
+    for key in KONSPEKT_RESPONSE_SCHEMA["required"]:
+        if key not in content:
+            problems.append(f"отсутствует обязательное поле '{key}'")
+    if problems:
+        return problems
+
+    replicas = content["opornye_repliki"]
+    if not isinstance(replicas, list) or not all(isinstance(item, str) and item.strip() for item in replicas):
+        problems.append("'opornye_repliki' должен быть списком непустых строк")
+    elif len(replicas) > _MAX_OPORNYE_REPLIKI:
+        problems.append(f"'opornye_repliki' содержит больше {_MAX_OPORNYE_REPLIKI} реплик")
+
+    student = content["konspekt_uchenika"]
+    if not isinstance(student, dict):
+        problems.append("'konspekt_uchenika' не объект")
+    else:
+        problems.extend(_validate_konspekt_uchenika(student))
     return problems
 
 
