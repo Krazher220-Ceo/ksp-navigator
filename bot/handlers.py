@@ -27,6 +27,7 @@ Bot для отправки файлов/сообщений; создаются 
 import asyncio
 import json
 import logging
+import re
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -52,6 +53,7 @@ from bot.states import Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKS
 from core.config import settings
 from core.dashboard import collect as collect_dashboard
 from core.db import execute, query
+from core.generation_defaults import collect as collect_generation_defaults
 from core.limits import DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_token_limit, get_usage_today, record_usage
 from core.ksp_generator import (
     MAX_VIDY_DEYATELNOSTI,
@@ -1227,8 +1229,23 @@ async def _proceed_with_topic(message: Message, state: FSMContext, topic: str) -
     ksp_from_konspekt_pressed): код цели угадывается тем же способом в
     обоих случаях, не двумя разными."""
     data = await state.get_data()
-    code = guess_objective_code(data["teacher_id"], topic)
-    await state.update_data(topic=topic, objective_code=code)
+    defaults = collect_generation_defaults(data["teacher_id"], topic)
+    defaults["duration_minutes"] = 45
+    defaults["sources"]["duration_minutes"] = "стандарт"
+    if "template_id" not in defaults and all(defaults.get(field) is not None for field in ("razdel", "objective_code", "klass")):
+        official = next((item for item in list_templates(data["teacher_id"]) if item["is_official"]), None)
+        if official:
+            defaults["template_id"] = official["id"]
+            defaults["sources"]["template_id"] = "официальная форма №130"
+    await state.update_data(**defaults)
+    data = await state.get_data()
+
+    if all(data.get(field) is not None for field in ("razdel", "objective_code", "klass", "duration_minutes", "template_id")):
+        await _enter_generate_confirmation(message, state, data["template_id"])
+        return
+
+    code = data.get("objective_code") or guess_objective_code(data["teacher_id"], topic)
+    await state.update_data(objective_code=code)
 
     if code:
         await message.answer(texts.GENERATE_OBJECTIVE_AUTO_FOUND.format(code=code))
@@ -1270,7 +1287,12 @@ async def generate_razdel_received(message: Message, state: FSMContext) -> None:
 
 @router.message(Generate.waiting_for_klass)
 async def generate_klass_received(message: Message, state: FSMContext) -> None:
-    klass = (message.text or "").strip()
+    entered_klass = (message.text or "").strip()
+    match = re.search(r"\d+", entered_klass)
+    if match is None:
+        await message.answer(texts.GENERATE_KLASS_NOT_A_NUMBER)
+        return
+    klass = match.group(0)
     if not klass:
         await _ask_generate_klass(message, state)
         return
@@ -1448,12 +1470,17 @@ async def _render_generate_confirmation(message: Message, state: FSMContext) -> 
     if not _has_style_profile(data["teacher_id"]):
         summary += texts.GENERATE_NO_STYLE_PROFILE_NOTE
 
-    rows = [
-        [
+    if data.get("sources"):
+        rows = [[
+            InlineKeyboardButton(text=texts.GENERATE_FAST_CONFIRM_BUTTON, callback_data="gen_confirm"),
+            InlineKeyboardButton(text=texts.GENERATE_CHANGE_BUTTON, callback_data="gen_change"),
+            InlineKeyboardButton(text=texts.GENERATE_CANCEL_BUTTON, callback_data="gen_cancel"),
+        ]]
+    else:
+        rows = [[
             InlineKeyboardButton(text=texts.GENERATE_CONFIRM_BUTTON, callback_data="gen_confirm"),
             InlineKeyboardButton(text=texts.GENERATE_CANCEL_BUTTON, callback_data="gen_cancel"),
-        ]
-    ]
+        ]]
     await message.answer(summary, reply_markup=keyboards.with_back_row(rows))
     return True
 
@@ -1489,6 +1516,14 @@ async def generate_template_chosen(callback: CallbackQuery, state: FSMContext) -
 async def generate_cancelled(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
     await callback.message.answer(texts.GENERATE_CANCELLED, reply_markup=keyboards.MAIN_MENU)
+    await callback.answer()
+
+
+@router.callback_query(Generate.waiting_for_confirmation, F.data == "gen_change")
+async def generate_change_requested(callback: CallbackQuery, state: FSMContext) -> None:
+    """Ф1: оставляет рабочий подробный путь доступным до кнопочного Ф2."""
+    await go_to(state, Generate.waiting_for_objective_code)
+    await _ask_generate_objective_code(callback.message, state)
     await callback.answer()
 
 

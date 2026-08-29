@@ -584,7 +584,7 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
         "topic": "Совершенно новая тема",
         "razdel": "Механика",
         "subject": "физика",
-        "klass": "10А",
+        "klass": "10",
         "duration_minutes": 40,
         "objective_code": None,
         # "-" на шаге доп. настроек -> LessonOptions() со значениями по
@@ -607,6 +607,46 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
         "konspekt_text": None,  # К5: обычный /generate, не по кнопке конспекта
     }
     assert await state.get_state() is None
+
+
+async def test_generate_fast_path_uses_ktp_and_previous_ksp_without_questions(isolated_env):
+    teacher_id = _create_teacher(97)
+    template_id = query("SELECT id FROM templates WHERE is_builtin = 1")[0]["id"]
+    execute(
+        "INSERT INTO curriculum_objectives (code, grade, description) VALUES (?, ?, ?)",
+        ("10.1.1.1", 10, "Тестовая цель"),
+    )
+    execute(
+        "INSERT INTO ktp_entries (teacher_id, section, topic, objective_code) VALUES (?, ?, ?, ?)",
+        (teacher_id, "Механика", "Закон Ома", "10.1.1.1"),
+    )
+    execute(
+        "INSERT INTO generated_ksp (id, teacher_id, template_id, content_json) VALUES (?, ?, ?, ?)",
+        ("old-97", teacher_id, template_id, json.dumps({"klass": "10"})),
+    )
+
+    state = _state()
+    await cmd_generate(FakeMessage(text="/generate", user_id=97), state)
+    message = FakeMessage(text="Закон Ома", user_id=97, chat_id=97)
+    await generate_topic_received(message, state)
+
+    data = await state.get_data()
+    assert await state.get_state() == Generate.waiting_for_confirmation.state
+    assert data["razdel"] == "Механика"
+    assert data["objective_code"] == "10.1.1.1"
+    assert data["klass"] == "10"
+    assert data["duration_minutes"] == 45
+    buttons = message.sent[-1]["reply_markup"].inline_keyboard[0]
+    assert [button.callback_data for button in buttons] == ["gen_confirm", "gen_change", "gen_cancel"]
+
+
+async def test_generate_klass_keeps_only_number_for_new_generation(isolated_env):
+    state = _state()
+    await state.set_state(Generate.waiting_for_klass)
+    message = FakeMessage(text="10А")
+    await generate_klass_received(message, state)
+
+    assert (await state.get_data())["klass"] == "10"
 
 
 async def test_generate_ktp_full_flow_enqueues_task_with_correct_payload(isolated_env):
@@ -1658,7 +1698,7 @@ async def test_generate_dialog_back_navigation_preserves_data(isolated_env):
     # данные не потеряны на всём пути назад
     data = await state.get_data()
     assert data["razdel"] == "Электричество"
-    assert data["klass"] == "10Б"
+    assert data["klass"] == "10"
     assert data["duration_minutes"] == 45
     assert data["topic"] == "Закон Ома"
 

@@ -129,7 +129,8 @@ GENERATE_ASK_OBJECTIVE_CODE = (
     "или отправьте «-», если пока не знаете."
 )
 GENERATE_ASK_RAZDEL = "Раздел программы?"
-GENERATE_ASK_KLASS = "Класс? Например: 10А"
+GENERATE_ASK_KLASS = "Класс? Укажите цифру, например: 10"
+GENERATE_KLASS_NOT_A_NUMBER = "Укажите класс цифрой, например: 10. Букву можно написать — я её уберу."
 GENERATE_ASK_DURATION = "Продолжительность урока в минутах? Например: 40"
 GENERATE_DURATION_NOT_A_NUMBER = "Это не похоже на число минут. Введите, например, 40."
 GENERATE_ASK_TEXTBOOK_PHOTOS = (
@@ -180,6 +181,8 @@ GENERATE_CONFIRM_SUMMARY = (
 GENERATE_EXTRA_OPTIONS_LINE = "Доп. настройки: {summary}\n"
 GENERATE_TEXTBOOK_PHOTOS_LINE = "Фото учебника: {count}\n"
 GENERATE_CONFIRM_BUTTON = "✅ Сгенерировать"
+GENERATE_FAST_CONFIRM_BUTTON = "✅ Собрать"
+GENERATE_CHANGE_BUTTON = "✏️ Изменить"
 GENERATE_CANCEL_BUTTON = "❌ Отмена"
 GENERATE_CANCELLED = "Генерация отменена."
 GENERATE_QUEUED = "Принято, собираю черновик — обычно это занимает меньше минуты."
