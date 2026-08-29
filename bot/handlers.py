@@ -610,9 +610,25 @@ async def templates_web_app_choice(message: Message, state: FSMContext) -> None:
 
     try:
         payload = json.loads(message.web_app_data.data)
+    except (ValueError, TypeError):
+        await message.answer(texts.TEMPLATES_ACTION_UNKNOWN, reply_markup=keyboards.MAIN_MENU)
+        return
+
+    if not isinstance(payload, dict):
+        await message.answer(texts.TEMPLATES_ACTION_UNKNOWN, reply_markup=keyboards.MAIN_MENU)
+        return
+
+    if payload.get("action") == "upload_template":
+        await state.clear()
+        await state.set_state(UploadTemplate.waiting_for_file)
+        await state.update_data(teacher_id=teacher["id"])
+        await message.answer(texts.UPLOAD_TEMPLATE_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
+        return
+
+    try:
         template_id = int(payload["template_id"])
     except (ValueError, TypeError, KeyError):
-        await message.answer(texts.TEMPLATES_CHOSEN_UNKNOWN, reply_markup=keyboards.MAIN_MENU)
+        await message.answer(texts.TEMPLATES_ACTION_UNKNOWN, reply_markup=keyboards.MAIN_MENU)
         return
 
     # Шаблон должен быть доступен именно этому учителю: id приходит с

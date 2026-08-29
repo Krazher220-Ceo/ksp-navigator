@@ -272,15 +272,11 @@
     // и подсказывает команду). Mini App файлы не принимает и не должен.
     document.getElementById("upload-own-button").addEventListener("click", function () {
       if (!tg) return;
-      if (typeof tg.showAlert === "function") {
-        tg.showAlert(
-          "Отправьте боту команду /upload_template и приложите файл образца " +
-          "(.doc или .docx) — он появится в этом списке.",
-          function () { tg.close(); }
-        );
-      } else {
-        tg.close();
-      }
+      // Приём файла не переносим в Mini App: это только сигнал боту
+      // открыть уже существующий диалог загрузки. После него учитель
+      // просто прикладывает .doc/.docx, не вводя команду вручную.
+      tg.sendData(JSON.stringify({ action: "upload_template" }));
+      window.setTimeout(function () { tg.close(); }, 250);
     });
 
     document.getElementById("template-form-preview-close").addEventListener("click", hideTemplateFormPreview);

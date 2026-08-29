@@ -71,7 +71,7 @@ from bot.handlers import (
 )
 from bot import keyboards, texts
 from bot.main import _global_error_handler, _register_bot_commands, _register_chat_menu_button
-from bot.states import Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKSP
+from bot.states import Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKSP, UploadTemplate
 from core import ksp_generator as ksp_generator_module
 from core.config import settings
 from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
@@ -1238,6 +1238,22 @@ async def test_reply_web_app_choice_clears_server_fallback(isolated_env):
     assert query("SELECT * FROM template_selections WHERE telegram_user_id = 1") == []
     assert (await state.get_data())["template_id"] == template["id"]
     assert template["name"] in message.sent[0]["text"]
+
+
+async def test_web_app_upload_template_opens_file_dialog(isolated_env):
+    """Ш3: Mini App открывает существующий диалог загрузки без команды."""
+    _create_teacher(1)
+    message = FakeMessage(user_id=1)
+    message.web_app_data = type(
+        "FakeWebAppData", (), {"data": json.dumps({"action": "upload_template"})}
+    )()
+    state = _state()
+
+    await templates_web_app_choice(message, state)
+
+    assert await state.get_state() == UploadTemplate.waiting_for_file
+    assert (await state.get_data())["teacher_id"] == 1
+    assert message.sent[-1]["text"] == texts.UPLOAD_TEMPLATE_PROMPT
 
 
 # =====================================================================

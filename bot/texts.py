@@ -103,6 +103,7 @@ TEMPLATES_CHOSEN = (
 TEMPLATES_CHOSEN_UNKNOWN = (
     "Не нашёл такой шаблон — возможно, он был удалён. Откройте /templates заново."
 )
+TEMPLATES_ACTION_UNKNOWN = "Не понял действие из Mini App. Откройте /templates заново."
 
 # --- /upload_template ---
 
