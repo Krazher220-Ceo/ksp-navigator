@@ -128,3 +128,20 @@ def with_back_row(rows: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(
         inline_keyboard=[*rows, [InlineKeyboardButton(text=texts.BUTTON_BACK, callback_data="nav_back")]]
     )
+
+
+def lesson_options_quick_keyboard() -> InlineKeyboardMarkup:
+    """Главные настройки Ф2; состояние остаётся одним и тем же."""
+    return with_back_row([
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_OOP, callback_data="opt:ima_oop")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_SOR, callback_data="opt:sor")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_FIZ, callback_data="opt:fiz")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_TYPE_COMBINED, callback_data="opt:type:combined")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_TYPE_NEW, callback_data="opt:type:new")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_TYPE_PRACTICE, callback_data="opt:type:practice")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_TYPE_CONTROL, callback_data="opt:type:control")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_ORIENTATION_ALBUM, callback_data="opt:orientation:album")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_ORIENTATION_BOOK, callback_data="opt:orientation:book")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_MORE, callback_data="opt:more")],
+        [InlineKeyboardButton(text=texts.GENERATE_OPTIONS_DONE, callback_data="opt:done")],
+    ])

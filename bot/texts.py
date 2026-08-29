@@ -162,6 +162,20 @@ GENERATE_ASK_EXTRA_OPTIONS = (
     "Межпредметные связи: <через запятую>\n"
     "Ориентация: альбомная — по умолчанию книжная"
 )
+GENERATE_OPTIONS_QUICK_PROMPT = "Настройки урока: выберите нужное или продолжите без них."
+GENERATE_OPTIONS_DONE = "Продолжить"
+GENERATE_OPTIONS_MORE = "Ещё настройки"
+GENERATE_OPTIONS_OOP = "ООП"
+GENERATE_OPTIONS_SOR = "СОР вместо рефлексии"
+GENERATE_OPTIONS_FIZ = "Физкультминутка"
+GENERATE_OPTIONS_TYPE_COMBINED = "Комбинированный"
+GENERATE_OPTIONS_TYPE_NEW = "Изучение нового материала"
+GENERATE_OPTIONS_TYPE_PRACTICE = "Закрепление"
+GENERATE_OPTIONS_TYPE_CONTROL = "Контроль"
+GENERATE_OPTIONS_ORIENTATION_ALBUM = "Альбомная страница"
+GENERATE_OPTIONS_ORIENTATION_BOOK = "Книжная страница"
+GENERATE_OPTIONS_TYPE_SELECTED = "Тип урока выбран"
+GENERATE_OPTIONS_ORIENTATION_SELECTED = "Альбомная ориентация выбрана"
 GENERATE_EXTRA_OPTIONS_UNRECOGNIZED_NOTE = (
     "⚠️ Не могу применить настройки: {lines}. Исправьте значения и отправьте сообщение ещё раз."
 )

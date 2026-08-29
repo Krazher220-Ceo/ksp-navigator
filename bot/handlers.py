@@ -1105,7 +1105,7 @@ async def _ask_generate_textbook_photos(message: Message, state: FSMContext) -> 
 
 
 async def _ask_generate_extra_options(message: Message, state: FSMContext) -> None:
-    await message.answer(texts.GENERATE_ASK_EXTRA_OPTIONS, reply_markup=keyboards.back_cancel_keyboard())
+    await message.answer(texts.GENERATE_OPTIONS_QUICK_PROMPT, reply_markup=keyboards.lesson_options_quick_keyboard())
 
 
 async def _ask_generate_template(message: Message, state: FSMContext) -> None:
@@ -1437,6 +1437,37 @@ async def generate_extra_options_received(message: Message, state: FSMContext) -
 
     await go_to(state, Generate.waiting_for_template)
     await _ask_generate_template(message, state)
+
+
+@router.callback_query(Generate.waiting_for_extra_options, F.data.startswith("opt:"))
+async def generate_option_button_pressed(callback: CallbackQuery, state: FSMContext) -> None:
+    """Ф2: кнопки меняют тот же LessonOptions, что и прежний текстовый ввод."""
+    choice = callback.data.split(":", 1)[1]
+    if choice == "more":
+        await callback.message.answer(texts.GENERATE_ASK_EXTRA_OPTIONS, reply_markup=keyboards.back_cancel_keyboard())
+        await callback.answer()
+        return
+    if choice == "done":
+        await generate_extra_options_received(type("Message", (), {"text": "-", "answer": callback.message.answer})(), state)
+        await callback.answer()
+        return
+    data = await state.get_data()
+    options = LessonOptions(**(data.get("options") or {}))
+    lesson_types = {"type:combined": "комбинированный", "type:new": "изучение нового материала", "type:practice": "закрепление", "type:control": "контроль"}
+    if choice in lesson_types:
+        options.tip_uroka = lesson_types[choice]
+        await state.update_data(options=asdict(options))
+        await callback.answer(texts.GENERATE_OPTIONS_TYPE_SELECTED)
+        return
+    if choice in {"orientation:album", "orientation:book"}:
+        options.page_orientation = "album" if choice.endswith("album") else "book"
+        await state.update_data(options=asdict(options))
+        await callback.answer(texts.GENERATE_OPTIONS_ORIENTATION_SELECTED)
+        return
+    field = {"ima_oop": "ima_oop", "sor": "sor_instead_of_reflection", "fiz": "fizkultminutka"}[choice]
+    setattr(options, field, not getattr(options, field))
+    await state.update_data(options=asdict(options))
+    await callback.answer("Настройка изменена")
 
 
 async def _render_generate_confirmation(message: Message, state: FSMContext) -> bool:

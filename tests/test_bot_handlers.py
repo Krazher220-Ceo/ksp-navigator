@@ -649,6 +649,30 @@ async def test_generate_klass_keeps_only_number_for_new_generation(isolated_env)
     assert (await state.get_data())["klass"] == "10"
 
 
+async def test_generate_option_button_changes_same_options_dictionary(isolated_env):
+    from bot.handlers import generate_option_button_pressed
+
+    state = _state()
+    await state.set_state(Generate.waiting_for_extra_options)
+    message = FakeMessage()
+    callback = FakeCallbackQuery(data="opt:ima_oop", message=message)
+    await generate_option_button_pressed(callback, state)
+
+    assert (await state.get_data())["options"]["ima_oop"] is True
+    assert await state.get_state() == Generate.waiting_for_extra_options.state
+
+
+async def test_generate_option_button_sets_lesson_type(isolated_env):
+    from bot.handlers import generate_option_button_pressed
+
+    state = _state()
+    await state.set_state(Generate.waiting_for_extra_options)
+    callback = FakeCallbackQuery(data="opt:type:control", message=FakeMessage())
+    await generate_option_button_pressed(callback, state)
+
+    assert (await state.get_data())["options"]["tip_uroka"] == "контроль"
+
+
 async def test_generate_ktp_full_flow_enqueues_task_with_correct_payload(isolated_env):
     from bot.handlers import (
         cmd_generate_ktp,
