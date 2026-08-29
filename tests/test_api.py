@@ -156,6 +156,7 @@ def test_templates_endpoint_returns_builtins_for_teacher_without_profile(isolate
     response = client.get("/api/templates", headers=_headers(999))  # учителя с таким id нет
     assert response.status_code == 200
     assert len(response.json()) == 3
+    assert all(template["structure_json"]["blocks"] for template in response.json())
 
 
 def test_templates_endpoint_requires_auth(isolated_api, client):

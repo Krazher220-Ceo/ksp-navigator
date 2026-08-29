@@ -23,6 +23,15 @@
     <button type="button" id="upload-own-button" class="upload-own-link" hidden>
       Загрузить свой шаблон
     </button>
+
+    <section id="template-form-preview" class="template-form-preview" hidden aria-live="polite">
+      <div class="template-form-preview-header">
+        <h2 id="template-form-preview-title">Форма шаблона</h2>
+        <button type="button" id="template-form-preview-close" class="template-preview-close" aria-label="Закрыть предпросмотр">×</button>
+      </div>
+      <p class="hint">Пустая форма: это состав документа, а не готовый КСП.</p>
+      <div id="template-form-preview-blocks"></div>
+    </section>
   </section>
 
   <!-- Экран «Дашборд» (М5.3, PLAN_STAGE2.md). Третий экран Mini App —

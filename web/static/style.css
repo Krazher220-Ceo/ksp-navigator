@@ -82,6 +82,94 @@ h1 {
   font: inherit;
 }
 
+.template-card-wrap {
+  margin-bottom: 10px;
+}
+
+.template-card-wrap .template-card {
+  margin-bottom: 5px;
+}
+
+.template-preview-button {
+  display: block;
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--tg-link);
+  font: inherit;
+  font-size: 13px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+
+.template-form-preview {
+  margin-top: 20px;
+  border-top: 1px solid var(--tg-section-separator);
+  padding-top: 14px;
+}
+
+.template-form-preview-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.template-form-preview h2,
+.template-form-preview h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.template-form-preview h3 {
+  font-size: 14px;
+}
+
+.template-preview-close {
+  border: none;
+  background: none;
+  color: var(--tg-link);
+  cursor: pointer;
+  font: inherit;
+  font-size: 26px;
+  line-height: 1;
+  padding: 0 4px;
+}
+
+.template-form-block {
+  background: var(--tg-secondary-bg);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 10px;
+}
+
+.template-form-fields {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+}
+
+.template-form-table {
+  border-collapse: collapse;
+  min-width: 560px;
+  width: 100%;
+  margin-top: 8px;
+}
+
+.template-form-table th,
+.template-form-table td {
+  border: 1px solid var(--tg-section-separator);
+  padding: 7px 8px;
+  font-size: 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.template-form-table th {
+  background: var(--tg-bg);
+  white-space: nowrap;
+}
+
 .template-card.selected {
   border-color: var(--tg-button);
 }

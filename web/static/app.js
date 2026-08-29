@@ -84,6 +84,86 @@
   let selectedTemplateId = null;
   let selectedTemplateName = "";
 
+  const TEMPLATE_FIELD_LABELS = {
+    organizaciya: "Организация образования",
+    razdel: "Раздел",
+    fio_pedagoga: "ФИО педагога",
+    data: "Дата",
+    klass: "Класс",
+    prisutstvuet: "Присутствовали",
+    otsutstvuet: "Отсутствовали",
+    chasy: "Количество часов",
+    tema_uroka: "Тема урока",
+    celi_obucheniya: "Цели обучения",
+    celi_uroka: "Цели урока",
+    adaptaciya_oop: "Адаптация для ООП",
+  };
+
+  const TEMPLATE_BLOCK_LABELS = {
+    shapka: "Шапка документа",
+    tema: "Тема урока",
+    celi: "Цели",
+    hod_uroka: "Ход урока",
+    primechanie: "Примечание",
+  };
+
+  const TEMPLATE_COLUMN_LABELS = {
+    etap_vremya: "Этап и время",
+    deystviya_pedagoga: "Действия педагога",
+    deystviya_uchenika: "Действия ученика",
+    resursy: "Ресурсы",
+    ocenivanie: "Оценивание",
+    domashnee_zadanie: "Домашнее задание",
+    dop_literatura: "Дополнительная литература",
+  };
+
+  function labelForTemplateField(key) {
+    return TEMPLATE_FIELD_LABELS[key] || key;
+  }
+
+  function labelForTemplateColumn(key) {
+    return TEMPLATE_COLUMN_LABELS[key] || key;
+  }
+
+  function showTemplateFormPreview(template) {
+    const previewEl = document.getElementById("template-form-preview");
+    const titleEl = document.getElementById("template-form-preview-title");
+    const blocksEl = document.getElementById("template-form-preview-blocks");
+    const structure = template.structure_json || {};
+    const blocks = Array.isArray(structure.blocks) ? structure.blocks : [];
+
+    titleEl.textContent = "Форма: " + (template.name || "шаблон");
+    blocksEl.innerHTML = blocks.map(function (block) {
+      const fields = Array.isArray(block.fields) ? block.fields : [];
+      const columns = Array.isArray(block.columns) ? block.columns : [];
+      const items = fields.map(function (key) {
+        return "<li>" + escapeHtml(labelForTemplateField(key)) + "</li>";
+      }).join("");
+      const table = columns.length
+        ? '<div class="table-scroll"><table class="template-form-table"><thead><tr>' +
+          columns.map(function (key) {
+            return "<th>" + escapeHtml(labelForTemplateColumn(key)) + "</th>";
+          }).join("") +
+          "</tr></thead><tbody><tr>" + columns.map(function () {
+            return "<td> </td>";
+          }).join("") + "</tr></tbody></table></div>"
+        : "";
+      return (
+        '<section class="template-form-block">' +
+          "<h3>" + escapeHtml(TEMPLATE_BLOCK_LABELS[block.key] || block.key) + "</h3>" +
+          (items ? '<ul class="template-form-fields">' + items + "</ul>" : "") +
+          table +
+        "</section>"
+      );
+    }).join("") || '<div class="state-message">Структура этого шаблона пока не определена.</div>';
+    previewEl.hidden = false;
+    previewEl.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function hideTemplateFormPreview() {
+    document.getElementById("template-form-preview").hidden = true;
+  }
+
   function renderTemplates(templates) {
     const listEl = document.getElementById("templates-list");
     const stateEl = document.getElementById("templates-state");
@@ -96,7 +176,7 @@
     stateEl.hidden = true;
     uploadButton.hidden = false;
 
-    listEl.innerHTML = templates.map(function (tpl) {
+    listEl.innerHTML = templates.map(function (tpl, index) {
       const badge = tpl.is_official
         ? '<span class="badge-official">официальный</span>'
         : "";
@@ -104,6 +184,7 @@
         ? '<div class="template-card-description">' + escapeHtml(tpl.description) + "</div>"
         : "";
       return (
+        '<div class="template-card-wrap">' +
         '<button type="button" class="template-card" data-id="' + tpl.id + '">' +
           '<div class="template-card-title-row">' +
             '<span class="template-card-name">' + escapeHtml(tpl.name) + "</span>" +
@@ -111,7 +192,9 @@
           "</div>" +
           '<div class="template-card-source">' + escapeHtml(tpl.source || "") + "</div>" +
           description +
-        "</button>"
+        "</button>" +
+        '<button type="button" class="template-preview-button" data-template-index="' + index + '">Посмотреть</button>' +
+        "</div>"
       );
     }).join("");
 
@@ -123,6 +206,13 @@
           c.classList.toggle("selected", c === card);
         });
         updateTemplatesMainButton();
+      });
+    });
+
+    listEl.querySelectorAll(".template-preview-button").forEach(function (button) {
+      button.addEventListener("click", function () {
+        const template = templates[Number(button.getAttribute("data-template-index"))];
+        if (template) showTemplateFormPreview(template);
       });
     });
   }
@@ -192,6 +282,8 @@
         tg.close();
       }
     });
+
+    document.getElementById("template-form-preview-close").addEventListener("click", hideTemplateFormPreview);
 
     apiFetch("/api/templates")
       .then(function (r) { return r.json(); })
