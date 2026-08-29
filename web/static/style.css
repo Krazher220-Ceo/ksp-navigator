@@ -357,6 +357,30 @@ table.hod-uroka tr:last-child td {
 
 /* --- Экран «Дашборд» (М5.3) --- */
 
+.dash-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: -6px 0 12px;
+}
+
+.dash-refresh {
+  border: 1px solid var(--tg-section-separator);
+  border-radius: 8px;
+  background: var(--tg-secondary-bg);
+  color: var(--tg-link);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.dash-refresh:disabled {
+  color: var(--tg-hint);
+  cursor: default;
+}
+
 .dash-section {
   background: var(--tg-secondary-bg);
   border-radius: 10px;

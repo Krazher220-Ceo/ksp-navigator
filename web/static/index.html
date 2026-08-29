@@ -44,15 +44,28 @@
       <span class="mini-nav-current">Дашборд</span>
     </nav>
     <h1>Дашборд</h1>
+    <div class="dash-toolbar">
+      <button type="button" id="dashboard-refresh" class="dash-refresh">Обновить</button>
+      <span id="dashboard-updated-at" class="hint"></span>
+    </div>
     <div id="dashboard-state" class="state-message">Загружаю…</div>
     <div id="dashboard-content" hidden>
       <div id="dashboard-no-profile" class="state-message" hidden></div>
       <div id="dashboard-body" hidden>
         <div class="dash-section">
-          <div class="dash-section-title">Очередь</div>
+          <div class="dash-section-title">Требует внимания</div>
           <div class="dash-stat-row"><span>В ожидании</span><span id="dash-pending"></span></div>
           <div class="dash-stat-row"><span>Выполняется</span><span id="dash-processing"></span></div>
           <div class="dash-stat-row"><span>Провалено за 7 дней</span><span id="dash-failed-7d"></span></div>
+        </div>
+        <div class="dash-section">
+          <div class="dash-section-title">Ближайшие уроки без КСП</div>
+          <div id="dash-upcoming-list"></div>
+        </div>
+        <div class="dash-section">
+          <div class="dash-section-title">Расход лимита сегодня</div>
+          <div class="dash-stat-row"><span>КСП</span><span id="dash-ksp-usage"></span></div>
+          <div class="dash-stat-row"><span>КТП</span><span id="dash-ktp-usage"></span></div>
         </div>
         <div class="dash-section">
           <div class="dash-section-title">Сгенерировано КСП</div>
@@ -68,21 +81,16 @@
           <div id="dash-unparsed-note" class="state-message" hidden></div>
         </div>
         <div class="dash-section">
-          <div class="dash-section-title">Ближайшие уроки без КСП</div>
-          <div id="dash-upcoming-list"></div>
-        </div>
-        <div class="dash-section">
           <div class="dash-section-title">Профиль стиля</div>
           <div id="dash-style-profile"></div>
         </div>
-        <!-- М7.4: живучесть — не про конкретного учителя, показывается
-             всегда, включая has_profile=false (см. dashboard-no-profile
-             выше, куда renderDashboard тоже вставляет этот блок). -->
-        <div class="dash-section">
-          <div class="dash-section-title" id="dash-uptime-title"></div>
-          <div id="dash-uptime-last-incident" class="state-message" hidden></div>
-          <div id="dash-uptime-stats"></div>
-        </div>
+      </div>
+      <!-- Живучесть не относится к профилю конкретного учителя: этот блок
+           остаётся видимым даже до заполнения /teacher. -->
+      <div class="dash-section">
+        <div class="dash-section-title" id="dash-uptime-title"></div>
+        <div id="dash-uptime-last-incident" class="state-message" hidden></div>
+        <div id="dash-uptime-stats"></div>
       </div>
     </div>
   </section>

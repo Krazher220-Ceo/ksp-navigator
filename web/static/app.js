@@ -459,19 +459,29 @@
     document.getElementById("dashboard-state").hidden = true;
     document.getElementById("dashboard-content").hidden = false;
 
+    const noProfileEl = document.getElementById("dashboard-no-profile");
+    const bodyEl = document.getElementById("dashboard-body");
+
     if (!data.has_profile) {
-      const noProfileEl = document.getElementById("dashboard-no-profile");
       noProfileEl.hidden = false;
       noProfileEl.textContent =
         "Дашборд станет полезным, когда заведёте профиль в боте: /teacher.";
+      bodyEl.hidden = true;
+      renderUptime(data.uptime);
       return;
     }
 
-    document.getElementById("dashboard-body").hidden = false;
+    noProfileEl.hidden = true;
+    bodyEl.hidden = false;
 
     document.getElementById("dash-pending").textContent = data.queue.pending;
     document.getElementById("dash-processing").textContent = data.queue.processing;
     document.getElementById("dash-failed-7d").textContent = data.queue.failed_7d;
+
+    document.getElementById("dash-ksp-usage").textContent =
+      data.usage_today.generate_ksp + " из " + data.usage_today.generate_ksp_limit;
+    document.getElementById("dash-ktp-usage").textContent =
+      data.usage_today.generate_ktp + " из " + data.usage_today.generate_ktp_limit;
 
     document.getElementById("dash-ksp-total").textContent = data.generated_ksp.total;
     document.getElementById("dash-ksp-7d").textContent = data.generated_ksp.last_7d;
@@ -562,15 +572,34 @@
       : "Сбоев за 7 дней не было";
   }
 
-  function initDashboardScreen() {
+  function setDashboardUpdatedAt() {
+    const now = new Date();
+    document.getElementById("dashboard-updated-at").textContent =
+      "данные на " + now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function loadDashboard() {
+    const refreshButton = document.getElementById("dashboard-refresh");
+    refreshButton.disabled = true;
     document.getElementById("screen-dashboard").classList.add("active");
     apiFetch("/api/dashboard")
       .then(function (r) { return r.json(); })
-      .then(renderDashboard)
+      .then(function (data) {
+        renderDashboard(data);
+        setDashboardUpdatedAt();
+      })
       .catch(function () {
         document.getElementById("dashboard-state").textContent =
           "Не удалось загрузить дашборд. Попробуйте открыть заново из бота.";
+      })
+      .finally(function () {
+        refreshButton.disabled = false;
       });
+  }
+
+  function initDashboardScreen() {
+    document.getElementById("dashboard-refresh").addEventListener("click", loadDashboard);
+    loadDashboard();
   }
 
   // =====================================================================
