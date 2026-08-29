@@ -72,15 +72,9 @@ class Settings:
     admin_telegram_chat_id: int | None
     admin_password: str | None
 
-    # К1 (PLAN_STAGE2.md): whisper.cpp — все три читаются здесь БЕЗ
-    # проверки существования (whisper_binary может отсутствовать в PATH,
-    # whisper_model_path — не существовать на диске). Проверка ленивая, в
-    # момент первого вызова транскрипции (core/transcriber.py, блок К1.2/К3),
-    # а не здесь — отсутствие whisper не должно мешать боту стартовать,
-    # весь этап 1 обязан работать на машине без него.
-    whisper_binary: str
-    whisper_model_path: str | None
-    whisper_language: str
+    stt_backend: str
+    xai_api_key: str | None
+    stt_language: str
 
     log_level: str
 
@@ -148,6 +142,10 @@ def _build_settings() -> Settings:
 
     llm_provider_order = _parse_provider_order(_env("LLM_PROVIDERS"))
 
+    stt_backend = (_env("STT_BACKEND", "xai") or "xai").lower()
+    if stt_backend != "xai":
+        _fail("STT_BACKEND должен быть 'xai': локальная расшифровка удалена")
+
     admin_chat_id_raw = _env("ADMIN_TELEGRAM_CHAT_ID")
     admin_telegram_chat_id = None
     if admin_chat_id_raw:
@@ -171,9 +169,9 @@ def _build_settings() -> Settings:
         webapp_port=webapp_port,
         admin_telegram_chat_id=admin_telegram_chat_id,
         admin_password=_env("ADMIN_PASSWORD"),
-        whisper_binary=_env("WHISPER_BINARY", "whisper-cli"),
-        whisper_model_path=_env("WHISPER_MODEL_PATH"),
-        whisper_language=_env("WHISPER_LANGUAGE", "ru"),
+        stt_backend=stt_backend,
+        xai_api_key=_env("XAI_API_KEY"),
+        stt_language=_env("STT_LANGUAGE", "ru"),
         log_level=_env("LOG_LEVEL", "INFO"),
     )
 

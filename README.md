@@ -27,17 +27,12 @@ bash scripts/setup_mac.sh
 
 Скрипт ставит через Homebrew `python@3.11`, `libreoffice` (конвертация
 `.doc`→`.docx` — `pandoc` для этого не годится, он не читает бинарный
-`.doc`), `cloudflared`, `ffmpeg` и `whisper-cpp` (транскрипция аудио
-урока, блок К1 — оба внешние бинарники, не Python-зависимости), создаёт
+`.doc`), `cloudflared` и `ffmpeg`, создаёт
 `venv/` и ставит зависимости из `requirements.txt`. Идемпотентен — можно
 запускать повторно.
 
-Первый запуск скачивает LibreOffice (~1 ГБ) и модель whisper
-(`ggml-large-v3-turbo`, ~1,5 ГБ, кладётся в `~/whisper-models/`, не в
-репозиторий) — рассчитывай на это время. Выбор именно этой модели и
-замер скорости на M2 — `KPI_STAGE1.md`, раздел «Замер транскрипции».
-После скачивания скрипт выведет путь — впиши его в `.env` как
-`WHISPER_MODEL_PATH`.
+Транскрипция уроков выполняется в xAI STT API. Впиши `XAI_API_KEY` в `.env`;
+локальная модель Whisper не устанавливается и не используется.
 
 Проверить, что окружение поднялось:
 
@@ -82,10 +77,10 @@ test -f .env || cp .env.example .env
 | `GEMINI_API_KEY` / `GROK_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | резервные провайдеры на бесплатных лимитах — необязательны для старта, но без хотя бы одного резервного `LLM_PROVIDERS` из `core/llm_client.py` (блок Б2) не сможет переключиться, если DeepSeek окажется недоступен |
 | `WEBAPP_URL` | заполняется в шаге 6, после настройки туннеля — пока можно оставить пустым, бот заработает и без него (`/templates` просто скажет, что Mini App пока не настроен) |
 | `ADMIN_TELEGRAM_CHAT_ID` | твой личный `chat_id` в Telegram (узнать: написать `@userinfobot`) — сюда бот шлёт уведомление о завершившемся сбое живучести. Не задан — уведомления не шлются, только пишутся в БД |
-| `WHISPER_MODEL_PATH` | путь, который вывел `scripts/setup_mac.sh` после скачивания модели (шаг 1), обычно `~/whisper-models/ggml-large-v3-turbo.bin` |
+| `XAI_API_KEY` | ключ xAI для расшифровки аудио уроков |
 
 Остальные переменные (`WEBAPP_PORT`, `DB_PATH`, `LOG_LEVEL`,
-`WHISPER_BINARY`, `WHISPER_LANGUAGE`) можно оставить как в
+`STT_BACKEND`, `STT_LANGUAGE`) можно оставить как в
 `.env.example`.
 
 ---

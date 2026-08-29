@@ -46,7 +46,7 @@ MAIN_MENU = ReplyKeyboardMarkup(
         ],
         [
             # К4: место было обещано этой кнопке ещё в комментарии блока
-            # М5.2 — теперь /konspekt работает целиком (аудио -> whisper
+            # М5.2 — теперь /konspekt работает целиком (аудио -> xAI STT
             # -> транскрипт -> конспект), заняла обещанное место.
             KeyboardButton(text=texts.MENU_BUTTON_DASHBOARD),
             KeyboardButton(text=texts.MENU_BUTTON_KONSPEKT),

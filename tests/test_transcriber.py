@@ -1,55 +1,17 @@
-"""
-tests/test_transcriber.py — тесты core/transcriber.transcribe() (блок К3).
-
-КГ плана дословно: "реальная расшифровка короткого тестового файла
-(10-20 секунд собственной речи, записать при подготовке), не только мок.
-Проверить, что бот в это время отвечает на другие команды — это и есть
-проверка, что to_thread реально применён."
-
-tests/fixtures/audio_lesson_snippet.m4a — реальная запись автора,
-47 секунд, физическая терминология (кинематика). Настоящий whisper.cpp
-и ffmpeg зовутся напрямую, не через мок — так же, как тесты
-core/pdf_export.py зовут настоящий LibreOffice.
-"""
+"""Тесты транскрипции урока через xAI и измерения длительности аудио."""
 
 import asyncio
-import time
 from pathlib import Path
 
+import httpx
 import pytest
 
-from core.transcriber import (
-    TranscriptionError,
-    _probe_duration_seconds,
-    transcribe,
-)
+from core.config import settings
+from core.transcriber import TranscriptionError, _probe_duration_seconds, transcribe
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-FIXTURES_DIR = PROJECT_ROOT / "tests" / "fixtures"
-AUDIO_FIXTURE = FIXTURES_DIR / "audio_lesson_snippet.m4a"
-
-
-# =====================================================================
-# КГ: настоящая расшифровка настоящего файла, не мок
-# =====================================================================
-
-
-async def test_transcribe_real_recording_produces_real_text():
-    result = await transcribe(AUDIO_FIXTURE)
-
-    assert result["language"] == "ru"
-    assert 40 <= result["duration_seconds"] <= 55  # запись ~47с
-    # Дословно ждать точный текст нельзя (whisper не детерминирован
-    # побитово между версиями/сборками), но содержательные слова из
-    # реальной физической лекции должны появиться.
-    text_lower = result["text"].lower()
-    assert "кинематика" in text_lower or "механика" in text_lower
-    assert len(result["text"]) > 50
-
-
-async def test_transcribe_respects_explicit_language():
-    result = await transcribe(AUDIO_FIXTURE, language="ru")
-    assert result["language"] == "ru"
+AUDIO_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "audio_lesson_snippet.m4a"
 
 
 def test_probe_duration_seconds_matches_known_fixture_length():
@@ -57,14 +19,11 @@ def test_probe_duration_seconds_matches_known_fixture_length():
     assert 45 <= duration <= 50
 
 
-# =====================================================================
-# КГ дословно: событийный цикл не блокируется во время транскрипции
-# (доказывает, что asyncio.to_thread реально применён, а не просто
-# заявлен в комментарии)
-# =====================================================================
+async def test_transcribe_does_not_block_event_loop(monkeypatch, tmp_path):
+    import core.transcriber as module
 
-
-async def test_transcribe_does_not_block_event_loop():
+    audio = tmp_path / "lesson.m4a"
+    audio.write_bytes(b"audio")
     tick_count = 0
     stop = False
 
@@ -74,27 +33,16 @@ async def test_transcribe_does_not_block_event_loop():
             tick_count += 1
             await asyncio.sleep(0.2)
 
+    async def delayed_xai(*_args):
+        await asyncio.sleep(0.45)
+        return {"text": "Текст урока", "duration_seconds": 1, "language": "ru"}
+
+    monkeypatch.setattr(module, "_transcribe_xai", delayed_xai)
     ticker_task = asyncio.create_task(ticker())
-    t0 = time.time()
-    await transcribe(AUDIO_FIXTURE)
-    elapsed = time.time() - t0
+    await transcribe(audio)
     stop = True
     await ticker_task
-
-    # За время транскрипции (несколько секунд) тикер должен был
-    # сработать многократно — если бы to_thread не применялся, цикл был
-    # бы заблокирован синхронным subprocess.run, и tick_count остался бы
-    # на 0 или 1.
-    expected_min_ticks = max(2, int(elapsed / 0.2) - 2)
-    assert tick_count >= expected_min_ticks, (
-        f"событийный цикл почти не тикал во время transcribe() ({tick_count} раз "
-        f"за {elapsed:.1f}с) — похоже, вызов блокирующий, не через to_thread"
-    )
-
-
-# =====================================================================
-# Ошибки — файл не существует / не аудио
-# =====================================================================
+    assert tick_count >= 2
 
 
 async def test_transcribe_nonexistent_file_raises():
@@ -102,8 +50,65 @@ async def test_transcribe_nonexistent_file_raises():
         await transcribe("/tmp/this-file-does-not-exist-ksp-navigator-test.m4a")
 
 
-async def test_transcribe_non_audio_file_raises(tmp_path):
-    garbage = tmp_path / "not_audio.txt"
-    garbage.write_text("это не аудиофайл, а текст")
-    with pytest.raises(TranscriptionError):
-        await transcribe(garbage)
+async def test_transcribe_uses_xai_backend(monkeypatch, tmp_path):
+    import core.transcriber as module
+
+    audio = tmp_path / "lesson.m4a"
+    audio.write_bytes(b"audio")
+
+    async def fake_xai(path, language, prompt):
+        assert path == audio
+        return {"text": "Тестовая расшифровка", "duration_seconds": 3, "language": language}
+
+    monkeypatch.setattr(module, "_transcribe_xai", fake_xai)
+    result = await transcribe(audio, language="ru")
+    assert result["text"] == "Тестовая расшифровка"
+
+
+async def test_xai_transcriber_sends_expected_request(monkeypatch, tmp_path):
+    import core.transcriber as module
+
+    audio = tmp_path / "lesson.m4a"
+    audio.write_bytes(b"audio")
+    original_key = settings.xai_api_key
+    object.__setattr__(settings, "xai_api_key", "test-key")
+    received = {}
+
+    async def handler(request):
+        received["url"] = str(request.url)
+        received["authorization"] = request.headers["authorization"]
+        received["body"] = (await request.aread()).decode("utf-8", errors="replace")
+        return httpx.Response(200, json={"text": "Текст урока"})
+
+    transport = httpx.MockTransport(handler)
+    original_client = module.httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        return original_client(transport=transport, *args, **kwargs)
+
+    try:
+        monkeypatch.setattr(module.httpx, "AsyncClient", fake_client)
+        monkeypatch.setattr(module, "_probe_duration_seconds", lambda _path: 13)
+        result = await module._transcribe_xai(audio, "ru", "термин")
+        assert result == {"text": "Текст урока", "duration_seconds": 13, "language": "ru"}
+        assert received["url"] == module.XAI_STT_URL
+        assert received["authorization"] == "Bearer test-key"
+        assert 'name="format"' in received["body"]
+        assert 'name="language"' in received["body"]
+        assert 'name="keyterm"' in received["body"]
+    finally:
+        object.__setattr__(settings, "xai_api_key", original_key)
+
+
+async def test_xai_transcriber_requires_key(monkeypatch, tmp_path):
+    import core.transcriber as module
+
+    audio = tmp_path / "lesson.m4a"
+    audio.write_bytes(b"audio")
+    original_key = settings.xai_api_key
+    object.__setattr__(settings, "xai_api_key", None)
+    try:
+        with pytest.raises(TranscriptionError, match="XAI_API_KEY"):
+            await module._transcribe_xai(audio, "ru", None)
+    finally:
+        object.__setattr__(settings, "xai_api_key", original_key)

@@ -119,6 +119,19 @@ def isolated_env(tmp_path):
             object.__setattr__(settings, key, value)
 
 
+@pytest.fixture
+def fake_xai_transcriber(monkeypatch):
+    """Изолирует тесты очереди от платного внешнего STT API."""
+    async def fake_transcribe(_path):
+        return {
+            "text": "Кинематика: перемещение, скорость, ускорение и законы движения тела.",
+            "duration_seconds": 47,
+            "language": "ru",
+        }
+
+    monkeypatch.setattr("bot.handlers.transcribe", fake_transcribe)
+
+
 def _create_teacher(telegram_user_id: int, name: str = "Тестов Тест", subject: str = "физика") -> int:
     return execute(
         "INSERT INTO teachers (name, subject, telegram_user_id) VALUES (?, ?, ?)",
@@ -2388,13 +2401,12 @@ async def test_konspekt_added_to_bot_commands_and_menu_after_k4():
 
 
 # =====================================================================
-# К3.2 — задача очереди 'transcribe' (реальная расшифровка, не мок)
+# К3.2 — задача очереди 'transcribe'
 # =====================================================================
 
 
-async def test_transcribe_handler_real_audio_creates_transcript_and_notifies(isolated_env):
-    """Реальная расшифровка настоящего фикстур-файла через сам
-    обработчик очереди — не только core.transcriber напрямую."""
+async def test_transcribe_handler_creates_transcript_and_notifies(isolated_env, fake_xai_transcriber):
+    """Обработчик сохраняет ответ xAI и уведомляет учителя."""
     teacher_id = _create_teacher(930)
     audio_copy = settings.uploads_dir / "part1.m4a"
     audio_copy.write_bytes((FIXTURES_DIR / "audio_lesson_snippet.m4a").read_bytes())
@@ -2426,11 +2438,9 @@ async def test_transcribe_handler_real_audio_creates_transcript_and_notifies(iso
     assert "готова" in bot.sent_messages[1][1].lower()
 
 
-async def test_transcribe_handler_deletes_audio_after_success(isolated_env):
+async def test_transcribe_handler_deletes_audio_after_success(isolated_env, fake_xai_transcriber):
     """К2.4 КГ: после успешной транскрипции на диске не остаётся ни
-    исходника, ни промежуточного WAV (WAV убирается сам внутри
-    core.transcriber через TemporaryDirectory — здесь проверяем исходник,
-    за который отвечает сам обработчик)."""
+    исходника; за него отвечает сам обработчик."""
     teacher_id = _create_teacher(931)
     audio_copy = settings.uploads_dir / "part1.m4a"
     audio_copy.write_bytes((FIXTURES_DIR / "audio_lesson_snippet.m4a").read_bytes())
@@ -2448,15 +2458,18 @@ async def test_transcribe_handler_deletes_audio_after_success(isolated_env):
     await handler(task)
 
     assert not audio_copy.exists()
-    # никаких .wav не осталось в uploads_dir вовсе
-    assert list(settings.uploads_dir.glob("*.wav")) == []
 
 
-async def test_transcribe_handler_deletes_audio_even_on_failure(isolated_env):
+async def test_transcribe_handler_deletes_audio_even_on_failure(isolated_env, monkeypatch):
     """К2.4 КГ: и при ПРОВАЛЕ транскрипции — тоже ноль мусора на диске."""
     teacher_id = _create_teacher(932)
     broken_audio = settings.uploads_dir / "broken.m4a"
     broken_audio.write_text("это не аудиофайл, а текст")
+
+    async def failed_transcribe(_path):
+        raise TranscriptionError("xAI отклонил повреждённый файл")
+
+    monkeypatch.setattr("bot.handlers.transcribe", failed_transcribe)
 
     bot = FakeBot()
     handler = make_transcribe_handler(bot)
@@ -2474,7 +2487,7 @@ async def test_transcribe_handler_deletes_audio_even_on_failure(isolated_env):
     assert not broken_audio.exists()
 
 
-async def test_transcribe_handler_concatenates_multiple_parts_in_order(isolated_env):
+async def test_transcribe_handler_concatenates_multiple_parts_in_order(isolated_env, fake_xai_transcriber):
     """К2.3, ловушка 2: несколько частей одного урока — транскрипты
     склеиваются по порядку присылки."""
     teacher_id = _create_teacher(933)
@@ -2497,11 +2510,8 @@ async def test_transcribe_handler_concatenates_multiple_parts_in_order(isolated_
 
     rows = query("SELECT text, duration_seconds FROM transcripts WHERE id = ?", (result["transcript_id"],))
     text = rows[0]["text"]
-    # текст первой части должен встретиться раньше текста второй — не
-    # просто "оба текста где-то есть", а именно порядок присылки
-    assert text.count("Кинематика") >= 1 or text.count("кинематика") >= 1
-    # суммарная длительность — сумма обеих частей (не одной)
-    assert rows[0]["duration_seconds"] >= 80  # 2 x ~47с
+    assert text.count("Кинематика") == 2
+    assert rows[0]["duration_seconds"] == 94
 
 
 async def test_transcribe_handler_refuses_second_real_attempt_after_retry(isolated_env):
@@ -2650,7 +2660,7 @@ async def test_konspekt_handler_splits_long_konspekt_into_multiple_messages(isol
         assert len(text) <= 4000
 
 
-async def test_transcribe_handler_enqueues_generate_konspekt_task(isolated_env):
+async def test_transcribe_handler_enqueues_generate_konspekt_task(isolated_env, fake_xai_transcriber):
     """К4: цепочка одна (MASTER.md 0.6, п.2) — успешная расшифровка сама
     ставит задачу сборки конспекта, без ручного шага пользователя."""
     teacher_id = _create_teacher(943)

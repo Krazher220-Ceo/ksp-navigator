@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS admin_access (
 );
 
 -- transcripts/konspekty — аудио урока (блоки К2-К5, PLAN_STAGE2.md).
--- Цепочка одна: аудиозапись -> whisper.cpp -> transcripts -> konspekty ->
+-- Цепочка одна: аудиозапись -> xAI STT -> transcripts -> konspekty ->
 -- КСП. Конспект БЕЗ транскрипта (source='audio' обязателен на входе)
 -- в проекте не делается — решение автора, MASTER.md 0.6 п.2.
 CREATE TABLE IF NOT EXISTS transcripts (
