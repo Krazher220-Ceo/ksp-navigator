@@ -54,6 +54,9 @@ class Settings:
     builtin_templates_dir: Path
     logs_dir: Path
     db_path: Path
+    db_backend: str
+    supabase_url: str | None
+    supabase_service_role_key: str | None
 
     telegram_bot_token: str
 
@@ -146,6 +149,14 @@ def _build_settings() -> Settings:
     if stt_backend != "xai":
         _fail("STT_BACKEND должен быть 'xai': локальная расшифровка удалена")
 
+    db_backend = (_env("DB_BACKEND", "sqlite") or "sqlite").lower()
+    if db_backend not in {"sqlite", "supabase"}:
+        _fail("DB_BACKEND должен быть 'sqlite' или 'supabase'")
+    supabase_url = _env("SUPABASE_URL")
+    supabase_service_role_key = _env("SUPABASE_SERVICE_ROLE_KEY")
+    if db_backend == "supabase" and (not supabase_url or not supabase_service_role_key):
+        _fail("для DB_BACKEND=supabase нужны SUPABASE_URL и SUPABASE_SERVICE_ROLE_KEY")
+
     admin_chat_id_raw = _env("ADMIN_TELEGRAM_CHAT_ID")
     admin_telegram_chat_id = None
     if admin_chat_id_raw:
@@ -162,6 +173,9 @@ def _build_settings() -> Settings:
         builtin_templates_dir=builtin_templates_dir,
         logs_dir=logs_dir,
         db_path=_resolve_db_path(_env("DB_PATH", "storage/app.db")),
+        db_backend=db_backend,
+        supabase_url=supabase_url,
+        supabase_service_role_key=supabase_service_role_key,
         telegram_bot_token=telegram_bot_token,
         llm_provider_order=llm_provider_order,
         llm_providers=_build_provider_settings(llm_provider_order),

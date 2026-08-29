@@ -33,7 +33,7 @@ import logging
 import uuid
 from typing import Any, Awaitable, Callable
 
-from core.db import execute, query, transaction
+from core.db import execute, query, transaction, using_supabase
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +114,34 @@ def enqueue(task_type: str, payload: dict, chat_id: int | None = None, db_path=N
     return task_id
 
 
-def _build_claim_query() -> str:
+def _build_claim_query(db_path=None) -> str:
     """CASE по retries -> секунд задержки, из того же списка
     RETRY_DELAYS_SECONDS, что видит воркер в сообщении об ошибке —
     единый источник правды, значения не дублируются вручную в SQL."""
     cases = "\n".join(f"WHEN {i + 1} THEN {delay}" for i, delay in enumerate(RETRY_DELAYS_SECONDS))
     max_delay = RETRY_DELAYS_SECONDS[-1]
+    if using_supabase(db_path):
+        return f"""
+            UPDATE tasks
+            SET status = 'processing', updated_at = CURRENT_TIMESTAMP
+            WHERE id = (
+                SELECT id FROM tasks
+                WHERE status = 'pending'
+                  AND (
+                        retries = 0
+                        OR updated_at <= CURRENT_TIMESTAMP - (
+                            CASE retries
+                                {cases}
+                                ELSE {max_delay}
+                            END * INTERVAL '1 second'
+                        )
+                      )
+                ORDER BY created_at
+                LIMIT 1
+            )
+            AND status = 'pending'
+            RETURNING *
+        """
     return f"""
         UPDATE tasks
         SET status = 'processing', updated_at = CURRENT_TIMESTAMP
@@ -153,7 +175,7 @@ def claim_next(db_path=None) -> dict | None:
     задачу). Возвращает None, если готовых задач нет (включая те, что
     ещё "отдыхают" после неудачной попытки)."""
     with transaction(db_path) as conn:
-        cursor = conn.execute(_CLAIM_QUERY)
+        cursor = conn.execute(_build_claim_query(db_path))
         row = cursor.fetchone()
     return dict(row) if row is not None else None
 
@@ -215,20 +237,20 @@ def recover_stuck_tasks(db_path=None, stuck_minutes: int | None = None) -> int:
     а следом техническую ошибку про несуществующий файл."""
     with transaction(db_path) as conn:
         if stuck_minutes is not None:
+            stale_expression = "CURRENT_TIMESTAMP + (?::interval)" if using_supabase(db_path) else "datetime('now', ?)"
             cursor = conn.execute(
                 "UPDATE tasks SET status = 'pending', retries = retries + 1, updated_at = CURRENT_TIMESTAMP "
-                "WHERE status = 'processing' AND updated_at <= datetime('now', ?) "
-                "RETURNING id",
+                f"WHERE status = 'processing' AND updated_at <= {stale_expression} RETURNING id",
                 (f"-{stuck_minutes} minutes",),
             )
             return len(cursor.fetchall())
 
         total_recovered = 0
         for task_type, minutes in STUCK_PROCESSING_MINUTES_BY_TYPE.items():
+            stale_expression = "CURRENT_TIMESTAMP + (?::interval)" if using_supabase(db_path) else "datetime('now', ?)"
             cursor = conn.execute(
                 "UPDATE tasks SET status = 'pending', retries = retries + 1, updated_at = CURRENT_TIMESTAMP "
-                "WHERE status = 'processing' AND type = ? AND updated_at <= datetime('now', ?) "
-                "RETURNING id",
+                f"WHERE status = 'processing' AND type = ? AND updated_at <= {stale_expression} RETURNING id",
                 (task_type, f"-{minutes} minutes"),
             )
             total_recovered += len(cursor.fetchall())
@@ -240,10 +262,11 @@ def recover_stuck_tasks(db_path=None, stuck_minutes: int | None = None) -> int:
         # оставлена страховкой на будущий тип задачи.
         known_types = tuple(STUCK_PROCESSING_MINUTES_BY_TYPE.keys())
         placeholders = ",".join("?" * len(known_types))
+        stale_expression = "CURRENT_TIMESTAMP + (?::interval)" if using_supabase(db_path) else "datetime('now', ?)"
         cursor = conn.execute(
             f"UPDATE tasks SET status = 'pending', retries = retries + 1, updated_at = CURRENT_TIMESTAMP "
             f"WHERE status = 'processing' AND type NOT IN ({placeholders}) "
-            f"AND updated_at <= datetime('now', ?) RETURNING id",
+            f"AND updated_at <= {stale_expression} RETURNING id",
             (*known_types, f"-{STUCK_PROCESSING_MINUTES} minutes"),
         )
         total_recovered += len(cursor.fetchall())

@@ -1,40 +1,109 @@
-"""
-core/db.py — тонкая обёртка над стандартным sqlite3.
+"""Единая точка доступа к SQLite и Supabase PostgREST.
 
-Зачем модуль: единая точка доступа к базе для всех остальных модулей —
-чтобы нужные PRAGMA, row_factory и логика транзакций не дублировались
-в каждом месте, где нужна база.
-
-Что осознанно не делает: не является ORM. Никакого маппинга таблиц на
-классы и никакой генерации SQL по описанию модели — при часе в неделю
-такая надстройка стоит времени больше, чем экономит (см. MASTER.md,
-ловушка задачи Б1.2).
-
-На что опирается: только стандартная библиотека sqlite3. Путь к базе
-по умолчанию берётся из core.config.settings.db_path, но каждая функция
-принимает db_path явно — это нужно для тестов (база создаётся в tmp)
-и для scripts/init_db.py (пересоздание базы с нуля).
+SQLite остаётся локальным резервом и используется тестами по явному пути.
+Supabase выполняет параметризованные запросы через закрытую RPC-функцию.
+Модуль не является ORM и не создаёт удалённую схему: это делает SQL-скрипт.
 """
 
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
+
+import httpx
 
 from core.config import settings
 
+
 DEFAULT_SCHEMA_PATH = settings.base_dir / "storage" / "schema.sql"
+_SUPABASE_RPC_NAME = "ksp_execute_sql"
 
 
-def connect(db_path: Path | str | None = None) -> sqlite3.Connection:
-    """Открывает соединение с базой с нужными PRAGMA и row_factory.
+class SupabaseDatabaseError(RuntimeError):
+    """PostgREST не принял запрос к Supabase или вернул неполный ответ."""
 
-    row_factory=sqlite3.Row — доступ к столбцам по имени (row["name"]).
-    journal_mode=WAL — параллельное чтение во время записи (бот и
-    воркер очереди работают в одном процессе, но конкурентный доступ
-    возможен).
-    foreign_keys=ON — SQLite не включает проверку внешних ключей по
-    умолчанию, её нужно явно запрашивать на каждом соединении.
-    """
+
+class RemoteCursor:
+    """Небольшой аналог sqlite3.Cursor для уже полученного ответа RPC."""
+
+    def __init__(self, rows: list[dict[str, Any]], rowcount: int) -> None:
+        self._rows = rows
+        self.rowcount = rowcount
+        self.lastrowid = rows[0].get("id") if len(rows) == 1 else None
+
+    def fetchone(self) -> dict[str, Any] | None:
+        return self._rows[0] if self._rows else None
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return list(self._rows)
+
+
+class SupabaseConnection:
+    """Синхронный адаптер существующего cursor-интерфейса к PostgREST RPC."""
+
+    def __init__(self) -> None:
+        if not settings.supabase_url or not settings.supabase_service_role_key:
+            raise SupabaseDatabaseError(
+                "для Supabase не заданы SUPABASE_URL или SUPABASE_SERVICE_ROLE_KEY"
+            )
+        self._url = settings.supabase_url.rstrip("/") + f"/rest/v1/rpc/{_SUPABASE_RPC_NAME}"
+        self._headers = {
+            "apikey": settings.supabase_service_role_key,
+            "Authorization": f"Bearer {settings.supabase_service_role_key}",
+            "Content-Type": "application/json",
+        }
+
+    def execute(self, sql: str, params: tuple = ()) -> RemoteCursor:
+        try:
+            with httpx.Client(timeout=30) as client:
+                response = client.post(
+                    self._url,
+                    headers=self._headers,
+                    json={"statement": sql, "parameters": list(params)},
+                )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise SupabaseDatabaseError(f"Supabase не выполнил запрос: {exc}") from exc
+
+        try:
+            payload = response.json()
+            rows = payload["rows"]
+            rowcount = payload["rowcount"]
+        except (TypeError, ValueError, KeyError) as exc:
+            raise SupabaseDatabaseError("Supabase вернул ответ в неизвестном формате") from exc
+        if not isinstance(rows, list) or not isinstance(rowcount, int):
+            raise SupabaseDatabaseError("Supabase вернул некорректные строки запроса")
+        return RemoteCursor(rows, rowcount)
+
+    def executemany(self, sql: str, params_list: list[tuple]) -> None:
+        for params in params_list:
+            self.execute(sql, params)
+
+    def commit(self) -> None:
+        """Каждый RPC-вызов PostgREST уже завершается одной транзакцией."""
+
+    def rollback(self) -> None:
+        """Незавершённой локальной транзакции при PostgREST не существует."""
+
+    def close(self) -> None:
+        """Клиенты httpx закрываются внутри execute()."""
+
+
+def _use_supabase(db_path: Path | str | None) -> bool:
+    """Явный путь всегда означает SQLite: так изолированы тесты и миграции."""
+    return db_path is None and settings.db_backend == "supabase"
+
+
+def using_supabase(db_path: Path | str | None = None) -> bool:
+    """Публичный выбор диалекта для редких запросов с разным SQL-синтаксисом."""
+    return _use_supabase(db_path)
+
+
+def connect(db_path: Path | str | None = None) -> sqlite3.Connection | SupabaseConnection:
+    """Открывает SQLite либо адаптер Supabase согласно текущим настройкам."""
+    if _use_supabase(db_path):
+        return SupabaseConnection()
+
     path = Path(db_path) if db_path is not None else settings.db_path
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -47,8 +116,11 @@ def init_db(
     db_path: Path | str | None = None,
     schema_path: Path | str | None = None,
 ) -> None:
-    """Применяет schema.sql к базе. Безопасно вызывать повторно —
-    все инструкции в schema.sql идут через IF NOT EXISTS."""
+    """Применяет SQLite-схему; удалённая схема разворачивается в SQL Editor."""
+    if _use_supabase(db_path):
+        raise SupabaseDatabaseError(
+            "схема Supabase применяется файлом storage/schema_supabase.sql через SQL Editor"
+        )
     schema = Path(schema_path) if schema_path is not None else DEFAULT_SCHEMA_PATH
     sql = schema.read_text(encoding="utf-8")
     conn = connect(db_path)
@@ -61,16 +133,7 @@ def init_db(
 
 @contextmanager
 def transaction(db_path: Path | str | None = None):
-    """Контекстный менеджер транзакции: коммит при успешном выходе из
-    блока `with`, откат при любом исключении внутри блока.
-
-    Отдаёт открытое соединение — вызывающий код сам делает execute()
-    на нём столько раз, сколько нужно внутри одной транзакции:
-
-        with transaction(db_path) as conn:
-            conn.execute("INSERT INTO teachers (name) VALUES (?)", (name,))
-            conn.execute("INSERT INTO style_profiles (teacher_id) VALUES (?)", (tid,))
-    """
+    """Даёт совместимый интерфейс транзакции для SQLite и одиночных RPC-вызовов."""
     conn = connect(db_path)
     try:
         yield conn
@@ -82,27 +145,17 @@ def transaction(db_path: Path | str | None = None):
         conn.close()
 
 
-def query(
-    sql: str,
-    params: tuple = (),
-    db_path: Path | str | None = None,
-) -> list[sqlite3.Row]:
-    """Выполняет SELECT и возвращает все строки."""
+def query(sql: str, params: tuple = (), db_path: Path | str | None = None) -> list[Any]:
+    """Выполняет SELECT и возвращает строки с доступом по именам столбцов."""
     conn = connect(db_path)
     try:
-        cursor = conn.execute(sql, params)
-        return cursor.fetchall()
+        return conn.execute(sql, params).fetchall()
     finally:
         conn.close()
 
 
-def execute(
-    sql: str,
-    params: tuple = (),
-    db_path: Path | str | None = None,
-) -> int | None:
-    """Выполняет один INSERT/UPDATE/DELETE, коммитит сразу же и
-    возвращает lastrowid (для INSERT в таблицу с INTEGER PRIMARY KEY)."""
+def execute(sql: str, params: tuple = (), db_path: Path | str | None = None) -> int | None:
+    """Выполняет INSERT/UPDATE/DELETE и возвращает первичный ключ нового объекта."""
     conn = connect(db_path)
     try:
         cursor = conn.execute(sql, params)
@@ -112,12 +165,8 @@ def execute(
         conn.close()
 
 
-def executemany(
-    sql: str,
-    params_list: list[tuple],
-    db_path: Path | str | None = None,
-) -> None:
-    """Выполняет один SQL-запрос для списка наборов параметров одной транзакцией."""
+def executemany(sql: str, params_list: list[tuple], db_path: Path | str | None = None) -> None:
+    """Выполняет один запрос для набора параметров через выбранный backend."""
     conn = connect(db_path)
     try:
         conn.executemany(sql, params_list)

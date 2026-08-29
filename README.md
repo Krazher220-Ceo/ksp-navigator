@@ -78,6 +78,7 @@ test -f .env || cp .env.example .env
 | `WEBAPP_URL` | заполняется в шаге 6, после настройки туннеля — пока можно оставить пустым, бот заработает и без него (`/templates` просто скажет, что Mini App пока не настроен) |
 | `ADMIN_TELEGRAM_CHAT_ID` | твой личный `chat_id` в Telegram (узнать: написать `@userinfobot`) — сюда бот шлёт уведомление о завершившемся сбое живучести. Не задан — уведомления не шлются, только пишутся в БД |
 | `XAI_API_KEY` | ключ xAI для расшифровки аудио уроков |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | URL проекта и service-role ключ для миграции С2; ключ не публикуется и не попадает в git |
 
 Остальные переменные (`WEBAPP_PORT`, `DB_PATH`, `LOG_LEVEL`,
 `STT_BACKEND`, `STT_LANGUAGE`) можно оставить как в
@@ -103,6 +104,21 @@ sqlite3 storage/app.db "SELECT COUNT(*) FROM curriculum_objectives;"
 ```
 
 Ожидается `46`.
+
+### Переход на Supabase
+
+SQLite остаётся резервным режимом. Перед первым переносом выполните в
+Supabase Dashboard → SQL Editor файл `storage/schema_supabase.sql`, затем:
+
+```bash
+venv/bin/python scripts/migrate_sqlite_to_supabase.py
+venv/bin/python scripts/migrate_sqlite_to_supabase.py --apply
+```
+
+Первая команда ничего не меняет и показывает счётчики SQLite. Вторая создаёт
+проверяемый бэкап в `backup/`, переносит данные и сверяет число строк. Только
+после совпадения счётчиков укажите в `.env` `DB_BACKEND=supabase`; вернуть
+`DB_BACKEND=sqlite` можно в любой момент.
 
 ---
 
@@ -342,8 +358,6 @@ tests/      — pytest, 198 тестов на весь код выше.
 
 ## 13. Чего в этапе 1 нет
 
-Полный список — `PLAN_STAGE1.md`, раздел C. Коротко: никакой
-транскрипции аудио, OCR, аналитики покрытия программы, предсказания
-тем СОР/СОЧ, Supabase/pgvector, React/Next.js. Mini App — ровно два
-экрана (шаблоны, предпросмотр), ничего не редактирует. Всё это —
-следующие этапы, см. `MASTER.md`, часть IV.
+Аналитика покрытия программы, эмбеддинги, pgvector, React/Next.js,
+диаризация, Redis, Docker и новые зависимости не входят в текущий план.
+Supabase используется только как Postgres через PostgREST, без SDK.
