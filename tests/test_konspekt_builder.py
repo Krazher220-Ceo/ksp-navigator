@@ -53,6 +53,19 @@ def test_notice_present_and_not_copied_from_ksp(tmp_path):
     assert "утвержд" not in DRAFT_NOTICE_TEXT  # не "требует утверждения педагогом" — конспект никто не утверждает
 
 
+def test_ai_generated_mark_in_document_properties(tmp_path):
+    """Ю1 (PLAN.md): машиночитаемая метка ИИ обязана быть и здесь, не
+    только у КСП — конспект тоже результат генерации."""
+    from core.docx_builder import AI_GENERATED_CATEGORY, AI_GENERATED_COMMENT
+
+    out_path = tmp_path / "konspekt_ai_mark.docx"
+    build_konspekt_docx(SAMPLE_CONTENT, out_path)
+
+    document = Document(str(out_path))
+    assert document.core_properties.category == AI_GENERATED_CATEGORY
+    assert document.core_properties.comments == AI_GENERATED_COMMENT
+
+
 def test_title_and_tema_present(tmp_path):
     out_path = tmp_path / "konspekt.docx"
     build_konspekt_docx(SAMPLE_CONTENT, out_path)

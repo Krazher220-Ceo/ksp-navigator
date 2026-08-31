@@ -32,7 +32,7 @@ from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt, RGBColor
 
-from core.docx_builder import _apply_page_setup, _strip_unsafe_filename_chars, _transliterate
+from core.docx_builder import _apply_page_setup, _strip_unsafe_filename_chars, _transliterate, mark_ai_generated
 from core.konspekt_generator import CELI_NOT_STATED_NOTE
 
 # К6, ловушка из плана: пометка F7 у КСП ("ЧЕРНОВИК. Требует проверки и
@@ -92,6 +92,7 @@ def build_konspekt_docx(content: dict, out_path: Path | str) -> Path:
     структура разделов — та же, порядок тот же). Раздел рендерится,
     только если в content для него реально есть данные."""
     document = Document()
+    mark_ai_generated(document)  # Ю1 — метка в свойствах документа
     _apply_page_setup(document)
     _add_notice(document)
     # Старые записи в базе были сохранены до К1 плоским словарём. Они

@@ -16,6 +16,8 @@ from docx import Document
 from core.db import execute, init_db
 from core.docx_builder import (
     ADAPTACIYA_OOP_TEXT,
+    AI_GENERATED_CATEGORY,
+    AI_GENERATED_COMMENT,
     DRAFT_NOTICE_TEXT,
     KRITERII_USPEHA_TITLE,
     MANDATORY_NOTICE_TEXT,
@@ -152,6 +154,19 @@ def test_draft_notice_is_bold_and_red(db_with_builtins, tmp_path):
     run = document.paragraphs[0].runs[0]
     assert run.bold is True
     assert run.font.color.rgb is not None
+
+
+def test_ai_generated_mark_in_document_properties(db_with_builtins, tmp_path):
+    """Ю1 (PLAN.md), статья 21 п.2 Закона РК «Об искусственном интеллекте»
+    № 230-VIII: результат ИИ требует и видимую (test_draft_notice_*
+    выше), и машиночитаемую форму предупреждения — эта проверяет вторую."""
+    template = get_template(_template_ids(db_with_builtins)[0], db_path=db_with_builtins)
+    out_path = tmp_path / "ai_mark.docx"
+    build_docx(SAMPLE_CONTENT, template, out_path)
+
+    document = Document(str(out_path))
+    assert document.core_properties.category == AI_GENERATED_CATEGORY
+    assert document.core_properties.comments == AI_GENERATED_COMMENT
 
 
 # --- Б5.1: оформление страницы ---

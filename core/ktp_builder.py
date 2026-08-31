@@ -32,6 +32,7 @@ from core.docx_builder import (
     PAGE_HEIGHT_CM,
     PAGE_WIDTH_CM,
     _strip_unsafe_filename_chars,
+    mark_ai_generated,
 )
 
 TITLE_TEXT = "Среднесрочный (календарно-тематический) план по предметам"
@@ -147,6 +148,7 @@ def build_ktp_docx(content: dict, out_path: Path | str) -> Path:
       документу, а не отдельно для каждой четверти, как в реальных КТП).
     """
     document = Document()
+    mark_ai_generated(document)  # Ю1 — метка в свойствах документа
     _apply_page_setup(document)
     _add_draft_notice(document)
 

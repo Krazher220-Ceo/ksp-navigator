@@ -32,6 +32,26 @@ from docx.table import Table, _Cell
 # у build_docx нет способа её отключить, это осознанное ограничение. ---
 DRAFT_NOTICE_TEXT = "ЧЕРНОВИК. Требует проверки и утверждения педагогом. Сформировано автоматически."
 
+# --- Ю1 (PLAN.md): машиночитаемая метка результата ИИ. Статья 21 п.2
+# Закона РК «Об искусственном интеллекте» № 230-VIII требует и видимую,
+# и машиночитаемую форму предупреждения — видимая уже есть (DRAFT_NOTICE_TEXT
+# и её аналоги в core/konspekt_builder.py, core/ktp_builder.py), эта
+# константа и mark_ai_generated() закрывают вторую половину требования. ---
+AI_GENERATED_COMMENT = (
+    "Создано с использованием системы искусственного интеллекта. "
+    "Черновик, требует проверки педагога."
+)
+AI_GENERATED_CATEGORY = "AI-generated draft"
+
+
+def mark_ai_generated(document: Document) -> None:
+    """Записывает метку ИИ в свойства документа (core_properties) —
+    единая функция для всех трёх сборщиков (КСП, КТП, конспект), чтобы
+    текст метки не разъехался между ними."""
+    document.core_properties.comments = AI_GENERATED_COMMENT
+    document.core_properties.category = AI_GENERATED_CATEGORY
+
+
 TITLE_TEXT = "Краткосрочный (поурочный) план"
 
 # Оба абзаца — дословно из приложения 4 приказа МОН РК №130 в редакции от
@@ -414,6 +434,7 @@ def build_docx(content: dict, template: dict, out_path: Path | str) -> Path:
     orientation = "album" if content.get("page_orientation") == "album" else "book"
 
     document = Document()
+    mark_ai_generated(document)  # Ю1 — метка в свойствах документа
     page_width_cm, _ = _apply_page_setup(document, orientation=orientation)
     table_width_cm = page_width_cm - 2 * MARGIN_CM
     _add_draft_notice(document)  # F7 — первая строка документа, всегда

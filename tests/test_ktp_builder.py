@@ -68,6 +68,17 @@ def test_draft_notice_present(tmp_path):
     assert document.paragraphs[0].text.startswith("ЧЕРНОВИК")
 
 
+def test_ai_generated_mark_in_document_properties(tmp_path):
+    """Ю1 (PLAN.md): машиночитаемая метка ИИ обязана быть и у КТП."""
+    from core.docx_builder import AI_GENERATED_CATEGORY, AI_GENERATED_COMMENT
+
+    out_path = tmp_path / "ktp_ai_mark.docx"
+    result = build_ktp_docx(SAMPLE_CONTENT, out_path)
+    document = Document(str(result))
+    assert document.core_properties.category == AI_GENERATED_CATEGORY
+    assert document.core_properties.comments == AI_GENERATED_COMMENT
+
+
 def test_table_has_seven_official_columns(tmp_path):
     out_path = tmp_path / "ktp.docx"
     result = build_ktp_docx(SAMPLE_CONTENT, out_path)
