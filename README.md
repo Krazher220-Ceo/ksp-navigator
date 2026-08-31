@@ -281,8 +281,77 @@ launchctl load ~/Library/LaunchAgents/com.alikhan.backup.plist
 
 ## 10. Бэкап — снять и накатить
 
-Снять руками (обычно это делает `launchd/com.alikhan.backup.plist`
-сам, ежедневно в 03:00):
+Боевая база — Supabase (Postgres), не `storage/app.db`. Ежедневный бэкап
+(`launchd/com.alikhan.backup.plist`, 03:00) с блока Э4 снимает копию именно с
+неё, скриптом `scripts/backup_supabase.py`. Раздел 10.1 — этот, актуальный,
+путь. Раздел 10.2 — `scripts/backup_db.sh`, он остаётся рабочим для
+резервного режима `DB_BACKEND=sqlite`, но по расписанию больше не запускается.
+
+### 10.1 Бэкап Supabase (боевая база)
+
+Снять руками (обычно это делает launchd сам, ежедневно в 03:00):
+
+```bash
+venv/bin/python scripts/backup_supabase.py
+ls -la backup/
+```
+
+Скрипт читает все таблицы `storage/schema.sql` через `core.db.query` (тот же
+HTTP/RPC, каким бот и так читает Supabase) и складывает их в файл SQLite
+`backup/supabase_ГГГГ-ММ-ДД.db` — целостность такого файла проверяется той же
+`PRAGMA integrity_check`, что и `storage/app.db`. Хранится 14 дней, старше —
+удаляется автоматически. Подробности — в шапке `scripts/backup_supabase.py`.
+
+**Как проверить, что бэкап настоящий, а не как 30.08–31.08** (тогда скрипт
+рапортовал `OK`, но копировал уже мёртвый файл): счётчики строк должны
+совпадать с боевыми.
+
+```bash
+sqlite3 backup/supabase_2026-08-31.db "SELECT COUNT(*) FROM teachers;"
+```
+
+Сравнить с тем же счётчиком в Supabase (Dashboard → Table Editor → teachers,
+или через `venv/bin/python -c "from core.db import query; print(len(query('select * from teachers')))"`
+при `DB_BACKEND=supabase` в `.env`).
+
+**Накатить бэкап обратно, когда Supabase недоступна.** RPC `ksp_execute_sql`
+не пропускает DDL (см. `PLAN.md`, грабля 2.13) — восстановить строки внутрь
+Supabase кодом этого блока нельзя, это ручная операция через Dashboard.
+Проверенный путь на случай отказа Supabase — временно поднять бота на самом
+бэкапе, в резервном режиме:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.alikhan.kspbot.plist
+launchctl unload ~/Library/LaunchAgents/com.alikhan.webapi.plist
+cp backup/supabase_2026-08-31.db storage/app.db
+```
+
+Затем в `.env` временно `DB_BACKEND=sqlite`, снова:
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.alikhan.kspbot.plist
+launchctl load ~/Library/LaunchAgents/com.alikhan.webapi.plist
+```
+
+Бот поднимется на данных из бэкапа, `/status` покажет те же задачи, что были
+в Supabase на момент снятия копии. Это временный режим для непрерывности
+работы, а не восстановление самой Supabase — новые данные в этом режиме в
+Supabase не попадут, пока `DB_BACKEND` не вернут обратно. Вернуть:
+`DB_BACKEND=supabase` в `.env` и снова `kickstart` бота и веб-сервера.
+
+(Дату `2026-08-31` в имени файла бэкапа — подставь свою, из `ls backup/`.)
+
+Проверка, что файл рабочий:
+
+```bash
+sqlite3 backup/supabase_2026-08-31.db "PRAGMA integrity_check;"
+```
+
+Ожидается `ok`.
+
+### 10.2 Бэкап SQLite (резервный режим `DB_BACKEND=sqlite`)
+
+Актуально только если бот реально работает в этом режиме — не боевой путь.
 
 ```bash
 bash scripts/backup_db.sh
