@@ -317,6 +317,40 @@ HISTORY_HEADER = "Последние сгенерированные КСП:"
 HISTORY_ROW_BUTTON = "{date} — {topic}"
 HISTORY_FILE_MISSING = "Файл этой генерации больше не найден на диске, к сожалению."
 
+# --- /class (У2, PLAN.md): педагог создаёт класс и выдаёт код приглашения ---
+
+MENU_BUTTON_CLASS = "🏫 Мои классы"
+CLASS_LIST_HEADER = "Ваши классы:"
+CLASS_LIST_EMPTY = "У вас пока нет классов."
+CLASS_LIST_ROW_BUTTON = "{name} — {count} уч."
+CLASS_CREATE_BUTTON = "+ Создать класс"
+CLASS_ASK_NAME = "Название класса? Например: 10 А"
+CLASS_ASK_SUBJECT = "Какой предмет? Если не хотите указывать — отправьте «-»."
+CLASS_CONFIRM_SUMMARY = "Класс «{name}»\nПредмет: {subject}\n\nВсё верно?"
+CLASS_CONFIRM_NO_SUBJECT = "не указан"
+CLASS_CONFIRM_DONE_BUTTON = "Готово"
+CLASS_CREATED = "Класс «{name}» создан."
+CLASS_INVITE_CODE_MESSAGE = (
+    "Код приглашения для класса «{name}»:\n\n"
+    "{code}\n\n"
+    "Продиктуйте его классу или покажите с экрана — в боте ученик нажимает "
+    "«Я ученик» и вводит этот код, чтобы вступить."
+)
+CLASS_CARD = "«{name}»\nПредмет: {subject}\nУчеников: {count}\nКод приглашения: {code}"
+CLASS_REGEN_BUTTON = "Перевыпустить код"
+CLASS_DELETE_BUTTON = "Удалить класс"
+CLASS_BACK_TO_LIST_BUTTON = "← К списку классов"
+CLASS_NOT_FOUND = "Класс не найден — возможно, уже удалён."
+CLASS_REGENERATED = "Новый код приглашения для «{name}»: {code}\nСтарый код больше не действует."
+CLASS_DELETE_CONFIRM = (
+    "Удалить класс «{name}»? Ученики останутся в системе — удалится только "
+    "их связь с этим классом, не сами ученики и не их данные. Действие необратимо."
+)
+CLASS_DELETE_CONFIRM_BUTTON = "Подтверждаю удаление"
+CLASS_DELETE_CANCEL_BUTTON = "Отменить"
+CLASS_DELETED = "Класс «{name}» удалён."
+CLASS_DELETE_CANCELLED = "Отменено — класс не тронут."
+
 # --- Ю2 (PLAN.md): /delete_my_data — статьи 18, 24, 25 Закона РК «О
 # персональных данных и их защите» № 94-V. "Есть"/"нет" — про профиль
 # стиля намеренно, не число: у учителя либо есть один такой профиль,
@@ -431,6 +465,7 @@ BOT_COMMANDS = [
     ("generate_ktp", "Собрать календарно-тематический план"),
     ("dashboard", "Дашборд — сводка по всему"),
     ("teacher", "Профиль педагога"),
+    ("class", "Мои классы — код приглашения для учеников"),
     ("upload_ksp", "Загрузить прошлые КСП для анализа стиля"),
     ("upload_ktp", "Загрузить КТП"),
     ("templates", "Шаблоны КСП"),

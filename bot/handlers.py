@@ -50,7 +50,7 @@ from aiogram.types import (
 
 from bot import keyboards, texts
 from bot.navigation import go_back, go_to
-from bot.states import Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
+from bot.states import ClassCreate, Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
 from core.config import settings
 from core.dashboard import collect as collect_dashboard
 from core.db import SupabaseDatabaseError, execute, query
@@ -2024,6 +2024,277 @@ async def cmd_history(message: Message) -> None:
 
 
 # =====================================================================
+# /class (У2, PLAN.md) — педагог создаёт класс и выдаёт код приглашения.
+# Ученика и вступление по коду добавляет только блок У3 — здесь класс
+# существует, но вступить в него пока некому.
+# =====================================================================
+
+# Алфавит инвайт-кода — без 0/O/1/I/L: цифры и буквы, которые визуально
+# путаются что на экране, что при попытке продиктовать код вслух
+# (ловушка блока У1, дословно "без похожих символов (0/O, 1/l)"; I и L
+# исключены той же логикой — код всегда отображается заглавными буквами,
+# а заглавная L от цифры 1 отличается не больше, чем строчная l).
+_INVITE_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
+_INVITE_CODE_LENGTH = 6
+_INVITE_CODE_MAX_ATTEMPTS = 10
+
+
+def _generate_invite_code(db_path=None) -> str:
+    """Короткий код, читаемый вслух; уникальность проверяется у самой
+    базы, а не предполагается по размеру алфавита (2.7: не подставлять
+    правдоподобное вместо проверенного) — при 32 символах и длине 6
+    (32**6 ≈ 1.07 млрд комбинаций) коллизия на масштабе пилота
+    практически невозможна, но убедиться дешевле, чем гадать."""
+    for _ in range(_INVITE_CODE_MAX_ATTEMPTS):
+        code = "".join(secrets.choice(_INVITE_CODE_ALPHABET) for _ in range(_INVITE_CODE_LENGTH))
+        existing = query("SELECT 1 FROM classes WHERE invite_code = ?", (code,), db_path=db_path)
+        if not existing:
+            return code
+    raise RuntimeError("не удалось подобрать уникальный код приглашения за отведённое число попыток")
+
+
+def _count_class_members(class_id: int, db_path=None) -> int:
+    rows = query("SELECT COUNT(*) AS n FROM class_members WHERE class_id = ?", (class_id,), db_path=db_path)
+    return rows[0]["n"]
+
+
+def _class_list_keyboard(classes: list[dict]) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=texts.CLASS_LIST_ROW_BUTTON.format(name=c["name"], count=_count_class_members(c["id"]))[:64],
+                callback_data=f"class_view:{c['id']}",
+            )
+        ]
+        for c in classes
+    ]
+    rows.append([InlineKeyboardButton(text=texts.CLASS_CREATE_BUTTON, callback_data="class_create")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _class_card_keyboard(class_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=texts.CLASS_REGEN_BUTTON, callback_data=f"class_regen:{class_id}")],
+            [InlineKeyboardButton(text=texts.CLASS_DELETE_BUTTON, callback_data=f"class_delete:{class_id}")],
+            [InlineKeyboardButton(text=texts.CLASS_BACK_TO_LIST_BUTTON, callback_data="class_list")],
+        ]
+    )
+
+
+def _class_delete_confirm_keyboard(class_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=texts.CLASS_DELETE_CONFIRM_BUTTON, callback_data=f"class_delete_confirm:{class_id}"
+                ),
+                InlineKeyboardButton(
+                    text=texts.CLASS_DELETE_CANCEL_BUTTON, callback_data=f"class_delete_cancel:{class_id}"
+                ),
+            ]
+        ]
+    )
+
+
+async def _send_class_list(message: Message, teacher_id: int) -> None:
+    classes = query(
+        "SELECT id, name, subject, invite_code FROM classes WHERE teacher_id = ? ORDER BY created_at",
+        (teacher_id,),
+    )
+    if not classes:
+        await message.answer(
+            texts.CLASS_LIST_EMPTY,
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[InlineKeyboardButton(text=texts.CLASS_CREATE_BUTTON, callback_data="class_create")]]
+            ),
+        )
+        return
+    await message.answer(texts.CLASS_LIST_HEADER, reply_markup=_class_list_keyboard([dict(row) for row in classes]))
+
+
+@router.message(Command("class"))
+async def cmd_class(message: Message) -> None:
+    teacher = await _require_teacher(message)
+    if teacher is None:
+        return
+    await _send_class_list(message, teacher["id"])
+
+
+@router.callback_query(F.data == "class_list")
+async def class_list_requested(callback: CallbackQuery) -> None:
+    teacher = _get_teacher(callback.from_user.id)
+    if teacher is not None:
+        await _send_class_list(callback.message, teacher["id"])
+    await callback.answer()
+
+
+async def _ask_class_name(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.CLASS_ASK_NAME
+    if data.get("name"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["name"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _ask_class_subject(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    text = texts.CLASS_ASK_SUBJECT
+    if data.get("subject"):
+        text += texts.CURRENT_VALUE_NOTE.format(value=data["subject"], back=texts.BUTTON_BACK)
+    await message.answer(text, reply_markup=keyboards.back_cancel_keyboard())
+
+
+async def _render_class_confirmation(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    summary = texts.CLASS_CONFIRM_SUMMARY.format(
+        name=data["name"], subject=data.get("subject") or texts.CLASS_CONFIRM_NO_SUBJECT
+    )
+    rows = [[InlineKeyboardButton(text=texts.CLASS_CONFIRM_DONE_BUTTON, callback_data="class_confirm_create")]]
+    await message.answer(summary, reply_markup=keyboards.with_back_row(rows))
+
+
+@router.callback_query(F.data == "class_create")
+async def class_create_started(callback: CallbackQuery, state: FSMContext) -> None:
+    teacher = _get_teacher(callback.from_user.id)
+    if teacher is None:
+        await callback.answer()
+        return
+    await go_to(state, ClassCreate.waiting_for_name)
+    await _ask_class_name(callback.message, state)
+    await callback.answer()
+
+
+@router.message(ClassCreate.waiting_for_name)
+async def class_name_received(message: Message, state: FSMContext) -> None:
+    name = (message.text or "").strip()
+    if not name:
+        await _ask_class_name(message, state)
+        return
+    await state.update_data(name=name)
+    await go_to(state, ClassCreate.waiting_for_subject)
+    await _ask_class_subject(message, state)
+
+
+@router.message(ClassCreate.waiting_for_subject)
+async def class_subject_received(message: Message, state: FSMContext) -> None:
+    text = (message.text or "").strip()
+    subject = None if text in ("-", "") else text
+    await state.update_data(subject=subject)
+    await go_to(state, ClassCreate.waiting_for_confirmation)
+    await _render_class_confirmation(message, state)
+
+
+@router.callback_query(ClassCreate.waiting_for_confirmation, F.data == "class_confirm_create")
+async def class_create_confirmed(callback: CallbackQuery, state: FSMContext) -> None:
+    teacher = _get_teacher(callback.from_user.id)
+    if teacher is None:
+        await state.clear()
+        await callback.answer()
+        return
+    data = await state.get_data()
+    name = data["name"]
+    subject = data.get("subject")
+
+    invite_code = _generate_invite_code()
+    execute(
+        "INSERT INTO classes (teacher_id, name, subject, invite_code) VALUES (?, ?, ?, ?)",
+        (teacher["id"], name, subject, invite_code),
+    )
+    await state.clear()
+
+    await callback.message.answer(texts.CLASS_CREATED.format(name=name), reply_markup=keyboards.MAIN_MENU)
+    # Код приглашения — отдельным сообщением, крупно (У2, дословно план):
+    # его показывают с экрана или диктуют вслух, смешивать с другим
+    # текстом неудобно копировать/фотографировать.
+    await callback.message.answer(texts.CLASS_INVITE_CODE_MESSAGE.format(name=name, code=invite_code))
+    await callback.answer()
+
+
+def _get_teacher_class(class_id: int, teacher_id: int, db_path=None) -> dict | None:
+    rows = query(
+        "SELECT id, name, subject, invite_code FROM classes WHERE id = ? AND teacher_id = ?",
+        (class_id, teacher_id),
+        db_path=db_path,
+    )
+    return dict(rows[0]) if rows else None
+
+
+async def _send_class_card(message: Message, class_row: dict) -> None:
+    count = _count_class_members(class_row["id"])
+    text = texts.CLASS_CARD.format(
+        name=class_row["name"],
+        subject=class_row["subject"] or texts.CLASS_CONFIRM_NO_SUBJECT,
+        count=count,
+        code=class_row["invite_code"],
+    )
+    await message.answer(text, reply_markup=_class_card_keyboard(class_row["id"]))
+
+
+@router.callback_query(F.data.startswith("class_view:"))
+async def class_view_requested(callback: CallbackQuery) -> None:
+    class_id = int(callback.data.split(":", 1)[1])
+    teacher = _get_teacher(callback.from_user.id)
+    class_row = _get_teacher_class(class_id, teacher["id"]) if teacher else None
+    if class_row is None:
+        await callback.answer(texts.CLASS_NOT_FOUND, show_alert=True)
+        return
+    await _send_class_card(callback.message, class_row)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("class_regen:"))
+async def class_regen_requested(callback: CallbackQuery) -> None:
+    class_id = int(callback.data.split(":", 1)[1])
+    teacher = _get_teacher(callback.from_user.id)
+    class_row = _get_teacher_class(class_id, teacher["id"]) if teacher else None
+    if class_row is None:
+        await callback.answer(texts.CLASS_NOT_FOUND, show_alert=True)
+        return
+    new_code = _generate_invite_code()
+    execute("UPDATE classes SET invite_code = ? WHERE id = ?", (new_code, class_id))
+    await callback.message.answer(texts.CLASS_REGENERATED.format(name=class_row["name"], code=new_code))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("class_delete:"))
+async def class_delete_requested(callback: CallbackQuery) -> None:
+    class_id = int(callback.data.split(":", 1)[1])
+    teacher = _get_teacher(callback.from_user.id)
+    class_row = _get_teacher_class(class_id, teacher["id"]) if teacher else None
+    if class_row is None:
+        await callback.answer(texts.CLASS_NOT_FOUND, show_alert=True)
+        return
+    await callback.message.answer(
+        texts.CLASS_DELETE_CONFIRM.format(name=class_row["name"]),
+        reply_markup=_class_delete_confirm_keyboard(class_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("class_delete_confirm:"))
+async def class_delete_confirmed(callback: CallbackQuery) -> None:
+    class_id = int(callback.data.split(":", 1)[1])
+    teacher = _get_teacher(callback.from_user.id)
+    class_row = _get_teacher_class(class_id, teacher["id"]) if teacher else None
+    if class_row is None:
+        await callback.answer(texts.CLASS_NOT_FOUND, show_alert=True)
+        return
+    # Только связь с классом — не сами ученики (У1, ловушка): удаление
+    # класса не удаляет учеников, они могут состоять и в других классах.
+    execute("DELETE FROM class_members WHERE class_id = ?", (class_id,))
+    execute("DELETE FROM classes WHERE id = ?", (class_id,))
+    await callback.message.answer(texts.CLASS_DELETED.format(name=class_row["name"]))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("class_delete_cancel:"))
+async def class_delete_cancelled(callback: CallbackQuery) -> None:
+    await callback.message.answer(texts.CLASS_DELETE_CANCELLED)
+    await callback.answer()
+
+
+# =====================================================================
 # /delete_my_data (Ю2, PLAN.md) — статьи 18, 24, 25 Закона РК «О
 # персональных данных и их защите» № 94-V: субъект вправе отозвать
 # согласие, данные подлежат уничтожению по достижении цели сбора.
@@ -2294,6 +2565,10 @@ async def _menu_call_dashboard(message: Message, state: FSMContext) -> None:
     await cmd_dashboard(message)
 
 
+async def _menu_call_class(message: Message, state: FSMContext) -> None:
+    await cmd_class(message)
+
+
 _MENU_BUTTON_HANDLERS = {
     texts.MENU_BUTTON_GENERATE_KSP: cmd_generate,
     texts.MENU_BUTTON_GENERATE_KTP: cmd_generate_ktp,
@@ -2305,6 +2580,7 @@ _MENU_BUTTON_HANDLERS = {
     texts.MENU_BUTTON_UPLOAD_KTP: cmd_upload_ktp,
     texts.MENU_BUTTON_DASHBOARD: _menu_call_dashboard,
     texts.MENU_BUTTON_KONSPEKT: cmd_konspekt,
+    texts.MENU_BUTTON_CLASS: _menu_call_class,
 }
 
 
@@ -2371,6 +2647,9 @@ _BACK_ASK_HANDLERS = {
     GenerateKTP.waiting_for_hours_year.state: _ask_generate_ktp_hours_year,
     GenerateKTP.waiting_for_topics.state: _ask_generate_ktp_topics,
     GenerateKTP.waiting_for_confirmation.state: _ask_generate_ktp_confirmation,
+    ClassCreate.waiting_for_name.state: _ask_class_name,
+    ClassCreate.waiting_for_subject.state: _ask_class_subject,
+    ClassCreate.waiting_for_confirmation.state: _render_class_confirmation,
 }
 
 

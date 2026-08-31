@@ -51,6 +51,13 @@ MAIN_MENU = ReplyKeyboardMarkup(
             KeyboardButton(text=texts.MENU_BUTTON_DASHBOARD),
             KeyboardButton(text=texts.MENU_BUTTON_KONSPEKT),
         ],
+        [
+            # У2 (PLAN.md): класс и ученики — новая группа функций, кнопка
+            # в отдельном ряду одна, не в паре — следующая функция группы
+            # У (сверка тетради) кнопки не получает, это команда ученика,
+            # не педагога, а этот ряд — про педагога.
+            KeyboardButton(text=texts.MENU_BUTTON_CLASS),
+        ],
     ],
     resize_keyboard=True,
     is_persistent=True,
@@ -70,6 +77,7 @@ MAIN_MENU_BUTTON_TEXTS = {
     texts.MENU_BUTTON_UPLOAD_KTP,
     texts.MENU_BUTTON_DASHBOARD,
     texts.MENU_BUTTON_KONSPEKT,
+    texts.MENU_BUTTON_CLASS,
 }
 
 

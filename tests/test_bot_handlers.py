@@ -23,6 +23,17 @@ from bot.handlers import (
     back_callback_pressed,
     _consent_gate,
     cancel_button_pressed,
+    class_create_confirmed,
+    class_create_started,
+    class_delete_cancelled,
+    class_delete_confirmed,
+    class_delete_requested,
+    class_list_requested,
+    class_name_received,
+    class_regen_requested,
+    class_subject_received,
+    class_view_requested,
+    cmd_class,
     cmd_konspekt,
     cmd_menu,
     konspekt_audio_received,
@@ -1403,6 +1414,227 @@ async def test_history_lists_and_resends_file(isolated_env, tmp_path):
     await history_resend(callback, DummyBot())
     assert len(resend_message.sent) == 1
     assert "document" in resend_message.sent[0]
+
+
+# =====================================================================
+# /class (У2, PLAN.md) — педагог создаёт класс и выдаёт код приглашения
+# =====================================================================
+
+
+async def _create_class_via_dialog(user_id: int, name: str = "10 А", subject: str | None = "физика") -> tuple[FakeMessage, str]:
+    """Проходит диалог создания класса целиком, возвращает финальное
+    сообщение с кодом приглашения и сам код."""
+    state = _state()
+    callback = FakeCallbackQuery(data="class_create", message=FakeMessage(user_id=user_id), user_id=user_id)
+    await class_create_started(callback, state)
+
+    name_message = FakeMessage(text=name, user_id=user_id)
+    await class_name_received(name_message, state)
+
+    subject_message = FakeMessage(text=subject if subject is not None else "-", user_id=user_id)
+    await class_subject_received(subject_message, state)
+
+    confirm_callback = FakeCallbackQuery(data="class_confirm_create", message=FakeMessage(user_id=user_id), user_id=user_id)
+    await class_create_confirmed(confirm_callback, state)
+
+    invite_message = confirm_callback.message.sent[-1]
+    code = invite_message["text"].splitlines()[2]  # CLASS_INVITE_CODE_MESSAGE: код на третьей строке
+    return confirm_callback.message, code
+
+
+async def test_class_list_empty_offers_create_button(isolated_env):
+    _create_teacher(1)
+    message = FakeMessage(user_id=1)
+    await cmd_class(message)
+    assert message.sent[-1]["text"] == texts.CLASS_LIST_EMPTY
+    assert message.sent[-1]["reply_markup"] is not None
+
+
+async def test_class_create_dialog_creates_row_with_unique_invite_code(isolated_env):
+    teacher_id = _create_teacher(1)
+    _, code = await _create_class_via_dialog(1, name="10 А", subject="физика")
+
+    rows = query("SELECT * FROM classes WHERE teacher_id = ?", (teacher_id,))
+    assert len(rows) == 1
+    assert rows[0]["name"] == "10 А"
+    assert rows[0]["subject"] == "физика"
+    assert rows[0]["invite_code"] == code
+    # Ловушка блока У1: без похожих символов 0/O/1/I/L.
+    assert not (set(code) & set("0O1IL"))
+
+
+async def test_class_create_invite_code_sent_as_separate_message(isolated_env):
+    _create_teacher(1)
+    final_message, code = await _create_class_via_dialog(1)
+
+    # Первое сообщение после подтверждения — "класс создан" с главным
+    # меню, второе (отдельное!) — код приглашения крупно, план требует
+    # это дословно, чтобы код было удобно сфотографировать/продиктовать
+    # отдельно от остального текста.
+    assert len(final_message.sent) == 2
+    assert texts.CLASS_CREATED.format(name="10 А") == final_message.sent[0]["text"]
+    assert code in final_message.sent[1]["text"]
+    assert final_message.sent[1]["text"] != final_message.sent[0]["text"]
+
+
+async def test_class_subject_dash_means_not_specified(isolated_env):
+    teacher_id = _create_teacher(1)
+    await _create_class_via_dialog(1, name="9 Б", subject=None)
+
+    rows = query("SELECT * FROM classes WHERE teacher_id = ?", (teacher_id,))
+    assert rows[0]["subject"] is None
+
+
+async def test_class_list_shows_member_count(isolated_env):
+    teacher_id = _create_teacher(1)
+    await _create_class_via_dialog(1, name="10 А")
+    class_id = query("SELECT id FROM classes WHERE teacher_id = ?", (teacher_id,))[0]["id"]
+
+    student_id = execute("INSERT INTO students (telegram_id, name) VALUES (500, 'Ученик')")
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (class_id, student_id))
+
+    message = FakeMessage(user_id=1)
+    await cmd_class(message)
+    assert "1 уч." in message.sent[-1]["text"] or "10 А" in str(message.sent[-1]["reply_markup"])
+
+
+async def test_class_card_shows_invite_code_and_count(isolated_env):
+    teacher_id = _create_teacher(1)
+    await _create_class_via_dialog(1, name="10 А")
+    class_id = query("SELECT id FROM classes WHERE teacher_id = ?", (teacher_id,))[0]["id"]
+
+    callback = FakeCallbackQuery(data=f"class_view:{class_id}", message=FakeMessage(user_id=1), user_id=1)
+    await class_view_requested(callback)
+
+    text = callback.message.sent[-1]["text"]
+    assert "10 А" in text
+    assert "физика" in text
+    assert "Учеников: 0" in text
+
+
+async def test_class_view_of_foreign_class_says_not_found(isolated_env):
+    _create_teacher(1)
+    await _create_class_via_dialog(1, name="10 А")
+    class_id = query("SELECT id FROM classes")[0]["id"]
+
+    _create_teacher(2)
+    callback = FakeCallbackQuery(data=f"class_view:{class_id}", message=FakeMessage(user_id=2), user_id=2)
+    await class_view_requested(callback)
+
+    assert callback.answered[-1]["text"] == texts.CLASS_NOT_FOUND
+    assert callback.answered[-1]["show_alert"] is True
+
+
+async def test_class_regenerate_changes_code(isolated_env):
+    teacher_id = _create_teacher(1)
+    _, old_code = await _create_class_via_dialog(1, name="10 А")
+    class_id = query("SELECT id FROM classes WHERE teacher_id = ?", (teacher_id,))[0]["id"]
+
+    callback = FakeCallbackQuery(data=f"class_regen:{class_id}", message=FakeMessage(user_id=1), user_id=1)
+    await class_regen_requested(callback)
+
+    new_code = query("SELECT invite_code FROM classes WHERE id = ?", (class_id,))[0]["invite_code"]
+    assert new_code != old_code
+    assert old_code in "".join(m["text"] for m in callback.message.sent) or new_code in callback.message.sent[-1]["text"]
+    # старый код больше не находится
+    assert query("SELECT 1 FROM classes WHERE invite_code = ?", (old_code,)) == []
+
+
+async def test_class_delete_requires_confirmation(isolated_env):
+    teacher_id = _create_teacher(1)
+    await _create_class_via_dialog(1, name="10 А")
+    class_id = query("SELECT id FROM classes WHERE teacher_id = ?", (teacher_id,))[0]["id"]
+
+    callback = FakeCallbackQuery(data=f"class_delete:{class_id}", message=FakeMessage(user_id=1), user_id=1)
+    await class_delete_requested(callback)
+
+    # ничего не удалено без подтверждения
+    assert query("SELECT * FROM classes WHERE id = ?", (class_id,))
+    assert callback.message.sent[-1]["reply_markup"] is not None
+
+
+async def test_class_delete_cancel_deletes_nothing(isolated_env):
+    teacher_id = _create_teacher(1)
+    await _create_class_via_dialog(1, name="10 А")
+    class_id = query("SELECT id FROM classes WHERE teacher_id = ?", (teacher_id,))[0]["id"]
+
+    callback = FakeCallbackQuery(data=f"class_delete_cancel:{class_id}", message=FakeMessage(user_id=1), user_id=1)
+    await class_delete_cancelled(callback)
+
+    assert query("SELECT * FROM classes WHERE id = ?", (class_id,))
+    assert callback.message.sent[-1]["text"] == texts.CLASS_DELETE_CANCELLED
+
+
+async def test_class_delete_confirm_removes_class_but_keeps_students(isolated_env):
+    """У1, ловушка дословно: удаление класса не удаляет учеников — только
+    их связь с этим классом."""
+    teacher_id = _create_teacher(1)
+    await _create_class_via_dialog(1, name="10 А")
+    class_id = query("SELECT id FROM classes WHERE teacher_id = ?", (teacher_id,))[0]["id"]
+
+    student_id = execute("INSERT INTO students (telegram_id, name) VALUES (500, 'Ученик')")
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (class_id, student_id))
+
+    callback = FakeCallbackQuery(
+        data=f"class_delete_confirm:{class_id}", message=FakeMessage(user_id=1), user_id=1
+    )
+    await class_delete_confirmed(callback)
+
+    assert query("SELECT * FROM classes WHERE id = ?", (class_id,)) == []
+    assert query("SELECT * FROM class_members WHERE class_id = ?", (class_id,)) == []
+    # ученик остался — удалилась только связь
+    assert query("SELECT * FROM students WHERE id = ?", (student_id,))
+    assert "10 А" in callback.message.sent[-1]["text"]
+
+
+async def test_class_delete_of_foreign_class_says_not_found_and_deletes_nothing(isolated_env):
+    _create_teacher(1)
+    await _create_class_via_dialog(1, name="10 А")
+    class_id = query("SELECT id FROM classes")[0]["id"]
+
+    _create_teacher(2)
+    callback = FakeCallbackQuery(
+        data=f"class_delete_confirm:{class_id}", message=FakeMessage(user_id=2), user_id=2
+    )
+    await class_delete_confirmed(callback)
+
+    assert callback.answered[-1]["text"] == texts.CLASS_NOT_FOUND
+    assert query("SELECT * FROM classes WHERE id = ?", (class_id,))  # не удалён чужим
+
+
+async def test_class_list_callback_shows_classes_again(isolated_env):
+    _create_teacher(1)
+    await _create_class_via_dialog(1, name="10 А")
+
+    callback = FakeCallbackQuery(data="class_list", message=FakeMessage(user_id=1), user_id=1)
+    await class_list_requested(callback)
+
+    assert callback.message.sent[-1]["text"] == texts.CLASS_LIST_HEADER
+
+
+async def test_class_create_back_button_returns_to_previous_step(isolated_env):
+    """М3.2: «← Назад» на шаге предмета обязан вернуть на шаг названия,
+    не бросить диалог и не съесть ввод как что-то другое (грабля 2.4)."""
+    _create_teacher(1)
+    state = _state()
+    callback = FakeCallbackQuery(data="class_create", message=FakeMessage(user_id=1), user_id=1)
+    await class_create_started(callback, state)
+    assert await state.get_state() == "ClassCreate:waiting_for_name"
+
+    await class_name_received(FakeMessage(text="10 А", user_id=1), state)
+    assert await state.get_state() == "ClassCreate:waiting_for_subject"
+
+    back_message = FakeMessage(user_id=1)
+    await back_button_pressed(back_message, state)
+    assert await state.get_state() == "ClassCreate:waiting_for_name"
+    assert texts.CLASS_ASK_NAME in back_message.sent[-1]["text"]
+    assert "10 А" in back_message.sent[-1]["text"]  # CURRENT_VALUE_NOTE — не забыл введённое
+
+
+async def test_class_added_to_bot_commands_and_menu():
+    command_names = {name for name, _ in texts.BOT_COMMANDS}
+    assert "class" in command_names
+    assert texts.MENU_BUTTON_CLASS in keyboards.MAIN_MENU_BUTTON_TEXTS
 
 
 # =====================================================================
@@ -3692,7 +3924,7 @@ def test_bot_commands_match_plan_order_exactly():
     вместо пятого места."""
     expected = [
         "menu", "generate", "konspekt", "generate_ktp", "dashboard", "teacher",
-        "upload_ksp", "upload_ktp", "templates", "upload_template", "status",
+        "class", "upload_ksp", "upload_ktp", "templates", "upload_template", "status",
         "history", "delete_my_data", "cancel",
     ]
     assert [name for name, _ in texts.BOT_COMMANDS] == expected

@@ -55,6 +55,15 @@ class GenerateKTP(StatesGroup):
     waiting_for_confirmation = State()
 
 
+class ClassCreate(StatesGroup):
+    """/class -> «Создать класс» (блок У2, PLAN.md): название и предмет,
+    два коротких шага, третий — подтверждение кнопкой «Готово»."""
+
+    waiting_for_name = State()
+    waiting_for_subject = State()
+    waiting_for_confirmation = State()
+
+
 class Konspekt(StatesGroup):
     """/konspekt: сначала выбор назначения записи, затем сбор аудио.
 
