@@ -88,6 +88,18 @@ def back_cancel_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def consent_keyboard() -> InlineKeyboardMarkup:
+    """Ю3: экран согласия при первом /start."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=texts.CONSENT_ACCEPT_BUTTON, callback_data="consent_accept"),
+                InlineKeyboardButton(text=texts.CONSENT_DECLINE_BUTTON, callback_data="consent_decline"),
+            ]
+        ]
+    )
+
+
 def upload_ksp_collecting_keyboard() -> ReplyKeyboardMarkup:
     """Клавиатура сбора файлов КСП (/upload_ksp, блок Н1 PLAN.md).
 

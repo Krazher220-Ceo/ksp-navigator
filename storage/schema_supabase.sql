@@ -136,6 +136,16 @@ create table if not exists public.worker_heartbeat (
     updated_at timestamptz not null default current_timestamp
 );
 
+-- consents — согласие на использование системы (блок Ю3, storage/schema.sql
+-- несёт полное обоснование, почему отдельная таблица, а не колонка в
+-- teachers). ⚠️ Эта таблица создаётся в проде только вручную через SQL
+-- Editor — RPC ksp_execute_sql намеренно не пропускает DDL (см. комментарий
+-- к функции ниже), автоматически применить эту миграцию нельзя.
+create table if not exists public.consents (
+    telegram_user_id bigint primary key,
+    given_at timestamptz not null
+);
+
 create index if not exists idx_ktp_teacher on public.ktp_entries(teacher_id);
 create index if not exists idx_tasks_status on public.tasks(status);
 create index if not exists idx_incidents_unresolved on public.incidents(ended_at, notified);

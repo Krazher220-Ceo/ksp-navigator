@@ -113,6 +113,24 @@ def _has_style_profile(teacher_id: int, db_path=None) -> bool:
     return bool(rows)
 
 
+def has_given_consent(telegram_user_id: int, db_path=None) -> bool:
+    """Ю3: есть ли строка в consents — отдельной таблице, не в teachers
+    (см. storage/schema.sql, там же полное обоснование)."""
+    rows = query(
+        "SELECT 1 FROM consents WHERE telegram_user_id = ?", (telegram_user_id,), db_path=db_path
+    )
+    return bool(rows)
+
+
+def record_consent(telegram_user_id: int, db_path=None) -> None:
+    execute(
+        "INSERT INTO consents (telegram_user_id, given_at) VALUES (?, CURRENT_TIMESTAMP) "
+        "ON CONFLICT(telegram_user_id) DO UPDATE SET given_at = excluded.given_at",
+        (telegram_user_id,),
+        db_path=db_path,
+    )
+
+
 def _check_file_size(document) -> str | None:
     """Б8.3: файл больше 20 МБ — Telegram Bot API его всё равно не даст
     скачать, лучше сказать сразу и понятно, чем упасть на download()."""
@@ -127,6 +145,55 @@ async def _require_teacher(message: Message) -> dict | None:
     if teacher is None:
         await message.answer(texts.ERROR_NO_TEACHER_PROFILE)
     return teacher
+
+
+# =====================================================================
+# Ю3 (PLAN.md) — согласие до начала работы, единым middleware на весь
+# router. Проверка в каждом из ~20 обработчиков команд была бы тем же
+# форком, от которого предостерегает ловушка 2.6 — один пропущенный
+# хендлер, и правило закона молча не выполняется именно там. Тот же
+# принцип, что у _global_error_handler в bot/main.py: одно место
+# применения правила, а не N копий проверки.
+#
+# Middleware НЕ покрывает тесты, которые вызывают хендлеры напрямую
+# (весь стиль тестов в tests/test_bot_handlers.py) — они минуют router
+# целиком. Поэтому у _consent_gate есть отдельные тесты, вызывающие её
+# саму (tests/test_bot_handlers.py, блок Ю3).
+# =====================================================================
+
+_CONSENT_EXEMPT_CALLBACK_DATA = {"consent_accept", "consent_decline"}
+
+
+async def _consent_gate(handler, event, data):
+    """Различает Message и CallbackQuery по наличию атрибутов, не
+    isinstance от aiogram — тесты этого файла везде дублируют события
+    лёгкими объектами (FakeMessage/FakeCallbackQuery), не настоящими
+    классами aiogram, и isinstance их не узнал бы."""
+    from_user = getattr(event, "from_user", None)
+    if from_user is None:
+        return await handler(event, data)
+
+    is_callback = hasattr(event, "data") and hasattr(event, "message")
+    if is_callback:
+        if event.data in _CONSENT_EXEMPT_CALLBACK_DATA:
+            return await handler(event, data)
+    else:
+        text = getattr(event, "text", None) or ""
+        if text.split()[0:1] == ["/start"]:
+            return await handler(event, data)
+
+    if has_given_consent(from_user.id):
+        return await handler(event, data)
+
+    target = event.message if is_callback else event
+    await target.answer(texts.CONSENT_REQUIRED_REDIRECT)
+    if is_callback:
+        await event.answer()
+    return None
+
+
+router.message.outer_middleware(_consent_gate)
+router.callback_query.outer_middleware(_consent_gate)
 
 
 _LIMIT_OPERATION_LABELS = {"generate_ksp": "КСП", "generate_ktp": "КТП"}
@@ -199,7 +266,23 @@ async def cmd_admin(message: Message, bot: Bot) -> None:
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
+    if not has_given_consent(message.from_user.id):
+        await message.answer(texts.CONSENT_TEXT, reply_markup=keyboards.consent_keyboard())
+        return
     await message.answer(texts.START, reply_markup=keyboards.MAIN_MENU)
+
+
+@router.callback_query(F.data == "consent_accept")
+async def consent_accepted(callback: CallbackQuery) -> None:
+    record_consent(callback.from_user.id)
+    await callback.message.answer(texts.START, reply_markup=keyboards.MAIN_MENU)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "consent_decline")
+async def consent_declined(callback: CallbackQuery) -> None:
+    await callback.message.answer(texts.CONSENT_DECLINED)
+    await callback.answer()
 
 
 # =====================================================================

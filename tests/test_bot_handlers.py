@@ -21,6 +21,7 @@ from bot.handlers import (
     MAX_KONSPEKT_PARTS,
     back_button_pressed,
     back_callback_pressed,
+    _consent_gate,
     cancel_button_pressed,
     cmd_konspekt,
     cmd_menu,
@@ -44,8 +45,12 @@ from bot.handlers import (
     cmd_templates,
     cmd_upload_ksp,
     cmd_upload_ktp,
+    consent_accepted,
+    consent_declined,
     delete_my_data_cancelled,
     delete_my_data_confirmed,
+    has_given_consent,
+    record_consent,
     generate_duration_received,
     generate_extra_options_received,
     generate_klass_received,
@@ -292,11 +297,113 @@ async def _start_konspekt(state, user_id: int, mode_button: str = texts.KONSPEKT
 # =====================================================================
 
 
-async def test_start_answers_with_greeting(isolated_env):
-    message = FakeMessage(text="/start")
+async def test_start_shows_consent_screen_when_not_yet_given(isolated_env):
+    """Ю3: первый /start — экран согласия, не приветствие."""
+    message = FakeMessage(text="/start", user_id=700)
+    await cmd_start(message, _state())
+    assert len(message.sent) == 1
+    assert message.sent[0]["text"] == texts.CONSENT_TEXT
+    assert message.sent[0]["reply_markup"] is not None
+
+
+async def test_start_answers_with_greeting_after_consent_given(isolated_env):
+    record_consent(700)
+    message = FakeMessage(text="/start", user_id=700)
     await cmd_start(message, _state())
     assert len(message.sent) == 1
     assert "черновик" in message.sent[0]["text"].lower()
+    assert message.sent[0]["reply_markup"] is keyboards.MAIN_MENU
+
+
+async def test_consent_accepted_records_and_sends_greeting(isolated_env):
+    assert not has_given_consent(702)
+    callback = FakeCallbackQuery(data="consent_accept", message=FakeMessage(), user_id=702)
+    await consent_accepted(callback)
+
+    assert has_given_consent(702)
+    assert callback.message.sent[-1]["text"] == texts.START
+    assert callback.message.sent[-1]["reply_markup"] is keyboards.MAIN_MENU
+    assert len(callback.answered) == 1
+
+
+async def test_consent_declined_does_not_record(isolated_env):
+    callback = FakeCallbackQuery(data="consent_decline", message=FakeMessage(), user_id=703)
+    await consent_declined(callback)
+
+    assert not has_given_consent(703)
+    assert callback.message.sent[-1]["text"] == texts.CONSENT_DECLINED
+
+
+# --- Ю3: middleware _consent_gate — сам гейт, применяемый к router'у ---
+# Прямые вызовы хендлеров (весь остальной этот файл) минуют router и,
+# значит, минуют middleware — эти тесты вызывают _consent_gate саму по
+# себе, единственный способ проверить именно её логику.
+
+
+async def test_consent_gate_blocks_message_without_consent(isolated_env):
+    calls = []
+
+    async def dummy(event, data):
+        calls.append(event)
+
+    message = FakeMessage(text="что угодно", user_id=704)
+    result = await _consent_gate(dummy, message, {})
+
+    assert calls == []
+    assert result is None
+    assert message.sent[-1]["text"] == texts.CONSENT_REQUIRED_REDIRECT
+
+
+async def test_consent_gate_allows_start_without_consent(isolated_env):
+    calls = []
+
+    async def dummy(event, data):
+        calls.append(event)
+
+    message = FakeMessage(text="/start", user_id=705)
+    await _consent_gate(dummy, message, {})
+
+    assert calls == [message]
+
+
+async def test_consent_gate_allows_consent_callbacks_without_consent(isolated_env):
+    calls = []
+
+    async def dummy(event, data):
+        calls.append(event)
+
+    callback = FakeCallbackQuery(data="consent_accept", message=FakeMessage(), user_id=706)
+    await _consent_gate(dummy, callback, {})
+
+    assert calls == [callback]
+
+
+async def test_consent_gate_blocks_other_callbacks_without_consent(isolated_env):
+    calls = []
+
+    async def dummy(event, data):
+        calls.append(event)
+
+    callback = FakeCallbackQuery(data="gen_confirm", message=FakeMessage(), user_id=707)
+    result = await _consent_gate(dummy, callback, {})
+
+    assert calls == []
+    assert result is None
+    assert callback.message.sent[-1]["text"] == texts.CONSENT_REQUIRED_REDIRECT
+    assert len(callback.answered) == 1
+
+
+async def test_consent_gate_allows_everything_once_consented(isolated_env):
+    record_consent(708)
+    calls = []
+
+    async def dummy(event, data):
+        calls.append(event)
+
+    message = FakeMessage(text="/generate", user_id=708)
+    await _consent_gate(dummy, message, {})
+
+    assert calls == [message]
 
 
 # =====================================================================
@@ -1790,7 +1897,8 @@ async def test_register_chat_menu_button_skips_when_webapp_url_missing():
 
 
 async def test_start_sends_main_menu_keyboard(isolated_env):
-    message = FakeMessage(text="/start")
+    record_consent(701)
+    message = FakeMessage(text="/start", user_id=701)
     await cmd_start(message, _state())
     assert message.sent[0]["reply_markup"] is keyboards.MAIN_MENU
 

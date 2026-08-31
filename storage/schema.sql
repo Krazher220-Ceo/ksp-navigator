@@ -180,6 +180,22 @@ CREATE TABLE IF NOT EXISTS worker_heartbeat (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- consents — согласие на использование системы (блок Ю3, статья 15 п.2
+-- пп.5 Закона РК «Об искусственном интеллекте» № 230-VIII: пользователь
+-- должен ознакомиться с условиями ДО начала использования).
+--
+-- Отдельная таблица, а не колонка в teachers, как буквально написано в
+-- PLAN.md: согласие даётся ДО того, как появляется профиль педагога
+-- (/teacher ещё не пройден в момент первого /start), а teachers.name/
+-- teachers.subject читаются в нескольких местах bot/handlers.py без
+-- проверки на NULL (генерация КСП/КТП). Завести в teachers "пустую"
+-- строку раньше профиля значило бы тихо сломать эти места значением
+-- NULL там, где ожидается текст. Решение записано в отчёте по блоку.
+CREATE TABLE IF NOT EXISTS consents (
+    telegram_user_id INTEGER PRIMARY KEY,
+    given_at TIMESTAMP NOT NULL
+);
+
 -- Индексы сверх документа (PLAN_STAGE1.md, задача Б1.1)
 CREATE INDEX IF NOT EXISTS idx_ktp_teacher ON ktp_entries(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
