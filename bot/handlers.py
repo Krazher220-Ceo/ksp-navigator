@@ -1904,6 +1904,140 @@ async def cmd_history(message: Message) -> None:
 
 
 # =====================================================================
+# /delete_my_data (Ю2, PLAN.md) — статьи 18, 24, 25 Закона РК «О
+# персональных данных и их защите» № 94-V: субъект вправе отозвать
+# согласие, данные подлежат уничтожению по достижении цели сбора.
+#
+# Аудиозапись удаляется сразу после расшифровки уже сейчас (не эта
+# команда) — здесь про то, что оставалось навсегда: транскрипты,
+# конспекты, профиль стиля, загруженные для /upload_ksp файлы и записи
+# о сгенерированных документах. usage_daily и incidents — обезличенная
+# статистика и журнал инцидентов, персональных данных в них нет, не
+# удаляются (сказано прямо в тексте подтверждения, не молчанием).
+#
+# Файлы, загруженные для /upload_ksp, не удаляются автоматически после
+# разбора (в отличие от аудио) — их пути нигде не хранятся, кроме
+# payload задач parse_ksp в tasks. Отдельной таблицы под них в схеме
+# нет, заводить её ради одной команды удаления — лишняя сущность;
+# tasks и так единственный источник правды о том, что было загружено.
+# =====================================================================
+
+
+def _uploaded_ksp_file_paths(telegram_user_id: int) -> list[str]:
+    rows = query(
+        "SELECT payload FROM tasks WHERE type = 'parse_ksp' AND telegram_chat_id = ?",
+        (telegram_user_id,),
+    )
+    paths: list[str] = []
+    for row in rows:
+        payload = json.loads(row["payload"]) if row["payload"] else {}
+        paths.extend(payload.get("file_paths", []))
+    return paths
+
+
+def _count_personal_data(teacher_id: int, telegram_user_id: int) -> dict:
+    transcripts = query("SELECT COUNT(*) AS c FROM transcripts WHERE teacher_id = ?", (teacher_id,))[0]["c"]
+    konspekty_count = query("SELECT COUNT(*) AS c FROM konspekty WHERE teacher_id = ?", (teacher_id,))[0]["c"]
+    generated_count = query("SELECT COUNT(*) AS c FROM generated_ksp WHERE teacher_id = ?", (teacher_id,))[0]["c"]
+    return {
+        "transcripts": transcripts,
+        "konspekty": konspekty_count,
+        "generated_ksp": generated_count,
+        "style_profile": _has_style_profile(teacher_id),
+        "uploaded_files": len(_uploaded_ksp_file_paths(telegram_user_id)),
+    }
+
+
+def _unlink_quietly(path_str: str | None) -> None:
+    if not path_str:
+        return
+    try:
+        Path(path_str).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("/delete_my_data: не удалось удалить файл %s", path_str)
+
+
+def _delete_personal_data(teacher_id: int, telegram_user_id: int) -> dict:
+    """Порядок обязателен: сначала файлы с диска, потом строки в базе —
+    иначе останутся файлы-сироты, на которые уже никто не ссылается
+    (Ю2, ловушка). Внутри базы — konspekty раньше transcripts: у
+    konspekty.transcript_id внешний ключ на transcripts, удаление
+    родителя первым упадёт на FOREIGN KEY (что в SQLite, что в Postgres)."""
+    counts = _count_personal_data(teacher_id, telegram_user_id)
+
+    for path_str in _uploaded_ksp_file_paths(telegram_user_id):
+        _unlink_quietly(path_str)
+
+    for row in query("SELECT docx_path FROM konspekty WHERE teacher_id = ?", (teacher_id,)):
+        _unlink_quietly(row["docx_path"])
+    execute("DELETE FROM konspekty WHERE teacher_id = ?", (teacher_id,))
+
+    for row in query("SELECT docx_path FROM generated_ksp WHERE teacher_id = ?", (teacher_id,)):
+        _unlink_quietly(row["docx_path"])
+    execute("DELETE FROM generated_ksp WHERE teacher_id = ?", (teacher_id,))
+
+    execute("DELETE FROM transcripts WHERE teacher_id = ?", (teacher_id,))
+    execute("DELETE FROM style_profiles WHERE teacher_id = ?", (teacher_id,))
+
+    return counts
+
+
+def _format_delete_my_data_counts(template: str, counts: dict) -> str:
+    return template.format(
+        transcripts=counts["transcripts"],
+        konspekty=counts["konspekty"],
+        generated_ksp=counts["generated_ksp"],
+        style_profile=texts.DELETE_MY_DATA_YES if counts["style_profile"] else texts.DELETE_MY_DATA_NO,
+        uploaded_files=counts["uploaded_files"],
+    )
+
+
+def _delete_my_data_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=texts.DELETE_MY_DATA_CONFIRM_BUTTON, callback_data="delete_my_data_confirm"
+                ),
+                InlineKeyboardButton(
+                    text=texts.DELETE_MY_DATA_CANCEL_BUTTON, callback_data="delete_my_data_cancel"
+                ),
+            ]
+        ]
+    )
+
+
+@router.message(Command("delete_my_data"))
+async def cmd_delete_my_data(message: Message) -> None:
+    teacher = await _require_teacher(message)
+    if teacher is None:
+        return
+    counts = _count_personal_data(teacher["id"], message.from_user.id)
+    if not any(counts.values()):
+        await message.answer(texts.DELETE_MY_DATA_NOTHING_TO_DELETE)
+        return
+    text = _format_delete_my_data_counts(texts.DELETE_MY_DATA_SUMMARY, counts)
+    await message.answer(text, reply_markup=_delete_my_data_keyboard())
+
+
+@router.callback_query(F.data == "delete_my_data_confirm")
+async def delete_my_data_confirmed(callback: CallbackQuery) -> None:
+    teacher = _get_teacher(callback.from_user.id)
+    if teacher is None:
+        await callback.answer()
+        return
+    counts = _delete_personal_data(teacher["id"], callback.from_user.id)
+    await callback.message.answer(_format_delete_my_data_counts(texts.DELETE_MY_DATA_DONE, counts))
+    await callback.answer()
+
+
+@router.callback_query(F.data == "delete_my_data_cancel")
+async def delete_my_data_cancelled(callback: CallbackQuery) -> None:
+    await callback.message.answer(texts.DELETE_MY_DATA_CANCELLED)
+    await callback.answer()
+
+
+# =====================================================================
 # /dashboard — текстовая сводка (М5.2). core.dashboard.collect() — ЕДИНСТВЕННЫЙ
 # расчёт (М5.1); web/api.py (М5.3) форматирует тот же collect() под JSON,
 # а не считает заново.

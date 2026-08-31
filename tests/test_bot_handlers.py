@@ -34,6 +34,7 @@ from bot.handlers import (
     make_konspekt_handler,
     make_transcribe_handler,
     cmd_cancel,
+    cmd_delete_my_data,
     cmd_generate,
     cmd_generate_ktp,
     cmd_history,
@@ -43,6 +44,8 @@ from bot.handlers import (
     cmd_templates,
     cmd_upload_ksp,
     cmd_upload_ktp,
+    delete_my_data_cancelled,
+    delete_my_data_confirmed,
     generate_duration_received,
     generate_extra_options_received,
     generate_klass_received,
@@ -1208,6 +1211,135 @@ async def test_history_lists_and_resends_file(isolated_env, tmp_path):
     await history_resend(callback, DummyBot())
     assert len(resend_message.sent) == 1
     assert "document" in resend_message.sent[0]
+
+
+# =====================================================================
+# /delete_my_data (Ю2, PLAN.md)
+# =====================================================================
+
+
+async def _seed_personal_data(user_id: int, tmp_path) -> dict:
+    """Заводит по одной строке в каждой таблице, которую трогает Ю2, плюс
+    реальные файлы на диске (загруженный КСП, конспект, сгенерированный
+    КСП) — чтобы тест проверял настоящее удаление файлов, а не только строк."""
+    teacher_id = _create_teacher(user_id)
+
+    uploaded_ksp = tmp_path / "uploaded.docx"
+    uploaded_ksp.write_bytes(b"fake uploaded ksp")
+    execute(
+        "INSERT INTO tasks (id, type, status, payload, telegram_chat_id) "
+        "VALUES (?, 'parse_ksp', 'done', ?, ?)",
+        (f"task-{user_id}", json.dumps({"teacher_id": teacher_id, "file_paths": [str(uploaded_ksp)]}), user_id),
+    )
+
+    execute(
+        "INSERT INTO style_profiles (teacher_id, goal_phrasing, stage_structure, "
+        "assessment_methods, resources_used, raw_samples_count) VALUES (?, '[]', '[]', '[]', '[]', 2)",
+        (teacher_id,),
+    )
+
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES (?, ?, 'audio', 'расшифровка', 47, 'ru')",
+        (f"tr-{user_id}", teacher_id),
+    )
+
+    konspekt_docx = tmp_path / "konspekt.docx"
+    konspekt_docx.write_bytes(b"fake konspekt")
+    execute(
+        "INSERT INTO konspekty (id, teacher_id, transcript_id, tema, content_json, docx_path) "
+        "VALUES (?, ?, ?, 'Тема', '{}', ?)",
+        (f"ks-{user_id}", teacher_id, f"tr-{user_id}", str(konspekt_docx)),
+    )
+
+    generated_docx = tmp_path / "generated.docx"
+    generated_docx.write_bytes(b"fake generated ksp")
+    execute(
+        "INSERT INTO generated_ksp (id, teacher_id, content_json, docx_path) VALUES (?, ?, '{}', ?)",
+        (f"gen-{user_id}", teacher_id, str(generated_docx)),
+    )
+
+    return {
+        "teacher_id": teacher_id,
+        "uploaded_ksp": uploaded_ksp,
+        "konspekt_docx": konspekt_docx,
+        "generated_docx": generated_docx,
+    }
+
+
+async def test_delete_my_data_shows_counts_and_deletes_nothing_yet(isolated_env, tmp_path):
+    paths = await _seed_personal_data(950, tmp_path)
+
+    message = FakeMessage(text="/delete_my_data", user_id=950)
+    await cmd_delete_my_data(message)
+
+    text = message.sent[-1]["text"]
+    assert "расшифровок: 1" in text
+    assert "конспектов: 1" in text
+    assert "профиль стиля: есть" in text
+    assert "загруженных файлов КСП: 1" in text
+    assert "сгенерированных документов: 1" in text
+    assert message.sent[-1]["reply_markup"] is not None
+
+    # ничего не удалено без подтверждения
+    assert query("SELECT * FROM transcripts WHERE teacher_id = ?", (paths["teacher_id"],))
+    assert query("SELECT * FROM konspekty WHERE teacher_id = ?", (paths["teacher_id"],))
+    assert query("SELECT * FROM style_profiles WHERE teacher_id = ?", (paths["teacher_id"],))
+    assert query("SELECT * FROM generated_ksp WHERE teacher_id = ?", (paths["teacher_id"],))
+    assert paths["uploaded_ksp"].exists()
+    assert paths["konspekt_docx"].exists()
+    assert paths["generated_docx"].exists()
+
+
+async def test_delete_my_data_nothing_to_delete_says_so(isolated_env):
+    _create_teacher(951)
+    message = FakeMessage(text="/delete_my_data", user_id=951)
+    await cmd_delete_my_data(message)
+
+    assert message.sent[-1]["text"] == texts.DELETE_MY_DATA_NOTHING_TO_DELETE
+    assert message.sent[-1]["reply_markup"] is None
+
+
+async def test_delete_my_data_confirm_deletes_rows_and_files_keeps_teacher(isolated_env, tmp_path):
+    paths = await _seed_personal_data(952, tmp_path)
+    teacher_id = paths["teacher_id"]
+
+    # usage_daily/incidents — обезличенные, должны пережить удаление
+    execute(
+        "INSERT INTO usage_daily (telegram_user_id, day, operation, count, tokens) "
+        "VALUES (952, '2026-08-31', 'generate_ksp', 1, 100)"
+    )
+    execute("INSERT INTO incidents (started_at, reason) VALUES ('2026-08-31T00:00:00', 'dns_fail')")
+
+    callback = FakeCallbackQuery(data="delete_my_data_confirm", message=FakeMessage(), user_id=952)
+    await delete_my_data_confirmed(callback)
+
+    assert query("SELECT * FROM transcripts WHERE teacher_id = ?", (teacher_id,)) == []
+    assert query("SELECT * FROM konspekty WHERE teacher_id = ?", (teacher_id,)) == []
+    assert query("SELECT * FROM style_profiles WHERE teacher_id = ?", (teacher_id,)) == []
+    assert query("SELECT * FROM generated_ksp WHERE teacher_id = ?", (teacher_id,)) == []
+    assert not paths["uploaded_ksp"].exists()
+    assert not paths["konspekt_docx"].exists()
+    assert not paths["generated_docx"].exists()
+
+    # профиль педагога остаётся
+    assert query("SELECT * FROM teachers WHERE id = ?", (teacher_id,))
+    # обезличенное не тронуто
+    assert query("SELECT * FROM usage_daily WHERE telegram_user_id = 952")
+    assert query("SELECT * FROM incidents")
+
+    assert "Готово" in callback.message.sent[-1]["text"]
+
+
+async def test_delete_my_data_cancel_deletes_nothing(isolated_env, tmp_path):
+    paths = await _seed_personal_data(953, tmp_path)
+
+    callback = FakeCallbackQuery(data="delete_my_data_cancel", message=FakeMessage(), user_id=953)
+    await delete_my_data_cancelled(callback)
+
+    assert callback.message.sent[-1]["text"] == texts.DELETE_MY_DATA_CANCELLED
+    assert query("SELECT * FROM transcripts WHERE teacher_id = ?", (paths["teacher_id"],))
+    assert paths["uploaded_ksp"].exists()
 
 
 # =====================================================================
@@ -3350,7 +3482,7 @@ def test_bot_commands_match_plan_order_exactly():
     expected = [
         "menu", "generate", "konspekt", "generate_ktp", "dashboard", "teacher",
         "upload_ksp", "upload_ktp", "templates", "upload_template", "status",
-        "history", "cancel",
+        "history", "delete_my_data", "cancel",
     ]
     assert [name for name, _ in texts.BOT_COMMANDS] == expected
 
