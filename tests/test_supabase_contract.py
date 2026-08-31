@@ -188,6 +188,53 @@ def test_recover_stuck_tasks_interval_cast_syntax_is_valid_postgres():
     assert rows and rows[0]["x"] is not None
 
 
+def test_question_mark_inside_parameter_value_is_not_a_placeholder():
+    """Находка 2 AUDIT.md: цикл подстановки в ksp_execute_sql искал
+    следующий '?' в УЖЕ подставленной строке, поэтому знак вопроса внутри
+    значения параметра считался неизрасходованным плейсхолдером и весь
+    запрос отвергался с P0001 "Плейсхолдеров больше, чем параметров".
+
+    Для этого продукта знак вопроса — норма, а не экзотика: тема урока
+    ("Что такое сила?"), расшифровка урока с вопросами педагога классу,
+    содержимое конспекта. Статика блока Э1 это поймать не может — текст
+    запроса безупречен, ломается значение."""
+    rows = query("SELECT ? AS a, ? AS b", ("Что такое сила?", "второй без знака"))
+    assert rows == [{"a": "Что такое сила?", "b": "второй без знака"}]
+
+
+def test_question_mark_survives_insert_and_select_roundtrip():
+    """Тот же дефект на настоящей записи, а не на голом SELECT: именно так
+    падали INSERT в transcripts и постановка задачи в очередь (enqueue
+    кладёт тему урока внутрь JSON-параметра)."""
+    user_id = TEST_USER_BASE - 10
+    stored = "Что такое сила? Второй закон Ньютона"
+    try:
+        execute(
+            "INSERT INTO admin_access (telegram_user_id, expires_at) VALUES (?, ?)",
+            (user_id, stored),
+        )
+        rows = query(
+            "SELECT expires_at FROM admin_access WHERE telegram_user_id = ?",
+            (user_id,),
+        )
+        assert rows == [{"expires_at": stored}]
+    finally:
+        _cleanup_user(user_id)
+
+
+def test_word_returning_inside_parameter_value_does_not_change_branch():
+    """Следствие того же цикла: ветка исполнения выбиралась регуляркой по
+    ПОДСТАВЛЕННОЙ строке, поэтому слово ' returning ' внутри значения
+    уводило UPDATE в ветку WITH и давало 0A000 "does not have a RETURNING
+    clause". Строк под условие нет — проверяется разбор запроса, не
+    результат."""
+    user_id = TEST_USER_BASE - 11
+    execute(
+        "UPDATE admin_access SET expires_at = ? WHERE telegram_user_id = ?",
+        ("текст returning текст", user_id),
+    )
+
+
 def test_no_leftover_test_rows_in_negative_id_range():
     """Замыкающий тест модуля (порядок в файле — pytest по умолчанию идёт
     сверху вниз, без переупорядочивания: ни pytest-randomly, ни xdist в

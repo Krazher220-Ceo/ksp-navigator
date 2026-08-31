@@ -201,7 +201,9 @@ security definer
 set search_path = public
 as $$
 declare
-    compiled text := btrim(statement);
+    source text := btrim(statement);   -- исходный запрос, для проверок и выбора ветки
+    compiled text := '';               -- собираемый слева направо результат
+    remainder text;                    -- ещё не разобранный остаток исходного запроса
     parameter_value jsonb;
     replacement text;
     parameter_index integer;
@@ -209,18 +211,20 @@ declare
     rows jsonb := '[]'::jsonb;
     affected integer := 0;
 begin
-    if compiled = '' or compiled like '%;%' then
+    if source = '' or source like '%;%' then
         raise exception 'Ожидается один SQL-запрос без точки с запятой';
     end if;
-    if lower(compiled) !~ '^(select|with|insert|update|delete)[[:space:]]' then
+    if lower(source) !~ '^(select|with|insert|update|delete)[[:space:]]' then
         raise exception 'Разрешены только SELECT, WITH, INSERT, UPDATE и DELETE';
     end if;
     if jsonb_typeof(parameters) <> 'array' then
         raise exception 'parameters должен быть JSON-массивом';
     end if;
+
+    remainder := source;
     if jsonb_array_length(parameters) > 0 then
         for parameter_index in 0 .. jsonb_array_length(parameters) - 1 loop
-            placeholder_position := strpos(compiled, '?');
+            placeholder_position := strpos(remainder, '?');
             if placeholder_position = 0 then
                 raise exception 'Параметров больше, чем плейсхолдеров';
             end if;
@@ -234,23 +238,30 @@ begin
             else
                 replacement := quote_literal(parameter_value::text);
             end if;
-            compiled := substr(compiled, 1, placeholder_position - 1)
-                || replacement || substr(compiled, placeholder_position + 1);
+            -- Ключевая правка (Находка 2 AUDIT.md): разобранное уходит в
+            -- compiled и больше не просматривается, поиск следующего '?'
+            -- идёт только по остатку. Знак вопроса ВНУТРИ значения
+            -- параметра поэтому не может быть принят за плейсхолдер.
+            compiled := compiled || substr(remainder, 1, placeholder_position - 1) || replacement;
+            remainder := substr(remainder, placeholder_position + 1);
         end loop;
     end if;
-    if strpos(compiled, '?') > 0 then
+    if strpos(remainder, '?') > 0 then
         raise exception 'Плейсхолдеров больше, чем параметров';
     end if;
+    compiled := compiled || remainder;
 
-    if lower(compiled) ~ '^select[[:space:]]' then
+    -- Ветка выбирается по ИСХОДНОМУ запросу: слово returning в значении
+    -- параметра больше не может увести UPDATE в ветку WITH.
+    if lower(source) ~ '^select[[:space:]]' then
         execute format('select coalesce(jsonb_agg(to_jsonb(result_row)), ''[]''::jsonb) from (%s) result_row', compiled)
             into rows;
         affected := jsonb_array_length(rows);
-    elsif lower(compiled) ~ '^with[[:space:]]' or lower(compiled) ~ '[[:space:]]returning[[:space:]]' then
+    elsif lower(source) ~ '^with[[:space:]]' or lower(source) ~ '[[:space:]]returning[[:space:]]' then
         execute format('with result_row as (%s) select coalesce(jsonb_agg(to_jsonb(result_row)), ''[]''::jsonb) from result_row', compiled)
             into rows;
         affected := jsonb_array_length(rows);
-    elsif lower(compiled) ~ '^insert[[:space:]]' then
+    elsif lower(source) ~ '^insert[[:space:]]' then
         execute format('with result_row as (%s returning *) select coalesce(jsonb_agg(to_jsonb(result_row)), ''[]''::jsonb) from result_row', compiled)
             into rows;
         affected := jsonb_array_length(rows);
