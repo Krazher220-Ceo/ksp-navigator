@@ -68,8 +68,9 @@ from core.dashboard import collect as collect_dashboard
 from core.db import SupabaseDatabaseError, execute, query
 from core.generation_defaults import collect as collect_generation_defaults
 from core.limits import (
-    DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_token_limit,
-    get_usage_today, grant_admin_access, record_student_usage, record_usage,
+    DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_student_sverka_limit,
+    check_token_limit, get_usage_today, grant_admin_access, record_student_usage,
+    record_usage,
 )
 from core.konspekt_compare import (
     KonspektCompareError,
@@ -290,6 +291,29 @@ async def _check_and_report_limits(message: Message, telegram_user_id: int, oper
         else:
             text = texts.LIMIT_TOKENS_EXCEEDED.format(used=exc.used, limit=exc.limit, reset_time=reset_time)
         await message.answer(text, reply_markup=keyboards.MAIN_MENU)
+        return False
+    return True
+
+
+async def _check_and_report_student_limit(message: Message, telegram_user_id: int) -> bool:
+    """Находка 8 AUDIT.md: проверка лимита ученика существовала, но её
+    никто не вызывал — включение STUDENT_TARIFFS_ENABLED не изменило бы
+    ничего. Место вызова и было самым дорогим в этой правке (MASTER.md
+    0.10 п.1), поэтому оно заводится сейчас, при выключенном флаге.
+
+    Построена по образцу _check_and_report_limits выше: сама сообщает
+    причину отказа, вызывающий код только прерывает диалог. Пока флаг
+    выключен, check_student_sverka_limit гарантированно ничего не
+    бросает и в базу не ходит — это зафиксировано отдельным тестом."""
+    try:
+        check_student_sverka_limit(telegram_user_id)
+    except LimitExceeded as exc:
+        await message.answer(
+            texts.SVERKA_LIMIT_EXCEEDED.format(
+                used=exc.used, limit=exc.limit, reset_time=exc.reset_at.strftime("%H:%M")
+            ),
+            reply_markup=ReplyKeyboardRemove(),
+        )
         return False
     return True
 
@@ -911,6 +935,14 @@ async def sverka_photo_received(message: Message, state: FSMContext, bot: Bot) -
         await state.clear()
         return
     student_id = student_row[0]["id"]
+
+    # Проверка ДО скачивания файла: отказывать после того, как фото уже
+    # лежит на диске, значило бы заводить ещё один путь его удаления
+    # (грабля 2.8 — аудиофайлов и фотографий на диске после обработки
+    # ноль).
+    if not await _check_and_report_student_limit(message, telegram_id):
+        await state.clear()
+        return
 
     dest = settings.uploads_dir / f"{uuid.uuid4()}.jpg"
     await bot.download(largest, destination=dest)

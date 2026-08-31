@@ -2161,6 +2161,60 @@ async def test_sverka_photo_received_enqueues_task_and_clears_state(isolated_env
     assert await state.get_state() is None
 
 
+async def test_sverka_photo_checks_student_limit_before_enqueue(isolated_env, monkeypatch):
+    """Находка 8 AUDIT.md: check_student_sverka_limit не вызывался
+    ниоткуда — включение STUDENT_TARIFFS_ENABLED не изменило бы ничего.
+    Флаг здесь не трогаем: проверяем, что вызов вообще есть, подменив
+    саму функцию."""
+    from core.limits import LimitExceeded, next_reset_kostanay
+
+    seed = await _seed_sverka_lesson(878, 879, "расшифровка")
+    state = _state()
+    await state.update_data(transcript_id=seed["transcript_id"])
+    await state.set_state(SverkaCheck.waiting_for_photo)
+
+    def _exhausted(telegram_user_id, tariff="free", db_path=None):
+        raise LimitExceeded(
+            "лимит исчерпан", reset_at=next_reset_kostanay(), used=5, limit=5
+        )
+
+    monkeypatch.setattr("bot.handlers.check_student_sverka_limit", _exhausted)
+
+    message = FakeMessage(user_id=879, photo=[FakePhotoSize(file_size=1000)])
+    bot = FakeBot()
+    await sverka_photo_received(message, state, bot)
+
+    assert query("SELECT * FROM tasks WHERE type = 'sverka_tetradi'") == []
+    assert "5" in message.sent[-1]["text"]
+    assert message.sent[-1]["reply_markup"] is not keyboards.MAIN_MENU
+    assert await state.get_state() is None
+    # фото не скачивалось — отказ раньше загрузки (грабля 2.8)
+    assert list(settings.uploads_dir.glob("*.jpg")) == []
+
+
+async def test_sverka_pilot_stays_unlimited_for_student(isolated_env):
+    """КГ 15 плана: ученик делает подряд больше сверок, чем стоит в самом
+    щедром тарифе заглушки, и не получает отказа — пилот безлимитный
+    (MASTER.md 0.10 п.1). Проверяется на живом пути диалога, а не только
+    прямым вызовом функции лимита."""
+    from core.limits import STUDENT_DAILY_SVERKA_LIMITS, record_student_usage
+
+    seed = await _seed_sverka_lesson(880, 881, "расшифровка")
+    most_generous = max(STUDENT_DAILY_SVERKA_LIMITS.values())
+
+    for attempt in range(most_generous + 2):
+        state = _state()
+        await state.update_data(transcript_id=seed["transcript_id"])
+        await state.set_state(SverkaCheck.waiting_for_photo)
+        message = FakeMessage(user_id=881, photo=[FakePhotoSize(file_size=1000)])
+        await sverka_photo_received(message, state, FakeBot())
+        assert message.sent[-1]["text"] == texts.SVERKA_PROCESSING, f"отказ на попытке {attempt + 1}"
+        # расход ученика при этом честно пишется — счётчик из блока У3
+        record_student_usage(881)
+
+    assert len(query("SELECT * FROM tasks WHERE type = 'sverka_tetradi'")) == most_generous + 2
+
+
 async def test_sverka_photo_too_large_is_rejected_before_download(isolated_env):
     seed = await _seed_sverka_lesson(876, 877, "расшифровка")
     state = _state()
