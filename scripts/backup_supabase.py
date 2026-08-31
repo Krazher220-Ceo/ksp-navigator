@@ -62,11 +62,21 @@ def tables_from_schema(schema_path: Path) -> list[str]:
 
 
 def fetch_all_rows(table: str) -> list[dict]:
-    """Читает таблицу порциями, чтобы не держать её целиком в памяти (ktp_entries уже растёт)."""
+    """Читает таблицу порциями, чтобы не держать её целиком в памяти (ktp_entries уже растёт).
+
+    Находка 9 AUDIT.md: страницы обязаны иметь устойчивый порядок.
+    Postgres не гарантирует одинаковый порядок строк между двумя
+    запросами без ORDER BY, и на таблице больше PAGE_SIZE страницы могли
+    перекрыться или разойтись: часть строк продублировалась бы (упало бы
+    на PRIMARY KEY при записи в SQLite — громко), часть **потерялась бы
+    молча**. Сортировка по первой колонке (order by 1) годится для всех
+    таблиц сразу: имя ключевой колонки у них разное, а первая колонка
+    есть у каждой.
+    """
     rows: list[dict] = []
     offset = 0
     while True:
-        page = db.query(f"select * from {table} limit ? offset ?", (PAGE_SIZE, offset))
+        page = db.query(f"select * from {table} order by 1 limit ? offset ?", (PAGE_SIZE, offset))
         page = [dict(row) for row in page]
         rows.extend(page)
         if len(page) < PAGE_SIZE:

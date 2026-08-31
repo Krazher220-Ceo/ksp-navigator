@@ -147,6 +147,110 @@ def test_backup_supabase_creates_valid_sqlite_file(monkeypatch, tmp_path):
         conn.close()
 
 
+# --- Находка 9 AUDIT.md: страницы бэкапа обязаны иметь устойчивый порядок ---
+
+# Больше одной страницы (PAGE_SIZE = 500) — именно на этом объёме
+# начинает работать пагинация, ради которой всё и написано.
+_MANY_TEACHERS = [
+    {
+        "id": i,
+        "name": f"Педагог {i}",
+        "subject": "физика",
+        "school": None,
+        "telegram_user_id": 1000 + i,
+        "created_at": "2026-08-01 00:00:00",
+    }
+    for i in range(1, 1201)
+]
+
+
+class UnstableOrderClient:
+    """Postgres без ORDER BY не обязан отдавать строки в одном и том же
+    порядке между запросами — этот клиент ведёт себя ровно так.
+
+    Запрос с "order by" получает стабильно отсортированный список,
+    запрос без него — список, перевёрнутый на каждом втором обращении.
+    Это не выдумка про Postgres, а самый мягкий способ смоделировать то,
+    что он разрешает себе делать.
+    """
+
+    calls = 0
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def post(self, url, headers, json):
+        statement = json["statement"]
+        limit, offset = json["parameters"]
+        match = _TABLE_RE.search(statement)
+        table = match.group(1) if match else ""
+        all_rows = _MANY_TEACHERS if table == "teachers" else FAKE_ROWS.get(table, [])
+
+        if "order by" in statement.lower():
+            # "order by 1" — сортировка по первой колонке, какой бы она
+            # ни называлась: у teachers это id, у curriculum_objectives — code.
+            ordered = sorted(all_rows, key=lambda row: str(next(iter(row.values()))))
+        else:
+            UnstableOrderClient.calls += 1
+            ordered = list(all_rows)
+            if UnstableOrderClient.calls % 2 == 0:
+                ordered.reverse()
+
+        return FakeResponse(ordered[offset : offset + limit])
+
+
+def test_backup_pages_are_stable_across_requests(monkeypatch, tmp_path):
+    """Без ORDER BY часть строк дублируется, часть теряется молча —
+    и молчаливая потеря опаснее: бэкап выглядит успешным."""
+    import core.db as db_module
+
+    UnstableOrderClient.calls = 0
+    original = _configure_supabase()
+    try:
+        monkeypatch.setattr(db_module.httpx, "Client", UnstableOrderClient)
+        backup_path, counts = backup_supabase.run(tmp_path / "backup", PROJECT_ROOT / "storage" / "schema.sql")
+    finally:
+        _restore_settings(original)
+
+    assert counts["teachers"] == len(_MANY_TEACHERS)
+
+    conn = sqlite3.connect(backup_path)
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM teachers").fetchone()[0] == len(_MANY_TEACHERS)
+        saved_ids = [row[0] for row in conn.execute("SELECT id FROM teachers ORDER BY id")]
+        assert saved_ids == [row["id"] for row in _MANY_TEACHERS]
+    finally:
+        conn.close()
+
+
+def test_paging_query_asks_postgres_for_an_order(monkeypatch):
+    """Прямая проверка самого запроса: без ORDER BY гарантии выше не
+    существует, сколько её ни тестируй поведением."""
+    import core.db as db_module
+
+    seen: list[str] = []
+
+    class RecordingClient(UnstableOrderClient):
+        def post(self, url, headers, json):
+            seen.append(json["statement"])
+            return FakeResponse([])
+
+    original = _configure_supabase()
+    try:
+        monkeypatch.setattr(db_module.httpx, "Client", RecordingClient)
+        backup_supabase.fetch_all_rows("teachers")
+    finally:
+        _restore_settings(original)
+
+    assert seen and all("order by" in statement.lower() for statement in seen), seen
+
+
 def test_backup_supabase_refuses_when_backend_is_not_supabase(tmp_path):
     original = settings.db_backend
     object.__setattr__(settings, "db_backend", "sqlite")
