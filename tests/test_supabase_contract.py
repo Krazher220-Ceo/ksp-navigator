@@ -235,6 +235,48 @@ def test_word_returning_inside_parameter_value_does_not_change_branch():
     )
 
 
+# Настоящие идентификаторы Telegram — девяти-десятизначные. Всё, что
+# меньше миллиона, живой человек прислать не мог: это след теста,
+# писавшего в боевую базу (Находка 4 AUDIT.md).
+_REAL_TELEGRAM_ID_FLOOR = 1_000_000
+
+_ID_COLUMNS = {
+    "teachers": "telegram_user_id",
+    "students": "telegram_id",
+    "consents": "telegram_user_id",
+    "usage_daily": "telegram_user_id",
+    "admin_access": "telegram_user_id",
+    "template_selections": "telegram_user_id",
+    "tasks": "telegram_chat_id",
+}
+
+
+def test_no_test_sized_ids_in_production_tables():
+    """Находка 4 нашла механизм («тесты пишут в бой»), но не проверила,
+    не осталось ли уже написанного. Осталось: строка admin_access с
+    telegram_user_id = 960 — это id из
+    tests/test_bot_handlers.py::test_admin_command_grants_temporary_access…,
+    пережившая уборку 31.08, потому что admin_access в списке
+    вычищенных таблиц не было.
+
+    Тест намеренно смотрит на боевую базу целиком, а не только на свой
+    диапазон: диапазон охраняет тест от себя, а этот — базу от всех
+    тестов сразу."""
+    leftovers = {}
+    for table, column in _ID_COLUMNS.items():
+        rows = query(
+            f"SELECT {column} AS id FROM {table} "
+            f"WHERE {column} IS NOT NULL AND {column} > 0 AND {column} < ?",
+            (_REAL_TELEGRAM_ID_FLOOR,),
+        )
+        if rows:
+            leftovers[table] = sorted({row["id"] for row in rows})
+    assert not leftovers, (
+        f"в боевой базе лежат строки с тестовыми идентификаторами: {leftovers}. "
+        "Удалять их — решение автора, готовый SQL в AUDIT.md."
+    )
+
+
 def test_no_leftover_test_rows_in_negative_id_range():
     """Замыкающий тест модуля (порядок в файле — pytest по умолчанию идёт
     сверху вниз, без переупорядочивания: ни pytest-randomly, ни xdist в
