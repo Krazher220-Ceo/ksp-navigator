@@ -88,6 +88,19 @@ def back_cancel_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
+def upload_ksp_collecting_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура сбора файлов КСП (/upload_ksp, блок Н1 PLAN.md).
+
+    Отличается от back_cancel_keyboard подписью первой кнопки: в этом
+    диалоге шаг всего один, файлы копятся, и нажатие удаляет последний
+    загруженный файл с диска — это не переход на предыдущий шаг, и
+    подпись «← Назад» вводила пользователя в заблуждение."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text=texts.BUTTON_REMOVE_LAST_FILE), KeyboardButton(text=texts.BUTTON_CANCEL)]],
+        resize_keyboard=True,
+    )
+
+
 def konspekt_mode_keyboard() -> ReplyKeyboardMarkup:
     """Два продуктовых режима обработки записи урока (К0)."""
     return ReplyKeyboardMarkup(
@@ -115,7 +128,7 @@ def konspekt_collecting_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=texts.KONSPEKT_START_BUTTON)],
-            [KeyboardButton(text=texts.BUTTON_BACK), KeyboardButton(text=texts.BUTTON_CANCEL)],
+            [KeyboardButton(text=texts.BUTTON_REMOVE_LAST_PART), KeyboardButton(text=texts.BUTTON_CANCEL)],
         ],
         resize_keyboard=True,
     )

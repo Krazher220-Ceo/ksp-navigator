@@ -304,11 +304,12 @@ async def menu_button_pressed(message: Message, state: FSMContext) -> None:
 #
 # UploadKSP.collecting_files и Konspekt.collecting_audio — исключения из
 # общего правила "Назад = предыдущий шаг": там всего один шаг и файлы
-# копятся, поэтому "Назад" означает "убрать последний присланный файл"
-# (М3.3, ловушка; для /konspekt добавлено по находке 2 аудита этапа 2 —
-# М3.3 прямо требовал покрыть и состояния из К2, а этого не сделали).
-# Это две ветки в одном обработчике, а не отдельные обработчики и не
-# 16 копий.
+# копятся. Раньше это было веткой в этом же обработчике под именем
+# "Назад" (М3.3), но кнопка со стрелкой назад, безвозвратно удаляющая
+# присланный файл, вводила в заблуждение — блок Н1 (PLAN.md) завёл этим
+# двум состояниям отдельные подписи кнопок (texts.BUTTON_REMOVE_LAST_FILE,
+# texts.BUTTON_REMOVE_LAST_PART) и отдельные обработчики ниже, у своих
+# состояний. Общий back_button_pressed их больше не касается.
 # =====================================================================
 
 
@@ -332,13 +333,6 @@ async def _handle_go_back(message: Message, state: FSMContext) -> None:
 @router.message(Command("back"))
 @router.message(F.text == texts.BUTTON_BACK)
 async def back_button_pressed(message: Message, state: FSMContext) -> None:
-    current = await state.get_state()
-    if current == UploadKSP.collecting_files.state:
-        await _upload_ksp_remove_last_file(message, state)
-        return
-    if current == Konspekt.collecting_audio.state:
-        await _konspekt_remove_last_part(message, state)
-        return
     await _handle_go_back(message, state)
 
 
@@ -455,17 +449,19 @@ async def cmd_upload_ksp(message: Message, state: FSMContext) -> None:
         return
     await state.set_state(UploadKSP.collecting_files)
     await state.update_data(teacher_id=teacher["id"], file_paths=[])
-    await message.answer(texts.UPLOAD_KSP_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
+    await message.answer(texts.UPLOAD_KSP_PROMPT, reply_markup=keyboards.upload_ksp_collecting_keyboard())
 
 
 async def _upload_ksp_remove_last_file(message: Message, state: FSMContext) -> None:
-    """М3.3, ловушка: в этом диалоге один шаг, файлы копятся — «Назад»
-    здесь означает «убрать последний загруженный файл», а не переключение
-    состояния (переключать некуда, шаг один)."""
+    """Н1: в этом диалоге один шаг, файлы копятся — кнопка «Убрать
+    последний файл» удаляет последний загруженный файл, а не переключает
+    состояние (переключать некуда, шаг один)."""
     data = await state.get_data()
     file_paths = list(data.get("file_paths", []))
     if not file_paths:
-        await message.answer(texts.UPLOAD_KSP_NOTHING_TO_REMOVE, reply_markup=keyboards.back_cancel_keyboard())
+        await message.answer(
+            texts.UPLOAD_KSP_NOTHING_TO_REMOVE, reply_markup=keyboards.upload_ksp_collecting_keyboard()
+        )
         return
 
     removed_path = file_paths.pop()
@@ -477,8 +473,13 @@ async def _upload_ksp_remove_last_file(message: Message, state: FSMContext) -> N
 
     await message.answer(
         texts.UPLOAD_KSP_LAST_FILE_REMOVED.format(filename=Path(removed_path).name, count=len(file_paths)),
-        reply_markup=keyboards.back_cancel_keyboard(),
+        reply_markup=keyboards.upload_ksp_collecting_keyboard(),
     )
+
+
+@router.message(UploadKSP.collecting_files, F.text == texts.BUTTON_REMOVE_LAST_FILE)
+async def upload_ksp_remove_last_file_pressed(message: Message, state: FSMContext) -> None:
+    await _upload_ksp_remove_last_file(message, state)
 
 
 @router.message(UploadKSP.collecting_files, F.document)
@@ -514,7 +515,7 @@ async def upload_ksp_file_received(message: Message, state: FSMContext, bot: Bot
     await state.update_data(file_paths=file_paths)
     await message.answer(
         texts.UPLOAD_KSP_FILE_ACCEPTED.format(n=len(file_paths), max=MAX_KSP_FILES, filename=filename),
-        reply_markup=keyboards.back_cancel_keyboard(),
+        reply_markup=keyboards.upload_ksp_collecting_keyboard(),
     )
 
 
@@ -525,7 +526,8 @@ async def upload_ksp_done(message: Message, state: FSMContext) -> None:
 
     if len(file_paths) < MIN_KSP_FILES:
         await message.answer(
-            texts.UPLOAD_KSP_TOO_FEW.format(count=len(file_paths)), reply_markup=keyboards.back_cancel_keyboard()
+            texts.UPLOAD_KSP_TOO_FEW.format(count=len(file_paths)),
+            reply_markup=keyboards.upload_ksp_collecting_keyboard(),
         )
         return
 
@@ -540,7 +542,7 @@ async def upload_ksp_done(message: Message, state: FSMContext) -> None:
 
 @router.message(UploadKSP.collecting_files)
 async def upload_ksp_wrong_input(message: Message) -> None:
-    await message.answer(texts.UPLOAD_KSP_PROMPT, reply_markup=keyboards.back_cancel_keyboard())
+    await message.answer(texts.UPLOAD_KSP_PROMPT, reply_markup=keyboards.upload_ksp_collecting_keyboard())
 
 
 # =====================================================================
@@ -851,11 +853,11 @@ async def konspekt_mode_wrong_input(message: Message) -> None:
 
 
 async def _konspekt_remove_last_part(message: Message, state: FSMContext) -> None:
-    """«Назад» в /konspekt — убрать последнюю присланную часть записи
-    (аудит этапа 2, находка 2). Шаг здесь один, переключать состояние
+    """Кнопка «Убрать последнюю часть» в /konspekt (Н1, ранее — «Назад»,
+    аудит этапа 2 находка 2). Шаг здесь один, переключать состояние
     некуда: ровно та же ситуация и ровно то же решение, что у
-    _upload_ksp_remove_last_file (М3.3, ловушка). Файл удаляется с диска
-    сразу, а не остаётся сиротой."""
+    _upload_ksp_remove_last_file. Файл удаляется с диска сразу, а не
+    остаётся сиротой."""
     data = await state.get_data()
     paths = list(data.get("audio_paths", []))
     durations = list(data.get("audio_durations", []))
@@ -876,6 +878,11 @@ async def _konspekt_remove_last_part(message: Message, state: FSMContext) -> Non
         texts.KONSPEKT_LAST_PART_REMOVED.format(count=len(paths)),
         reply_markup=keyboards.konspekt_collecting_keyboard(),
     )
+
+
+@router.message(Konspekt.collecting_audio, F.text == texts.BUTTON_REMOVE_LAST_PART)
+async def konspekt_remove_last_part_pressed(message: Message, state: FSMContext) -> None:
+    await _konspekt_remove_last_part(message, state)
 
 
 async def _konspekt_store_part(
@@ -919,7 +926,7 @@ async def _konspekt_store_part(
         texts.KONSPEKT_PART_ACCEPTED.format(
             n=len(paths), max=MAX_KONSPEKT_PARTS, duration=_format_duration(duration)
         ),
-        reply_markup=keyboards.back_cancel_keyboard(),
+        reply_markup=keyboards.konspekt_collecting_keyboard(),
     )
 
 

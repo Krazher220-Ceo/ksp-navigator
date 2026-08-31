@@ -57,6 +57,7 @@ from bot.handlers import (
     generate_textbook_photos_skipped,
     generate_topic_received,
     history_resend,
+    konspekt_remove_last_part_pressed,
     make_generate_ksp_handler,
     make_parse_ksp_handler,
     menu_button_pressed,
@@ -67,6 +68,7 @@ from bot.handlers import (
     templates_web_app_choice,
     upload_ksp_done,
     upload_ksp_file_received,
+    upload_ksp_remove_last_file_pressed,
     upload_ktp_file_received,
 )
 from bot import keyboards, texts
@@ -1899,15 +1901,17 @@ async def test_teacher_dialog_back_preserves_name(isolated_env):
 
 
 async def test_upload_ksp_back_removes_last_file_not_step(isolated_env):
-    """М3.3, ловушка: в UploadKSP «Назад» убирает последний файл, а не
-    переключает шаг (шаг там один)."""
+    """Н1: кнопка «Убрать последний файл» убирает последний файл, а не
+    переключает шаг (шаг там один). До Н1 это была ветка общего «Назад» —
+    теперь у неё своя подпись и свой обработчик, BUTTON_BACK здесь не
+    участвует вовсе."""
     teacher_id = _create_teacher(782)
     state = _state()
     await state.set_state(UploadKSP.collecting_files)
     await state.update_data(teacher_id=teacher_id, file_paths=["/tmp/fake1.docx", "/tmp/fake2.docx"])
 
     message = FakeMessage(user_id=782)
-    await back_button_pressed(message, state)
+    await upload_ksp_remove_last_file_pressed(message, state)
 
     # состояние осталось тем же (не переключилось никуда)
     assert await state.get_state() == UploadKSP.collecting_files.state
@@ -1922,23 +1926,30 @@ async def test_upload_ksp_back_with_no_files_does_not_crash():
     await state.update_data(teacher_id=1, file_paths=[])
 
     message = FakeMessage(user_id=783)
-    await back_button_pressed(message, state)
+    await upload_ksp_remove_last_file_pressed(message, state)
 
     assert await state.get_state() == UploadKSP.collecting_files.state
     assert message.sent[-1]["text"] == texts.UPLOAD_KSP_NOTHING_TO_REMOVE
 
 
 async def test_back_command_synonym_works_same_as_button():
-    """/back — синоним кнопки «← Назад» (М3.2)."""
+    """/back — синоним кнопки «← Назад» в обычных шаговых диалогах (М3.2).
+
+    В UploadKSP и /konspekt (Н1) синонимом больше не является: там
+    «Назад» переименована в «Убрать последний файл/часть» — отдельная
+    кнопка со своим обработчиком, не связанным с BUTTON_BACK/Command("back").
+    """
     state = _state()
-    await state.set_state(UploadKSP.collecting_files)
-    await state.update_data(teacher_id=1, file_paths=["/tmp/fake1.docx"])
+    await cmd_teacher(FakeMessage(text="/teacher", user_id=784), state)
+    await teacher_name_received(FakeMessage(text="Иванов И.И.", user_id=784), state)
+    assert await state.get_state() == TeacherProfile.waiting_for_subject.state
 
     message = FakeMessage(text="/back", user_id=784)
     await back_button_pressed(message, state)
 
+    assert await state.get_state() == TeacherProfile.waiting_for_name.state
     data = await state.get_data()
-    assert data["file_paths"] == []
+    assert data["name"] == "Иванов И.И."
 
 
 async def test_cancel_button_mid_dialog_clears_state():
@@ -3249,15 +3260,16 @@ async def test_menu_button_deletes_collected_audio_parts(isolated_env):
 
 
 async def test_back_in_konspekt_removes_only_last_part(isolated_env):
-    """М3.3 (ловушка) для состояния из К2: «Назад» здесь убирает последнюю
-    присланную часть, а не выходит из диалога. До правки «Назад» выходил
-    в меню и бросал на диске все принятые части."""
+    """Н1 для состояния из К2: кнопка «Убрать последнюю часть» убирает
+    последнюю присланную часть, а не выходит из диалога. Раньше это была
+    ветка общего «Назад»; теперь своя подпись и свой обработчик, не
+    связанный с BUTTON_BACK."""
     state, paths = await _konspekt_with_parts(972)
     collected = len(paths)
     assert collected >= 2, "тесту нужно минимум две части, чтобы «последняя» имела смысл"
 
-    message = FakeMessage(text=texts.BUTTON_BACK, user_id=972)
-    await back_button_pressed(message, state)
+    message = FakeMessage(text=texts.BUTTON_REMOVE_LAST_PART, user_id=972)
+    await konspekt_remove_last_part_pressed(message, state)
 
     assert not paths[-1].exists()          # последняя убрана с диска
     assert all(p.exists() for p in paths[:-1])  # остальные на месте
@@ -3273,8 +3285,8 @@ async def test_back_in_konspekt_without_parts_says_nothing_to_remove(isolated_en
     state = _state()
     await _start_konspekt(state, 973)
 
-    message = FakeMessage(text=texts.BUTTON_BACK, user_id=973)
-    await back_button_pressed(message, state)
+    message = FakeMessage(text=texts.BUTTON_REMOVE_LAST_PART, user_id=973)
+    await konspekt_remove_last_part_pressed(message, state)
 
     assert message.sent[-1]["text"] == texts.KONSPEKT_NOTHING_TO_REMOVE
     assert await state.get_state() == Konspekt.collecting_audio.state
@@ -3471,7 +3483,10 @@ async def test_collecting_keyboard_offers_start_button(isolated_env):
     keyboard = message.sent[-1]["reply_markup"]
     texts_on_keyboard = [b.text for row in keyboard.keyboard for b in row]
     assert texts.KONSPEKT_START_BUTTON in texts_on_keyboard
-    assert texts.BUTTON_BACK in texts_on_keyboard      # «Назад» никуда не делся
+    # Н1: «Назад» здесь удаляла бы файл, а не двигала диалог назад — у
+    # кнопки своя, честная подпись, BUTTON_BACK на этом шаге не показывается.
+    assert texts.BUTTON_REMOVE_LAST_PART in texts_on_keyboard
+    assert texts.BUTTON_BACK not in texts_on_keyboard
     assert texts.BUTTON_CANCEL in texts_on_keyboard
 
 
