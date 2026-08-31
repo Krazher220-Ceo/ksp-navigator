@@ -367,6 +367,10 @@ def _ensure_student_row(telegram_id: int, full_name: str | None, db_path=None) -
     existing = query("SELECT id FROM students WHERE telegram_id = ?", (telegram_id,), db_path=db_path)
     if not existing:
         execute("INSERT INTO students (telegram_id, name) VALUES (?, ?)", (telegram_id, full_name), db_path=db_path)
+    # Человек стал учеником — кэш роли в _student_gate обязан об этом
+    # узнать сразу, иначе он до перезапуска процесса продолжит считать
+    # его педагогом (см. _gate_role_cache ниже).
+    _forget_cached_role(telegram_id)
 
 
 def _student_classes(telegram_id: int, db_path=None) -> list[dict]:
@@ -422,6 +426,33 @@ async def _send_student_home(message: Message, telegram_id: int) -> None:
 
 _STUDENT_ALLOWED_COMMANDS = {"start", "join", "sverka", "cancel", "back", "delete_my_data"}
 
+# Э3, тот же принцип, что у _consent_given_cache: педагог нажимает кнопки
+# меню постоянно, и запрос "а не ученик ли он" на каждое нажатие — это
+# ровно тот сетевой поход на каждое сообщение, ради устранения которого
+# писался блок Э3. Здесь кэшируется ОБА ответа, потому что переход
+# «не ученик -> ученик» в коде бота происходит ровно в одном месте
+# (_ensure_student_row), а обратный — тоже ровно в одном
+# (_delete_student_personal_data); оба сбрасывают запись.
+#
+# Кэш обслуживает только этот гейт: cmd_start, cmd_sverka и
+# cmd_delete_my_data по-прежнему спрашивают базу напрямую. Так у правки
+# один потребитель, а не весь файл, и её видно целиком в одном месте.
+_gate_role_cache: dict[int, bool] = {}
+
+
+def _forget_cached_role(telegram_id: int) -> None:
+    """Сбрасывает кэш роли: строка ученика заведена или удалена."""
+    _gate_role_cache.pop(telegram_id, None)
+
+
+def _is_student_for_gate(telegram_id: int) -> bool:
+    cached = _gate_role_cache.get(telegram_id)
+    if cached is not None:
+        return cached
+    student = _is_student(telegram_id)
+    _gate_role_cache[telegram_id] = student
+    return student
+
 
 def _command_name(text: str) -> str | None:
     """"/generate@my_bot тема" -> "generate"; не команда -> None."""
@@ -460,7 +491,7 @@ async def _student_gate(handler, event, data):
         return await handler(event, data)
 
     try:
-        student = _is_student(from_user.id)
+        student = _is_student_for_gate(from_user.id)
     except SupabaseDatabaseError:
         logger.warning(
             "_student_gate: не удалось определить роль telegram_user_id=%s — база недоступна",
@@ -1005,6 +1036,12 @@ def make_sverka_handler(bot: Bot):
             # стоит ДО вызова модели: сравнивать нечего — значит и
             # платить за вызов не за что.
             if notebook_is_unreadable(notebook_text):
+                # Расход всё равно записывается: распознавание фото —
+                # вызов с изображением, самый дорогой в этой цепочке (У4,
+                # ловушка), и он уже состоялся. Не записать его значило бы
+                # и потерять расход, и дать способ обойти будущий лимит
+                # ученика, присылая чистые листы.
+                record_student_usage(chat_id)
                 await bot.send_message(chat_id, texts.SVERKA_NOTEBOOK_UNREADABLE)
                 return {"missing_items": [], "notebook_unreadable": True}
 
@@ -3150,6 +3187,7 @@ def _delete_student_personal_data(telegram_id: int) -> dict:
     execute("DELETE FROM students WHERE telegram_id = ?", (telegram_id,))
     execute("DELETE FROM consents WHERE telegram_user_id = ?", (telegram_id,))
     _consent_given_cache.discard(telegram_id)
+    _forget_cached_role(telegram_id)
 
     return counts
 

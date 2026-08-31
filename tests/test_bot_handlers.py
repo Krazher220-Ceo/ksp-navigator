@@ -2030,6 +2030,59 @@ async def test_student_gate_lists_classes_instead_of_teacher_menu(isolated_env):
     assert "11 Б" in message.sent[-1]["text"]
 
 
+async def test_student_gate_asks_the_database_about_a_role_only_once(isolated_env, monkeypatch):
+    """Э3: педагог жмёт кнопки меню постоянно, и запрос роли на каждое
+    нажатие — тот самый сетевой поход на каждое сообщение, ради
+    устранения которого писался блок Э3."""
+    import bot.handlers as handlers_module
+
+    calls = []
+    real_is_student = handlers_module._is_student
+
+    def _counting(telegram_id, db_path=None):
+        calls.append(telegram_id)
+        return real_is_student(telegram_id, db_path=db_path)
+
+    monkeypatch.setattr(handlers_module, "_is_student", _counting)
+    record_consent(851)
+
+    for _ in range(5):
+        passed, _ = await _pass_through_student_gate("/menu", 851)
+        assert passed != []
+
+    assert calls == [851], f"роль спрошена {len(calls)} раз вместо одного"
+
+
+async def test_student_gate_cache_notices_that_a_person_became_a_student(isolated_env):
+    """Опасная половина кэша: человек нажал /menu до вступления в класс,
+    получил закэшированное «не ученик», а потом стал учеником."""
+    from bot.handlers import _ensure_student_row
+
+    record_consent(852)
+    passed, _ = await _pass_through_student_gate("/menu", 852)
+    assert passed != []  # ещё педагог
+
+    _ensure_student_row(852, "Ученик Тестовый")
+
+    passed, message = await _pass_through_student_gate("/menu", 852)
+    assert passed == []
+    assert message.sent[0]["text"] == texts.STUDENT_TEACHER_COMMAND_UNAVAILABLE
+
+
+async def test_student_gate_cache_notices_that_a_student_deleted_themselves(isolated_env):
+    """Обратный переход: после /delete_my_data человек перестаёт быть
+    учеником, и кэш не должен держать его в этой роли."""
+    _register_student(853)
+    passed, _ = await _pass_through_student_gate("/menu", 853)
+    assert passed == []
+
+    callback = FakeCallbackQuery(data="delete_my_data_confirm", message=FakeMessage(user_id=853), user_id=853)
+    await delete_my_data_confirmed(callback)
+
+    passed, _ = await _pass_through_student_gate("/menu", 853)
+    assert passed != [], "после удаления данных человек больше не ученик"
+
+
 def test_command_name_parses_mention_and_arguments():
     from bot.handlers import _command_name
 
@@ -2610,14 +2663,27 @@ async def test_delete_my_data_for_student_confirm_removes_student_and_membership
     assert query("SELECT 1 FROM teachers WHERE telegram_user_id = 962")
 
 
-async def test_delete_my_data_for_student_without_data_says_nothing_to_delete(isolated_env):
+async def test_delete_my_data_for_someone_who_is_neither_role_offers_teacher_profile(isolated_env):
+    """Человек без строки в students и без профиля педагога — ветка
+    педагога, как и было до правки: разветвление сделано по роли, а не
+    «всем подряд показать сводку ученика»."""
     record_consent(964)
-    execute("INSERT INTO students (telegram_id, name) VALUES (964, 'Ученик')")
-    execute("DELETE FROM students WHERE telegram_id = 964")
     message = FakeMessage(text="/delete_my_data", user_id=964)
     await cmd_delete_my_data(message)
-    # строки students нет — это уже не ученик, ветка педагога
     assert message.sent[-1]["text"] == texts.ERROR_NO_TEACHER_PROFILE
+
+
+async def test_delete_my_data_for_student_without_classes_still_offers_deletion(isolated_env):
+    """У ученика может не быть ни одного класса — сама его строка это
+    уже персональные данные, и удалять её он вправе."""
+    execute("INSERT INTO students (telegram_id, name) VALUES (967, 'Ученик Без Класса')")
+    record_consent(967)
+    message = FakeMessage(text="/delete_my_data", user_id=967)
+    await cmd_delete_my_data(message)
+
+    assert message.sent[-1]["text"] != texts.DELETE_MY_DATA_NOTHING_TO_DELETE
+    assert "членство в классах: 0" in message.sent[-1]["text"]
+    assert message.sent[-1]["reply_markup"] is not None
 
 
 async def test_delete_my_data_for_teacher_removes_classes_but_keeps_students(isolated_env, tmp_path):
@@ -4180,6 +4246,38 @@ async def _seed_sverka_lesson(teacher_user_id: int, student_user_id: int, transc
 # должна быть правдоподобной длины, иначе два коротких пункта пропусков
 # перевешивают её и срабатывает потолок выдачи (Находка 7 AUDIT.md).
 LONG_TRANSCRIPT = "расшифровка урока про импульс. " * 60
+
+
+async def test_sverka_handler_records_usage_even_for_unreadable_notebook(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Распознавание фото — вызов с изображением, самый дорогой в
+    цепочке (У4, ловушка), и на нечитаемой тетради он уже состоялся. Не
+    записать расход значило бы и потерять его, и дать способ обойти
+    будущий лимит ученика, присылая чистые листы."""
+    from core.limits import get_student_usage_today
+
+    seed = await _seed_sverka_lesson(974, 975, "расшифровка урока")
+    photo_path = tmp_path / "notebook.jpg"
+    photo_path.write_bytes(b"fake photo bytes")
+    monkeypatch.setattr("bot.handlers.recognize_textbook_page", lambda *a, **k: _async_return("-"))
+
+    handler = make_sverka_handler(FakeBot())
+    await handler(
+        {
+            "id": "sv-unreadable-usage",
+            "type": "sverka_tetradi",
+            "telegram_chat_id": 975,
+            "retries": 0,
+            "payload": {
+                "student_id": seed["student_id"],
+                "transcript_id": seed["transcript_id"],
+                "photo_path": str(photo_path),
+            },
+        }
+    )
+
+    assert get_student_usage_today(975, db_path=None) == 1
 
 
 async def test_sverka_handler_sends_missing_items_and_records_usage(isolated_env, monkeypatch, tmp_path):

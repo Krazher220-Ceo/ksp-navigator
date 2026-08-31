@@ -41,6 +41,22 @@ def isolated_session_db(tmp_path_factory) -> Path:
     return db_path
 
 
+def _clear_process_caches() -> None:
+    """Сбрасывает кэши, живущие в памяти процесса между тестами.
+
+    Их два, и оба намеренные: `_consent_given_cache` (Э3, кэширует
+    «согласие дано») и `_gate_role_cache` (Находка 1 AUDIT.md, кэширует
+    роль для `_student_gate`). Оба переживают смену базы, потому что
+    живут в модуле, а не в ней, — и один тест мог бы молча решить
+    судьбу следующего. `tests/test_bot_handlers.py` чистит первый из них
+    сам, но тест, забывший фикстуру, ровно так же забыл бы и это.
+    """
+    from bot.handlers import _consent_given_cache, _gate_role_cache
+
+    _consent_given_cache.clear()
+    _gate_role_cache.clear()
+
+
 @pytest.fixture(autouse=True)
 def isolate_database(request, isolated_session_db):
     """На время каждого теста `settings` указывают на временную SQLite.
@@ -53,6 +69,8 @@ def isolate_database(request, isolated_session_db):
         yield
         return
 
+    _clear_process_caches()
+
     original_db_path = settings.db_path
     original_db_backend = settings.db_backend
     object.__setattr__(settings, "db_path", isolated_session_db)
@@ -62,3 +80,4 @@ def isolate_database(request, isolated_session_db):
     finally:
         object.__setattr__(settings, "db_path", original_db_path)
         object.__setattr__(settings, "db_backend", original_db_backend)
+        _clear_process_caches()
