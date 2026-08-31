@@ -32,9 +32,13 @@ def collect(teacher_id: int, topic: str, db_path=None) -> dict:
                 result["sources"]["objective_code"] = "КТП"
             break
 
+    # Только ORDER BY created_at: псевдоколонки rowid в Postgres нет, и
+    # запрос с ней падал в проде 400 Bad Request на первом же шаге
+    # /generate (Находка 3 AUDIT.md, грабля 2.12). Тай-брейкер по rowid
+    # был нужен лишь при совпадении времени до секунды.
     generated_rows = query(
         "SELECT template_id, content_json FROM generated_ksp WHERE teacher_id = ? "
-        "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        "ORDER BY created_at DESC LIMIT 1",
         (teacher_id,), db_path=db_path,
     )
     if generated_rows:

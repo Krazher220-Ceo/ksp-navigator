@@ -10,6 +10,12 @@ ksp_execute_sql в storage/schema_supabase.sql:
 квалифицирована именем таблицы или excluded.) статикой не ловится —
 это грабля 2.12/блок Э2, отдельный прогон против настоящего Postgres.
 
+Пункт 5 добавлен по Находке 3 AUDIT.md: SQLite-специфичных псевдоколонок
+(rowid, _rowid_, oid) в запросе быть не может — в Postgres их нет, и
+запрос с ними отвергается целиком. Ровно так /generate падал в проде на
+первом же шаге, а блок Э1 этого не поймал: тогда проверялись только
+четыре пункта выше.
+
 Два источника проверяемого SQL:
   - литералы, переданные первым аргументом в query()/execute()/executemany()
     — ищутся по всему core/, bot/, web/ через ast, без импорта модулей
@@ -36,6 +42,9 @@ SCAN_DIRS = ("core", "bot", "web")
 
 _SQL_CALL_NAMES = {"query", "execute", "executemany"}
 _START_RE = re.compile(r"^(select|with|insert|update|delete)\s", re.IGNORECASE)
+# Псевдоколонки, которые есть в SQLite и которых нет в Postgres. Границы
+# слова обязательны: без них сюда попадал бы, например, "lastrowid".
+_SQLITE_PSEUDOCOLUMN_RE = re.compile(r"\b(rowid|_rowid_|oid)\b", re.IGNORECASE)
 
 
 def _contract_violations(sql: str, param_count: int | None) -> list[str]:
@@ -50,6 +59,11 @@ def _contract_violations(sql: str, param_count: int | None) -> list[str]:
         problems.append("содержит точку с запятой")
     if param_count is not None and sql.count("?") != param_count:
         problems.append(f"число '?' ({sql.count('?')}) не совпадает с числом параметров ({param_count})")
+    pseudocolumn = _SQLITE_PSEUDOCOLUMN_RE.search(sql)
+    if pseudocolumn:
+        problems.append(
+            f"использует псевдоколонку SQLite '{pseudocolumn.group(0)}', которой нет в Postgres"
+        )
     return problems
 
 
@@ -140,6 +154,21 @@ def test_contract_violations_catches_placeholder_mismatch():
     assert _contract_violations("SELECT * FROM t WHERE a = ?", 2) == [
         "число '?' (1) не совпадает с числом параметров (2)"
     ]
+
+
+def test_contract_violations_catches_sqlite_rowid():
+    """Находка 3 AUDIT.md: "ORDER BY created_at DESC, rowid DESC" в
+    core/generation_defaults.py роняло /generate на боевом Postgres у
+    обоих настоящих учителей."""
+    assert _contract_violations("SELECT a FROM t ORDER BY created_at DESC, rowid DESC", 0) == [
+        "использует псевдоколонку SQLite 'rowid', которой нет в Postgres"
+    ]
+
+
+def test_contract_violations_does_not_confuse_lastrowid_with_rowid():
+    """Страховка от того, что проверка станет слишком жадной: столбца с
+    таким именем в проекте нет, но слово "lastrowid" в коде есть."""
+    assert _contract_violations("SELECT lastrowid_column FROM t", 0) == []
 
 
 def test_contract_violations_accepts_clean_query():
