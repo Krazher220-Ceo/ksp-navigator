@@ -176,6 +176,68 @@ def test_contract_violations_accepts_clean_query():
 
 
 # =====================================================================
+# Находка 2 AUDIT.md — сама RPC-функция в storage/schema_supabase.sql.
+#
+# Проверки ниже статические и по тексту функции: тело живёт в проде, и
+# единственный способ поймать откат этой правки без сети — смотреть на
+# файл, который человек применяет через SQL Editor (грабля 2.13).
+# Поведение на настоящем Postgres проверяют тесты с меткой supabase
+# (tests/test_supabase_contract.py) — они и должны быть красными, пока
+# SQL в проде не применён.
+# =====================================================================
+
+SUPABASE_SCHEMA = PROJECT_ROOT / "storage" / "schema_supabase.sql"
+
+
+def _execute_sql_function_body() -> str:
+    text = SUPABASE_SCHEMA.read_text(encoding="utf-8")
+    start = text.index("create or replace function public.ksp_execute_sql")
+    end = text.index("revoke all on function public.ksp_execute_sql")
+    return text[start:end]
+
+
+def test_placeholder_search_never_rereads_the_substituted_text():
+    """Ровно этот откат ронял прод: поиск следующего '?' в уже
+    подставленной строке принимал знак вопроса ВНУТРИ значения
+    параметра за неизрасходованный плейсхолдер."""
+    body = _execute_sql_function_body()
+    assert "strpos(remainder, '?')" in body
+    assert "strpos(compiled, '?')" not in body, (
+        "поиск плейсхолдера снова идёт по подставленной строке — вернулась Находка 2"
+    )
+
+
+def test_every_regexp_looks_at_the_original_statement():
+    """Слово ' returning ' внутри значения параметра уводило UPDATE в
+    ветку WITH и давало 0A000.
+
+    Проверяются все строки, где функция смотрит на текст запроса
+    регуляркой, — и выбор ветки исполнения, и проверка whitelist в
+    начале: обе обязаны читать ИСХОДНЫЙ запрос, а не тот, в который уже
+    подставлены значения параметров."""
+    body = _execute_sql_function_body()
+    regexp_lines = [line for line in body.splitlines() if "~ '^" in line or "returning[[:space:]]" in line]
+    assert regexp_lines, "не нашёл строк с разбором текста запроса — тест смотрит не туда"
+    for line in regexp_lines:
+        assert "lower(source)" in line, (
+            f"текст запроса разбирается после подстановки значений: {line.strip()}"
+        )
+
+
+def test_rpc_strictness_is_not_weakened():
+    """Правка Находки 2 меняла только цикл подстановки. Запрет DDL,
+    запрет точки с запятой и whitelist ключевых слов обязаны остаться —
+    ослабить их «заодно» нельзя."""
+    body = _execute_sql_function_body()
+    assert "like '%;%'" in body
+    assert "^(select|with|insert|update|delete)[[:space:]]" in body
+    assert "security definer" in body
+    full = SUPABASE_SCHEMA.read_text(encoding="utf-8")
+    assert "revoke all on function public.ksp_execute_sql(text, jsonb) from public, anon, authenticated;" in full
+    assert "grant execute on function public.ksp_execute_sql(text, jsonb) to service_role;" in full
+
+
+# =====================================================================
 # core/queue.py — динамически собранный SQL, не литерал в источнике.
 # =====================================================================
 
