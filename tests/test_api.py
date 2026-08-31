@@ -44,13 +44,19 @@ def isolated_api(tmp_path):
     init_db(db_path=db_path, schema_path=REAL_SCHEMA_PATH)
 
     original_db_path = auth_settings.db_path
+    original_db_backend = auth_settings.db_backend
     original_token = auth_settings.telegram_bot_token
+    # web/api.py тоже вызывает core.db.query/execute без явного db_path —
+    # connect() смотрит на settings.db_backend, подмены одного db_path
+    # недостаточно (блок Н0 PLAN.md, та же причина, что в test_bot_handlers.py).
     object.__setattr__(auth_settings, "db_path", db_path)
+    object.__setattr__(auth_settings, "db_backend", "sqlite")
     object.__setattr__(auth_settings, "telegram_bot_token", BOT_TOKEN)
     try:
         yield db_path
     finally:
         object.__setattr__(auth_settings, "db_path", original_db_path)
+        object.__setattr__(auth_settings, "db_backend", original_db_backend)
         object.__setattr__(auth_settings, "telegram_bot_token", original_token)
 
 

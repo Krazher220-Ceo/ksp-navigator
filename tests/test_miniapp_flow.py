@@ -59,13 +59,19 @@ class _Callback:
 def isolated_flow(tmp_path):
     db_path = tmp_path / "flow.db"
     init_db(db_path=db_path, schema_path=PROJECT_ROOT / "storage" / "schema.sql")
-    previous = settings.db_path
+    previous_db_path = settings.db_path
+    previous_db_backend = settings.db_backend
+    # Тот же приём, что в test_bot_handlers.py и test_api.py: connect()
+    # смотрит на settings.db_backend, подмены одного db_path недостаточно
+    # (блок Н0 PLAN.md).
     object.__setattr__(settings, "db_path", db_path)
+    object.__setattr__(settings, "db_backend", "sqlite")
     load_builtin_templates(db_path=db_path)
     try:
         yield db_path
     finally:
-        object.__setattr__(settings, "db_path", previous)
+        object.__setattr__(settings, "db_path", previous_db_path)
+        object.__setattr__(settings, "db_backend", previous_db_backend)
 
 
 def _state(user_id: int) -> FSMContext:

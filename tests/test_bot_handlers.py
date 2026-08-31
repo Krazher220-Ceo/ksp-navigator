@@ -106,10 +106,16 @@ def isolated_env(tmp_path):
 
     originals = {
         "db_path": settings.db_path,
+        "db_backend": settings.db_backend,
         "uploads_dir": settings.uploads_dir,
         "generated_dir": settings.generated_dir,
     }
+    # bot/handlers.py вызывает core.db.query/execute без явного db_path,
+    # поэтому connect() смотрит на settings.db_backend — подмены одного
+    # db_path недостаточно, при db_backend="supabase" запросы всё равно
+    # уходят в боевую сеть (блок Н0 PLAN.md).
     object.__setattr__(settings, "db_path", db_path)
+    object.__setattr__(settings, "db_backend", "sqlite")
     object.__setattr__(settings, "uploads_dir", uploads_dir)
     object.__setattr__(settings, "generated_dir", generated_dir)
     try:
@@ -117,6 +123,17 @@ def isolated_env(tmp_path):
     finally:
         for key, value in originals.items():
             object.__setattr__(settings, key, value)
+
+
+def test_isolated_env_uses_sqlite_not_supabase(isolated_env):
+    """КГ блока Н0: без этой подмены запросы уходят в боевой Supabase."""
+    from core.db import SupabaseConnection, connect
+
+    conn = connect()
+    try:
+        assert not isinstance(conn, SupabaseConnection)
+    finally:
+        conn.close()
 
 
 @pytest.fixture
