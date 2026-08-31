@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from core.config import settings
 from core.db import execute, query, using_supabase
 
@@ -96,3 +98,75 @@ def test_supabase_insert_returns_identifier_and_explicit_path_stays_sqlite(monke
         assert using_supabase(Path(tmp_path / "test.db")) is False
     finally:
         _restore_settings(original)
+
+
+# --- Находка 10 AUDIT.md: настоящая причина отказа Postgres в тексте ошибки ---
+
+
+def test_error_message_includes_response_body():
+    """raise_for_status() даёт "Client error '400 Bad Request' for url…"
+    одинаково для всех причин; настоящая — в теле ответа, и без неё
+    Находки 2 и 3 выглядели в логе неотличимо."""
+    import httpx
+
+    from core.db import SupabaseConnection, SupabaseDatabaseError
+
+    class _FailingClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, headers, json):
+            request = httpx.Request("POST", url)
+            return httpx.Response(
+                400,
+                request=request,
+                text='{"code":"P0001","message":"Плейсхолдеров больше, чем параметров"}',
+            )
+
+    original = _configure_supabase()
+    try:
+        import core.db as db_module
+
+        original_client = db_module.httpx.Client
+        db_module.httpx.Client = _FailingClient
+        try:
+            with pytest.raises(SupabaseDatabaseError) as exc_info:
+                SupabaseConnection().execute("SELECT ? AS a", ("Что такое сила?",))
+        finally:
+            db_module.httpx.Client = original_client
+    finally:
+        _restore_settings(original)
+
+    message = str(exc_info.value)
+    assert "P0001" in message
+    assert "Плейсхолдеров больше, чем параметров" in message
+
+
+def test_error_body_is_trimmed_and_survives_unread_response():
+    import httpx
+
+    from core.db import _ERROR_BODY_LIMIT, _error_body
+
+    class _Unread:
+        @property
+        def text(self):
+            raise httpx.ResponseNotRead()
+
+    assert _error_body(Exception()) == ""
+
+    class _Long:
+        text = "x" * (_ERROR_BODY_LIMIT + 100)
+
+    long_exc = Exception()
+    long_exc.response = _Long()
+    assert len(_error_body(long_exc)) <= _ERROR_BODY_LIMIT + 10
+
+    unread_exc = Exception()
+    unread_exc.response = _Unread()
+    assert _error_body(unread_exc) == ""

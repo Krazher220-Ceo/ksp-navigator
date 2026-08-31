@@ -23,6 +23,37 @@ class SupabaseDatabaseError(RuntimeError):
     """PostgREST не принял запрос к Supabase или вернул неполный ответ."""
 
 
+# Находка 10 AUDIT.md: raise_for_status() даёт текст вида "Client error
+# '400 Bad Request' for url ..." — одинаковый для всех причин отказа, а
+# настоящая причина лежит в теле ответа ({"code":"P0001","message":...})
+# и терялась. Ровно из-за этого хотфикс c6f9d0b искали несколько часов
+# (грабля 2.12: "в логе была одна строка, которую никто не читал").
+#
+# Ключ и заголовки в тело ответа PostgREST не попадают — секретов отсюда
+# не утечёт. Длина обрезана, чтобы большой ответ не разносил лог.
+_ERROR_BODY_LIMIT = 500
+
+
+def _error_body(exc: Exception) -> str:
+    """Тело ответа сервера в виде ' — <текст>', либо пустая строка."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+    try:
+        body = (response.text or "").strip()
+    except httpx.StreamError:
+        # Тело ещё не прочитано (ResponseNotRead) — это единственная
+        # штатная причина, по которой .text здесь может не сработать.
+        # Ловить шире нельзя: сообщение об ошибке не стоит того, чтобы
+        # проглотить неизвестный сбой.
+        return ""
+    if not body:
+        return ""
+    if len(body) > _ERROR_BODY_LIMIT:
+        body = body[:_ERROR_BODY_LIMIT] + "…"
+    return f" — {body}"
+
+
 class RemoteCursor:
     """Небольшой аналог sqlite3.Cursor для уже полученного ответа RPC."""
 
@@ -63,7 +94,9 @@ class SupabaseConnection:
                 )
             response.raise_for_status()
         except httpx.HTTPError as exc:
-            raise SupabaseDatabaseError(f"Supabase не выполнил запрос: {exc}") from exc
+            raise SupabaseDatabaseError(
+                f"Supabase не выполнил запрос: {exc}{_error_body(exc)}"
+            ) from exc
 
         try:
             payload = response.json()
