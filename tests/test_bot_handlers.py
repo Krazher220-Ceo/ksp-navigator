@@ -4169,12 +4169,57 @@ async def test_sverka_handler_sends_missing_items_and_records_usage(isolated_env
     assert get_student_usage_today(951, db_path=None) == 1
 
 
+async def test_sverka_handler_unreadable_notebook_does_not_say_everything_is_fine(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Находка 6 AUDIT.md: чистый лист получал подтверждение, что всё в
+    порядке. Модель сравнения при этом не должна вызываться вовсе."""
+    seed = await _seed_sverka_lesson(956, 957, "расшифровка урока")
+    photo_path = tmp_path / "notebook.jpg"
+    photo_path.write_bytes(b"fake photo bytes")
+
+    monkeypatch.setattr("bot.handlers.recognize_textbook_page", lambda *a, **k: _async_return("-"))
+
+    def _forbidden(*args, **kwargs):
+        raise AssertionError("сравнение не должно вызываться на нечитаемой тетради")
+
+    monkeypatch.setattr("bot.handlers.compare_notebook_to_transcript", _forbidden)
+
+    bot = FakeBot()
+    handler = make_sverka_handler(bot)
+    result = await handler(
+        {
+            "id": "sv3",
+            "type": "sverka_tetradi",
+            "telegram_chat_id": 957,
+            "retries": 0,
+            "payload": {
+                "student_id": seed["student_id"],
+                "transcript_id": seed["transcript_id"],
+                "photo_path": str(photo_path),
+            },
+        }
+    )
+
+    assert bot.sent_messages[0][1] == texts.SVERKA_NOTEBOOK_UNREADABLE
+    assert bot.sent_messages[0][1] != texts.SVERKA_NOTHING_MISSING
+    assert result["notebook_unreadable"] is True
+    # фото удаляется и на этой ветке тоже (У4, ловушка / грабля 2.8)
+    assert not photo_path.exists()
+
+
 async def test_sverka_handler_nothing_missing_sends_positive_message(isolated_env, monkeypatch, tmp_path):
     seed = await _seed_sverka_lesson(952, 953, "расшифровка")
     photo_path = tmp_path / "notebook.jpg"
     photo_path.write_bytes(b"fake photo bytes")
 
-    monkeypatch.setattr("bot.handlers.recognize_textbook_page", lambda *a, **k: _async_return("текст"))
+    # Текст тетради заведомо длиннее MIN_NOTEBOOK_TEXT_LENGTH: после
+    # Находки 6 короткая строка означала бы «не разобрать», а этот тест
+    # про другое — про читаемую тетрадь без пропусков.
+    monkeypatch.setattr(
+        "bot.handlers.recognize_textbook_page",
+        lambda *a, **k: _async_return("Конспект: скорость, формула v = s / t, разобрана задача."),
+    )
     monkeypatch.setattr("bot.handlers.compare_notebook_to_transcript", lambda *a, **k: _async_return([]))
 
     bot = FakeBot()

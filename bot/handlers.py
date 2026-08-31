@@ -71,7 +71,11 @@ from core.limits import (
     DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_token_limit,
     get_usage_today, grant_admin_access, record_student_usage, record_usage,
 )
-from core.konspekt_compare import KonspektCompareError, compare_notebook_to_transcript
+from core.konspekt_compare import (
+    KonspektCompareError,
+    compare_notebook_to_transcript,
+    notebook_is_unreadable,
+)
 from core.ksp_generator import (
     MAX_VIDY_DEYATELNOSTI,
     LessonOptions,
@@ -962,6 +966,14 @@ def make_sverka_handler(bot: Bot):
 
             image_bytes = photo_path.read_bytes()
             notebook_text = await recognize_textbook_page(image_bytes, "image/jpeg")
+
+            # Находка 6 AUDIT.md: пустая тетрадь давала пустой список
+            # пропусков, а он трактовался как «всё на месте». Проверка
+            # стоит ДО вызова модели: сравнивать нечего — значит и
+            # платить за вызов не за что.
+            if notebook_is_unreadable(notebook_text):
+                await bot.send_message(chat_id, texts.SVERKA_NOTEBOOK_UNREADABLE)
+                return {"missing_items": [], "notebook_unreadable": True}
 
             llm_client = LLMClient()
             try:
