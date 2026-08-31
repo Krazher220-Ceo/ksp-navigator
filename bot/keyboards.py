@@ -108,6 +108,40 @@ def consent_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def role_choice_keyboard() -> InlineKeyboardMarkup:
+    """У3: первый /start незнакомого человека — педагог или ученик."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=texts.ROLE_TEACHER_BUTTON, callback_data="role_teacher"),
+                InlineKeyboardButton(text=texts.ROLE_STUDENT_BUTTON, callback_data="role_student"),
+            ]
+        ]
+    )
+
+
+def student_consent_keyboard() -> InlineKeyboardMarkup:
+    """У3: экран согласия для ученика — своя редакция текста (Ю3, в
+    формулировке для несовершеннолетнего), но те же подписи кнопок и
+    физически другая callback_data, чтобы не путать с consent_keyboard
+    учителя — от этого зависит, куда вести после согласия (bot/handlers.py)."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=texts.CONSENT_ACCEPT_BUTTON, callback_data="student_consent_accept"),
+                InlineKeyboardButton(text=texts.CONSENT_DECLINE_BUTTON, callback_data="student_consent_decline"),
+            ]
+        ]
+    )
+
+
+def cancel_only_keyboard() -> ReplyKeyboardMarkup:
+    """Один «Отменить» — для шагов без осмысленного «Назад» (У3: ввод
+    кода приглашения — первый и единственный шаг диалога, стеку
+    навигации возвращаться некуда)."""
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=texts.BUTTON_CANCEL)]], resize_keyboard=True)
+
+
 def upload_ksp_collecting_keyboard() -> ReplyKeyboardMarkup:
     """Клавиатура сбора файлов КСП (/upload_ksp, блок Н1 PLAN.md).
 

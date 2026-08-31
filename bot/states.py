@@ -64,6 +64,13 @@ class ClassCreate(StatesGroup):
     waiting_for_confirmation = State()
 
 
+class StudentJoin(StatesGroup):
+    """Ученик вводит код приглашения (блок У3, PLAN.md)."""
+
+    waiting_for_code = State()
+    waiting_for_confirmation = State()
+
+
 class Konspekt(StatesGroup):
     """/konspekt: сначала выбор назначения записи, затем сбор аудио.
 

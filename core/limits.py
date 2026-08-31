@@ -203,3 +203,73 @@ def get_usage_today(telegram_user_id: int, db_path=None) -> dict:
     counts = {row["operation"]: row["count"] for row in rows}
     tokens_total = sum(row["tokens"] for row in rows)
     return {"counts": counts, "tokens_total": tokens_total}
+
+
+# =====================================================================
+# У3 (PLAN.md) — счётчик расхода ученика. Решение автора от 31.08.2026,
+# MASTER.md 0.10 п.1, дословно: отдельный счётчик заводится не ради
+# ограничения, а чтобы расход ученика не ложился на дневной потолок
+# учителя — usage_daily уже ключуется по telegram_user_id (не
+# teacher_id, см. комментарий у таблицы в storage/schema.sql), поэтому
+# для ученика она переиспользуется без новой схемы, просто под своим
+# именем операции ("tetrad_sverka" — сверка тетради, блок У4).
+#
+# Тарифы — заглушка: таблица чисел и один флаг. Флаг выключен —
+# пилот безлимитный, check_student_sverka_limit не бросает НИКОГДА,
+# сколько бы сверок ни было записано. Включение флага, назначение
+# конкретного тарифа ученику и любая платёжная логика — вне пилота
+# (MASTER.md 0.8, 0.10 п.1) и не появляются в этом модуле.
+# =====================================================================
+
+STUDENT_TARIFFS_ENABLED = False
+
+STUDENT_DAILY_SVERKA_LIMITS = {
+    "free": 1,
+    "student": 5,
+    "student_plus": 10,
+}
+
+
+def record_student_usage(telegram_user_id: int, operation: str = "tetrad_sverka", db_path=None) -> None:
+    """Тот же usage_daily, что и у педагога, — operation различает
+    записи, коллизий по PRIMARY KEY (telegram_user_id, day, operation)
+    не бывает даже если один и тот же id теоретически встретится в
+    обеих ролях."""
+    day = _today_kostanay()
+    execute(
+        "INSERT INTO usage_daily (telegram_user_id, day, operation, count, tokens) "
+        "VALUES (?, ?, ?, 1, 0) "
+        "ON CONFLICT(telegram_user_id, day, operation) DO UPDATE SET "
+        "count = usage_daily.count + excluded.count",
+        (telegram_user_id, day, operation),
+        db_path=db_path,
+    )
+
+
+def get_student_usage_today(telegram_user_id: int, operation: str = "tetrad_sverka", db_path=None) -> int:
+    day = _today_kostanay()
+    rows = query(
+        "SELECT count FROM usage_daily WHERE telegram_user_id = ? AND day = ? AND operation = ?",
+        (telegram_user_id, day, operation),
+        db_path=db_path,
+    )
+    return rows[0]["count"] if rows else 0
+
+
+def check_student_sverka_limit(telegram_user_id: int, tariff: str = "free", db_path=None) -> None:
+    """Пилот безлимитный: пока STUDENT_TARIFFS_ENABLED выключен (сейчас
+    и весь пилот), эта функция не бросает НИЧЕГО и не читает базу —
+    ровно тот же принцип, что у "операций без лимита" в
+    check_count_limit выше. tariff по умолчанию "free" — назначения
+    тарифа ученику в проекте пока нет, это будущая, не текущая работа."""
+    if not STUDENT_TARIFFS_ENABLED:
+        return
+    limit = STUDENT_DAILY_SVERKA_LIMITS.get(tariff, STUDENT_DAILY_SVERKA_LIMITS["free"])
+    used = get_student_usage_today(telegram_user_id, db_path=db_path)
+    if used >= limit:
+        raise LimitExceeded(
+            f"дневной лимит сверок тетради исчерпан: {used}/{limit}",
+            reset_at=next_reset_kostanay(),
+            used=used,
+            limit=limit,
+        )

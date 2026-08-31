@@ -45,12 +45,23 @@ from aiogram.types import (
     KeyboardButton,
     Message,
     ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
     WebAppInfo,
 )
 
 from bot import keyboards, texts
 from bot.navigation import go_back, go_to
-from bot.states import ClassCreate, Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
+from bot.states import (
+    ClassCreate,
+    Generate,
+    GenerateKTP,
+    Konspekt,
+    StudentJoin,
+    TeacherProfile,
+    UploadKSP,
+    UploadKTP,
+    UploadTemplate,
+)
 from core.config import settings
 from core.dashboard import collect as collect_dashboard
 from core.db import SupabaseDatabaseError, execute, query
@@ -179,7 +190,18 @@ async def _require_teacher(message: Message) -> dict | None:
 # саму (tests/test_bot_handlers.py, блок Ю3).
 # =====================================================================
 
-_CONSENT_EXEMPT_CALLBACK_DATA = {"consent_accept", "consent_decline"}
+_CONSENT_EXEMPT_CALLBACK_DATA = {
+    "consent_accept",
+    "consent_decline",
+    # У3: выбор роли и согласие ученика происходят ДО того, как согласие
+    # вообще может быть дано — тем же принципом, что consent_accept/decline
+    # выше. role_teacher исключён из той же осторожности: до него человек
+    # мог не читать вообще ничего, и блокировать выбор роли нечем.
+    "role_teacher",
+    "role_student",
+    "student_consent_accept",
+    "student_consent_decline",
+}
 
 
 async def _consent_gate(handler, event, data):
@@ -296,17 +318,94 @@ async def cmd_admin(message: Message, bot: Bot) -> None:
 
 
 # =====================================================================
-# /start
+# /start — У3 (PLAN.md): незнакомый человек выбирает роль (педагог или
+# ученик) до того, как увидит что бы то ни было ещё. Уже согласившиеся
+# (в том числе не успевшие пройти /teacher — сегодняшнее поведение,
+# ломать нельзя) роль не выбирают заново: они по определению педагоги,
+# единственная роль, для которой согласие уже было получено раньше этого
+# блока. Известный ученик (строка в students) распознаётся отдельно и
+# первым — про него бот не должен даже пытаться думать "педагог".
 # =====================================================================
+
+
+def _is_student(telegram_id: int, db_path=None) -> bool:
+    return bool(query("SELECT 1 FROM students WHERE telegram_id = ?", (telegram_id,), db_path=db_path))
+
+
+def _ensure_student_row(telegram_id: int, full_name: str | None, db_path=None) -> None:
+    existing = query("SELECT id FROM students WHERE telegram_id = ?", (telegram_id,), db_path=db_path)
+    if not existing:
+        execute("INSERT INTO students (telegram_id, name) VALUES (?, ?)", (telegram_id, full_name), db_path=db_path)
+
+
+def _student_classes(telegram_id: int, db_path=None) -> list[dict]:
+    rows = query(
+        "SELECT c.name AS name, t.name AS teacher_name FROM class_members cm "
+        "JOIN classes c ON c.id = cm.class_id "
+        "JOIN students s ON s.id = cm.student_id "
+        "JOIN teachers t ON t.id = c.teacher_id "
+        "WHERE s.telegram_id = ? ORDER BY cm.joined_at",
+        (telegram_id,),
+        db_path=db_path,
+    )
+    return [dict(row) for row in rows]
+
+
+async def _send_student_home(message: Message, telegram_id: int) -> None:
+    classes = _student_classes(telegram_id)
+    if not classes:
+        await message.answer(texts.STUDENT_HOME_NO_CLASSES, reply_markup=ReplyKeyboardRemove())
+        return
+    listing = "\n".join(f"• {c['name']} ({c['teacher_name']})" for c in classes)
+    await message.answer(texts.STUDENT_HOME_WITH_CLASSES.format(classes_list=listing), reply_markup=ReplyKeyboardRemove())
 
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    if not has_given_consent(message.from_user.id):
+    telegram_id = message.from_user.id
+
+    if _is_student(telegram_id):
+        if not has_given_consent(telegram_id):
+            await message.answer(texts.STUDENT_CONSENT_TEXT, reply_markup=keyboards.student_consent_keyboard())
+            return
+        await _send_student_home(message, telegram_id)
+        return
+
+    if has_given_consent(telegram_id):
+        await message.answer(texts.START, reply_markup=keyboards.MAIN_MENU)
+        return
+
+    if _get_teacher(telegram_id) is not None:
+        # Защитная ветка: teachers-строка есть, а согласия почему-то нет
+        # (например, данные заведены руками до блока Ю3) — такому
+        # человеку роль не в чем спрашивать, он явно уже педагог.
         await message.answer(texts.CONSENT_TEXT, reply_markup=keyboards.consent_keyboard())
         return
-    await message.answer(texts.START, reply_markup=keyboards.MAIN_MENU)
+
+    await message.answer(texts.ROLE_CHOICE_TEXT, reply_markup=keyboards.role_choice_keyboard())
+
+
+@router.callback_query(F.data == "role_teacher")
+async def role_teacher_chosen(callback: CallbackQuery) -> None:
+    telegram_id = callback.from_user.id
+    if not has_given_consent(telegram_id):
+        await callback.message.answer(texts.CONSENT_TEXT, reply_markup=keyboards.consent_keyboard())
+    else:
+        await callback.message.answer(texts.START, reply_markup=keyboards.MAIN_MENU)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "role_student")
+async def role_student_chosen(callback: CallbackQuery, state: FSMContext) -> None:
+    telegram_id = callback.from_user.id
+    _ensure_student_row(telegram_id, getattr(callback.from_user, "full_name", None))
+    if not has_given_consent(telegram_id):
+        await callback.message.answer(texts.STUDENT_CONSENT_TEXT, reply_markup=keyboards.student_consent_keyboard())
+    else:
+        await go_to(state, StudentJoin.waiting_for_code)
+        await _ask_join_code(callback.message, state)
+    await callback.answer()
 
 
 @router.callback_query(F.data == "consent_accept")
@@ -318,6 +417,20 @@ async def consent_accepted(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "consent_decline")
 async def consent_declined(callback: CallbackQuery) -> None:
+    await callback.message.answer(texts.CONSENT_DECLINED)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "student_consent_accept")
+async def student_consent_accepted(callback: CallbackQuery, state: FSMContext) -> None:
+    record_consent(callback.from_user.id)
+    await go_to(state, StudentJoin.waiting_for_code)
+    await _ask_join_code(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "student_consent_decline")
+async def student_consent_declined(callback: CallbackQuery) -> None:
     await callback.message.answer(texts.CONSENT_DECLINED)
     await callback.answer()
 
@@ -465,6 +578,109 @@ async def back_callback_pressed(callback: CallbackQuery, state: FSMContext) -> N
 @router.message(F.text == texts.BUTTON_CANCEL)
 async def cancel_button_pressed(message: Message, state: FSMContext) -> None:
     await cmd_cancel(message, state)
+
+
+# =====================================================================
+# У3 — /join: код приглашения. Регистрируется ПОСЛЕ menu_button_pressed/
+# back_button_pressed/cancel_button_pressed выше (грабля 2.4, PLAN.md) —
+# StudentJoin.waiting_for_code матчит ЛЮБОЕ сообщение в этом состоянии;
+# будь этот блок выше, текст кнопки "Отменить" был бы съеден как
+# попытка ввести код приглашения, а не как нажатие "Отменить".
+# =====================================================================
+
+
+async def _ask_join_code(message: Message, state: FSMContext, error: str | None = None) -> None:
+    text = f"{error}\n\n{texts.STUDENT_JOIN_ASK_CODE}" if error else texts.STUDENT_JOIN_ASK_CODE
+    await message.answer(text, reply_markup=keyboards.cancel_only_keyboard())
+
+
+@router.message(Command("join"))
+async def cmd_join(message: Message, state: FSMContext) -> None:
+    """Не в BOT_COMMANDS (М1) и не в MAIN_MENU — команда ученика, а не
+    педагога, и в подсказках педагога ей не место (У3: "педагогические
+    команды не показываются", то же верно и в обратную сторону).
+    Команда работает при прямом наборе — Telegram не требует, чтобы
+    команда была в списке подсказок, чтобы она отвечала."""
+    telegram_id = message.from_user.id
+    _ensure_student_row(telegram_id, getattr(message.from_user, "full_name", None))
+    await go_to(state, StudentJoin.waiting_for_code)
+    await _ask_join_code(message, state)
+
+
+def _find_class_by_invite_code(code: str, db_path=None) -> dict | None:
+    rows = query(
+        "SELECT c.id, c.name, c.subject, t.name AS teacher_name "
+        "FROM classes c JOIN teachers t ON t.id = c.teacher_id "
+        "WHERE c.invite_code = ?",
+        (code,),
+        db_path=db_path,
+    )
+    return dict(rows[0]) if rows else None
+
+
+@router.message(StudentJoin.waiting_for_code)
+async def student_join_code_received(message: Message, state: FSMContext) -> None:
+    code = (message.text or "").strip().upper()
+    if not code:
+        await _ask_join_code(message, state)
+        return
+    class_row = _find_class_by_invite_code(code)
+    if class_row is None:
+        # У3, дословно: сказать "код не найден" и предложить ввести
+        # заново, НЕ выкидывая в главное меню — состояние не меняется.
+        await _ask_join_code(message, state, error=texts.STUDENT_JOIN_CODE_NOT_FOUND)
+        return
+    await state.update_data(
+        class_id=class_row["id"], class_name=class_row["name"], teacher_name=class_row["teacher_name"]
+    )
+    await go_to(state, StudentJoin.waiting_for_confirmation)
+    await message.answer(
+        texts.STUDENT_JOIN_CONFIRM.format(class_name=class_row["name"], teacher_name=class_row["teacher_name"]),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text=texts.STUDENT_JOIN_CONFIRM_BUTTON, callback_data="student_join_confirm"),
+                    InlineKeyboardButton(text=texts.STUDENT_JOIN_CANCEL_BUTTON, callback_data="student_join_cancel"),
+                ]
+            ]
+        ),
+    )
+
+
+@router.callback_query(StudentJoin.waiting_for_confirmation, F.data == "student_join_confirm")
+async def student_join_confirmed(callback: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    class_id = data["class_id"]
+    class_name = data["class_name"]
+    teacher_name = data["teacher_name"]
+    telegram_id = callback.from_user.id
+
+    student_id = query("SELECT id FROM students WHERE telegram_id = ?", (telegram_id,))[0]["id"]
+    already = query(
+        "SELECT 1 FROM class_members WHERE class_id = ? AND student_id = ?", (class_id, student_id)
+    )
+    await state.clear()
+
+    if already:
+        await callback.message.answer(
+            texts.STUDENT_JOIN_ALREADY_MEMBER.format(class_name=class_name), reply_markup=ReplyKeyboardRemove()
+        )
+        await callback.answer()
+        return
+
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (class_id, student_id))
+    await callback.message.answer(
+        texts.STUDENT_JOIN_SUCCESS.format(class_name=class_name, teacher_name=teacher_name),
+        reply_markup=ReplyKeyboardRemove(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(StudentJoin.waiting_for_confirmation, F.data == "student_join_cancel")
+async def student_join_cancelled(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.message.answer(texts.STUDENT_JOIN_CANCELLED)
+    await callback.answer()
 
 
 # =====================================================================

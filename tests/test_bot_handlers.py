@@ -34,6 +34,7 @@ from bot.handlers import (
     class_subject_received,
     class_view_requested,
     cmd_class,
+    cmd_join,
     cmd_konspekt,
     cmd_menu,
     konspekt_audio_received,
@@ -80,7 +81,14 @@ from bot.handlers import (
     make_generate_ksp_handler,
     make_parse_ksp_handler,
     menu_button_pressed,
+    role_student_chosen,
+    role_teacher_chosen,
     router,
+    student_consent_accepted,
+    student_consent_declined,
+    student_join_cancelled,
+    student_join_code_received,
+    student_join_confirmed,
     teacher_name_received,
     teacher_school_received,
     teacher_subject_received,
@@ -319,13 +327,26 @@ async def _start_konspekt(state, user_id: int, mode_button: str = texts.KONSPEKT
 # =====================================================================
 
 
-async def test_start_shows_consent_screen_when_not_yet_given(isolated_env):
-    """Ю3: первый /start — экран согласия, не приветствие."""
+async def test_start_shows_role_choice_for_completely_unknown_person(isolated_env):
+    """У3: первый /start незнакомого человека — выбор роли, не экран
+    согласия и не приветствие напрямую. До блока У3 бот молча считал
+    всех педагогами; этот тест заменяет старый
+    test_start_shows_consent_screen_when_not_yet_given, который проверял
+    именно то поведение, которое У3 намеренно меняет."""
     message = FakeMessage(text="/start", user_id=700)
     await cmd_start(message, _state())
     assert len(message.sent) == 1
-    assert message.sent[0]["text"] == texts.CONSENT_TEXT
+    assert message.sent[0]["text"] == texts.ROLE_CHOICE_TEXT
     assert message.sent[0]["reply_markup"] is not None
+
+
+async def test_start_shows_consent_screen_after_choosing_teacher_role(isolated_env):
+    """Выбор "Я — педагог" на полностью новом аккаунте ведёт туда же, куда
+    раньше вёл голый /start — на экран согласия (Ю3), не на приветствие."""
+    callback = FakeCallbackQuery(data="role_teacher", message=FakeMessage(user_id=700), user_id=700)
+    await role_teacher_chosen(callback)
+    assert callback.message.sent[-1]["text"] == texts.CONSENT_TEXT
+    assert not has_given_consent(700)
 
 
 async def test_start_answers_with_greeting_after_consent_given(isolated_env):
@@ -1635,6 +1656,235 @@ async def test_class_added_to_bot_commands_and_menu():
     command_names = {name for name, _ in texts.BOT_COMMANDS}
     assert "class" in command_names
     assert texts.MENU_BUTTON_CLASS in keyboards.MAIN_MENU_BUTTON_TEXTS
+
+
+# =====================================================================
+# У3 (PLAN.md) — /start впервые (педагог или ученик), ученик вступает
+# в класс по коду приглашения
+# =====================================================================
+
+
+async def _create_class_and_get_code(teacher_user_id: int, name: str = "10 А") -> str:
+    _create_teacher(teacher_user_id)
+    _, code = await _create_class_via_dialog(teacher_user_id, name=name)
+    return code
+
+
+async def test_role_teacher_chosen_shows_consent_when_not_given(isolated_env):
+    callback = FakeCallbackQuery(data="role_teacher", message=FakeMessage(user_id=800), user_id=800)
+    await role_teacher_chosen(callback)
+    assert callback.message.sent[-1]["text"] == texts.CONSENT_TEXT
+
+
+async def test_role_teacher_chosen_shows_greeting_when_already_given(isolated_env):
+    record_consent(801)
+    callback = FakeCallbackQuery(data="role_teacher", message=FakeMessage(user_id=801), user_id=801)
+    await role_teacher_chosen(callback)
+    assert callback.message.sent[-1]["text"] == texts.START
+    assert callback.message.sent[-1]["reply_markup"] is keyboards.MAIN_MENU
+
+
+async def test_role_student_chosen_creates_student_row_and_shows_student_consent(isolated_env):
+    callback = FakeCallbackQuery(data="role_student", message=FakeMessage(user_id=802), user_id=802)
+    await role_student_chosen(callback, _state())
+
+    assert query("SELECT * FROM students WHERE telegram_id = 802")
+    assert callback.message.sent[-1]["text"] == texts.STUDENT_CONSENT_TEXT
+    assert "законного представителя" in texts.STUDENT_CONSENT_TEXT
+    assert "трансграничная передача" in texts.STUDENT_CONSENT_TEXT
+
+
+async def test_role_student_chosen_twice_does_not_duplicate_student_row(isolated_env):
+    callback1 = FakeCallbackQuery(data="role_student", message=FakeMessage(user_id=803), user_id=803)
+    await role_student_chosen(callback1, _state())
+    callback2 = FakeCallbackQuery(data="role_student", message=FakeMessage(user_id=803), user_id=803)
+    await role_student_chosen(callback2, _state())
+
+    assert len(query("SELECT * FROM students WHERE telegram_id = 803")) == 1
+
+
+async def test_student_consent_accept_leads_straight_to_code_entry(isolated_env):
+    state = _state()
+    await role_student_chosen(
+        FakeCallbackQuery(data="role_student", message=FakeMessage(user_id=804), user_id=804), state
+    )
+    callback = FakeCallbackQuery(data="student_consent_accept", message=FakeMessage(user_id=804), user_id=804)
+    await student_consent_accepted(callback, state)
+
+    assert has_given_consent(804)
+    assert await state.get_state() == "StudentJoin:waiting_for_code"
+    assert texts.STUDENT_JOIN_ASK_CODE in callback.message.sent[-1]["text"]
+
+
+async def test_student_consent_decline_does_not_record_consent(isolated_env):
+    callback = FakeCallbackQuery(data="student_consent_decline", message=FakeMessage(user_id=805), user_id=805)
+    await student_consent_declined(callback)
+    assert not has_given_consent(805)
+    assert callback.message.sent[-1]["text"] == texts.CONSENT_DECLINED
+
+
+async def test_join_code_not_found_stays_in_same_state_and_does_not_kick_to_menu(isolated_env):
+    """У3, дословно: "код не найден" + предложение ввести заново, НЕ
+    выкидывая в главное меню — состояние не должно меняться."""
+    state = _state()
+    message = FakeMessage(text="/join", user_id=806)
+    await cmd_join(message, state)
+    assert await state.get_state() == "StudentJoin:waiting_for_code"
+
+    wrong_code_message = FakeMessage(text="ZZZZZZ", user_id=806)
+    await student_join_code_received(wrong_code_message, state)
+
+    assert await state.get_state() == "StudentJoin:waiting_for_code"
+    assert texts.STUDENT_JOIN_CODE_NOT_FOUND in wrong_code_message.sent[-1]["text"]
+    assert texts.STUDENT_JOIN_ASK_CODE in wrong_code_message.sent[-1]["text"]
+
+
+async def test_join_valid_code_shows_class_and_teacher_name(isolated_env):
+    code = await _create_class_and_get_code(810, name="10 А")
+
+    state = _state()
+    await cmd_join(FakeMessage(text="/join", user_id=811), state)
+    code_message = FakeMessage(text=code, user_id=811)
+    await student_join_code_received(code_message, state)
+
+    assert await state.get_state() == "StudentJoin:waiting_for_confirmation"
+    text = code_message.sent[-1]["text"]
+    assert "10 А" in text
+    assert "Тестов Тест" in text  # _create_teacher default name
+
+
+async def test_join_code_is_case_and_whitespace_insensitive(isolated_env):
+    code = await _create_class_and_get_code(812, name="9 Б")
+
+    state = _state()
+    await cmd_join(FakeMessage(text="/join", user_id=813), state)
+    code_message = FakeMessage(text=f"  {code.lower()}  ", user_id=813)
+    await student_join_code_received(code_message, state)
+
+    assert await state.get_state() == "StudentJoin:waiting_for_confirmation"
+    assert "9 Б" in code_message.sent[-1]["text"]
+
+
+async def test_join_confirm_creates_membership(isolated_env):
+    code = await _create_class_and_get_code(814, name="10 А")
+
+    state = _state()
+    await cmd_join(FakeMessage(text="/join", user_id=815), state)
+    await student_join_code_received(FakeMessage(text=code, user_id=815), state)
+
+    callback = FakeCallbackQuery(data="student_join_confirm", message=FakeMessage(user_id=815), user_id=815)
+    await student_join_confirmed(callback, state)
+
+    student_id = query("SELECT id FROM students WHERE telegram_id = 815")[0]["id"]
+    class_id = query("SELECT id FROM classes WHERE name = '10 А'")[0]["id"]
+    assert query(
+        "SELECT * FROM class_members WHERE class_id = ? AND student_id = ?", (class_id, student_id)
+    )
+    assert await state.get_state() is None
+    assert texts.STUDENT_JOIN_SUCCESS.format(class_name="10 А", teacher_name="Тестов Тест") == callback.message.sent[-1]["text"]
+
+
+async def test_join_confirm_second_time_says_already_member_and_does_not_duplicate(isolated_env):
+    code = await _create_class_and_get_code(816, name="10 А")
+
+    state = _state()
+    await cmd_join(FakeMessage(text="/join", user_id=817), state)
+    await student_join_code_received(FakeMessage(text=code, user_id=817), state)
+    await student_join_confirmed(
+        FakeCallbackQuery(data="student_join_confirm", message=FakeMessage(user_id=817), user_id=817), state
+    )
+
+    # вступает снова тем же кодом
+    await cmd_join(FakeMessage(text="/join", user_id=817), state)
+    await student_join_code_received(FakeMessage(text=code, user_id=817), state)
+    callback2 = FakeCallbackQuery(data="student_join_confirm", message=FakeMessage(user_id=817), user_id=817)
+    await student_join_confirmed(callback2, state)
+
+    assert callback2.message.sent[-1]["text"] == texts.STUDENT_JOIN_ALREADY_MEMBER.format(class_name="10 А")
+    student_id = query("SELECT id FROM students WHERE telegram_id = 817")[0]["id"]
+    class_id = query("SELECT id FROM classes WHERE name = '10 А'")[0]["id"]
+    rows = query("SELECT * FROM class_members WHERE class_id = ? AND student_id = ?", (class_id, student_id))
+    assert len(rows) == 1  # не задвоилось
+
+
+async def test_join_cancel_creates_no_membership(isolated_env):
+    code = await _create_class_and_get_code(818, name="10 А")
+
+    state = _state()
+    await cmd_join(FakeMessage(text="/join", user_id=819), state)
+    await student_join_code_received(FakeMessage(text=code, user_id=819), state)
+
+    callback = FakeCallbackQuery(data="student_join_cancel", message=FakeMessage(user_id=819), user_id=819)
+    await student_join_cancelled(callback, state)
+
+    assert query("SELECT * FROM class_members") == []
+    assert callback.message.sent[-1]["text"] == texts.STUDENT_JOIN_CANCELLED
+
+
+async def test_student_can_join_two_different_classes(isolated_env):
+    code_a = await _create_class_and_get_code(820, name="10 А")
+    code_b = await _create_class_and_get_code(821, name="10 Б")
+
+    state = _state()
+    for code in (code_a, code_b):
+        await cmd_join(FakeMessage(text="/join", user_id=822), state)
+        await student_join_code_received(FakeMessage(text=code, user_id=822), state)
+        await student_join_confirmed(
+            FakeCallbackQuery(data="student_join_confirm", message=FakeMessage(user_id=822), user_id=822), state
+        )
+
+    student_id = query("SELECT id FROM students WHERE telegram_id = 822")[0]["id"]
+    rows = query("SELECT class_id FROM class_members WHERE student_id = ?", (student_id,))
+    assert len(rows) == 2
+
+
+async def test_start_for_known_student_without_consent_shows_student_consent(isolated_env):
+    execute("INSERT INTO students (telegram_id, name) VALUES (823, 'Ученик')")
+    message = FakeMessage(text="/start", user_id=823)
+    await cmd_start(message, _state())
+    assert message.sent[-1]["text"] == texts.STUDENT_CONSENT_TEXT
+
+
+async def test_start_for_known_student_with_consent_shows_home_without_teacher_menu(isolated_env):
+    execute("INSERT INTO students (telegram_id, name) VALUES (824, 'Ученик')")
+    record_consent(824)
+    message = FakeMessage(text="/start", user_id=824)
+    await cmd_start(message, _state())
+    assert message.sent[-1]["text"] == texts.STUDENT_HOME_NO_CLASSES
+    assert message.sent[-1]["reply_markup"] is not keyboards.MAIN_MENU
+
+
+async def test_start_for_known_student_lists_their_classes(isolated_env):
+    code = await _create_class_and_get_code(825, name="10 А")
+    execute("INSERT INTO students (telegram_id, name) VALUES (826, 'Ученик Тестов')")
+    record_consent(826)
+
+    state = _state()
+    await cmd_join(FakeMessage(text="/join", user_id=826), state)
+    await student_join_code_received(FakeMessage(text=code, user_id=826), state)
+    await student_join_confirmed(
+        FakeCallbackQuery(data="student_join_confirm", message=FakeMessage(user_id=826), user_id=826), state
+    )
+
+    message = FakeMessage(text="/start", user_id=826)
+    await cmd_start(message, _state())
+    assert "10 А" in message.sent[-1]["text"]
+    assert "Тестов Тест" in message.sent[-1]["text"]
+
+
+async def test_consent_gate_exempts_role_and_student_consent_callbacks(isolated_env):
+    """Э3/У3: выбор роли и согласие ученика происходят ДО того, как
+    согласие вообще может быть дано — гейт не должен их блокировать."""
+    calls = []
+
+    async def dummy(event, data):
+        calls.append(event)
+
+    for data in ("role_teacher", "role_student", "student_consent_accept", "student_consent_decline"):
+        calls.clear()
+        callback = FakeCallbackQuery(data=data, message=FakeMessage(), user_id=830)
+        await _consent_gate(dummy, callback, {})
+        assert calls == [callback], f"{data} не должен блокироваться _consent_gate"
 
 
 # =====================================================================

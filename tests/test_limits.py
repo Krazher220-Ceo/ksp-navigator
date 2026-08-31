@@ -17,11 +17,16 @@ from core.limits import (
     DAILY_TOKEN_LIMIT,
     KOSTANAY_TZ,
     LimitExceeded,
+    STUDENT_DAILY_SVERKA_LIMITS,
+    STUDENT_TARIFFS_ENABLED,
     WEEKLY_COUNT_LIMITS,
     check_count_limit,
+    check_student_sverka_limit,
     check_token_limit,
+    get_student_usage_today,
     get_usage_today,
     next_reset_kostanay,
+    record_student_usage,
     record_usage,
     grant_admin_access,
     has_admin_access,
@@ -208,3 +213,68 @@ def test_record_usage_accumulates_not_overwrites(db_path):
 def test_get_usage_today_empty_account_returns_zeros(db_path):
     usage = get_usage_today(999, db_path=db_path)
     assert usage == {"counts": {}, "tokens_total": 0}
+
+
+# =====================================================================
+# У3 (PLAN.md), MASTER.md 0.10 п.1 — счётчик расхода ученика, тарифы
+# выключенными заглушками
+# =====================================================================
+
+
+def test_student_tariffs_are_disabled_by_default():
+    """Заглушка не должна однажды тихо включиться сама — флаг обязан
+    быть выключен в исходниках, а не только "выключен по факту сейчас"."""
+    assert STUDENT_TARIFFS_ENABLED is False
+
+
+def test_student_tariff_numbers_match_master_md_0_10():
+    assert STUDENT_DAILY_SVERKA_LIMITS == {"free": 1, "student": 5, "student_plus": 10}
+
+
+def test_check_student_sverka_limit_never_raises_while_disabled(db_path):
+    """Тест обязателен именно на выключенность (MASTER.md 0.10 п.1,
+    дословно): при выключенном флаге ученик делает больше сверок, чем
+    стоит в самом щедром тарифе, и не получает отказа."""
+    most_generous = max(STUDENT_DAILY_SVERKA_LIMITS.values())
+    for _ in range(most_generous + 5):
+        record_student_usage(222, db_path=db_path)
+    # ни разу не бросило исключение выше — и явная повторная проверка,
+    # что расход уже больше самого щедрого тарифа, а лимит всё равно
+    # не сработал
+    assert get_student_usage_today(222, db_path=db_path) > most_generous
+    check_student_sverka_limit(222, tariff="free", db_path=db_path)
+    check_student_sverka_limit(222, tariff="student_plus", db_path=db_path)
+
+
+def test_record_student_usage_accumulates(db_path):
+    record_student_usage(222, db_path=db_path)
+    record_student_usage(222, db_path=db_path)
+    assert get_student_usage_today(222, db_path=db_path) == 2
+
+
+def test_student_usage_does_not_collide_with_teacher_usage_same_id(db_path):
+    """usage_daily переиспользуется без новой таблицы (У3, ловушка) —
+    один и тот же telegram_user_id теоретически может встретиться и как
+    generate_ksp учителя, и как tetrad_sverka ученика; колонка operation
+    обязана их различать, а не путать в один счётчик."""
+    record_usage(333, "generate_ksp", count_delta=1, tokens_delta=100, db_path=db_path)
+    record_student_usage(333, db_path=db_path)
+
+    teacher_usage = get_usage_today(333, db_path=db_path)
+    student_count = get_student_usage_today(333, db_path=db_path)
+
+    assert teacher_usage["counts"]["generate_ksp"] == 1
+    assert student_count == 1
+
+
+def test_check_student_sverka_limit_would_raise_if_enabled(db_path, monkeypatch):
+    """Проверяет, что сама логика лимита не сломана "на будущее" — она
+    просто не подключена сейчас. Явный monkeypatch флага, а не
+    полагание на догадку о его будущем поведении."""
+    import core.limits as limits_module
+
+    monkeypatch.setattr(limits_module, "STUDENT_TARIFFS_ENABLED", True)
+    for _ in range(STUDENT_DAILY_SVERKA_LIMITS["free"]):
+        record_student_usage(444, db_path=db_path)
+    with pytest.raises(LimitExceeded):
+        check_student_sverka_limit(444, tariff="free", db_path=db_path)
