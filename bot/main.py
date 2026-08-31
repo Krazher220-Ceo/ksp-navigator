@@ -28,6 +28,7 @@ from bot.handlers import (
     make_generate_ktp_handler,
     make_konspekt_handler,
     make_parse_ksp_handler,
+    make_sverka_handler,
     make_transcribe_handler,
     router,
 )
@@ -186,6 +187,7 @@ async def run() -> None:
             "generate_ktp": make_generate_ktp_handler(bot),
             "transcribe": make_transcribe_handler(bot),
             "generate_konspekt": make_konspekt_handler(bot),
+            "sverka_tetradi": make_sverka_handler(bot),
         },
         notify=lambda chat_id, text: _notify_user(bot, chat_id, text),
         failure_message=_failure_message,

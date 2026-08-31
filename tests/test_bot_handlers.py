@@ -18,6 +18,7 @@ import pytest
 from openpyxl import Workbook
 
 from bot.handlers import (
+    MAX_FILE_SIZE_BYTES,
     MAX_KONSPEKT_PARTS,
     back_button_pressed,
     back_callback_pressed,
@@ -80,10 +81,16 @@ from bot.handlers import (
     konspekt_remove_last_part_pressed,
     make_generate_ksp_handler,
     make_parse_ksp_handler,
+    cmd_sverka,
+    make_sverka_handler,
     menu_button_pressed,
     role_student_chosen,
     role_teacher_chosen,
     router,
+    sverka_class_chosen,
+    sverka_lesson_chosen,
+    sverka_photo_received,
+    sverka_wrong_input,
     student_consent_accepted,
     student_consent_declined,
     student_join_cancelled,
@@ -99,8 +106,9 @@ from bot.handlers import (
     upload_ktp_file_received,
 )
 from bot import keyboards, texts
+from core.konspekt_compare import KonspektCompareError
 from bot.main import _global_error_handler, _register_bot_commands, _register_chat_menu_button
-from bot.states import Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKSP, UploadTemplate
+from bot.states import Generate, GenerateKTP, Konspekt, SverkaCheck, TeacherProfile, UploadKSP, UploadTemplate
 from core import ksp_generator as ksp_generator_module
 from core.config import settings
 from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
@@ -1888,6 +1896,142 @@ async def test_consent_gate_exempts_role_and_student_consent_callbacks(isolated_
 
 
 # =====================================================================
+# /sverka (У4, PLAN.md) — диалог: выбор класса/урока, приём фото
+# =====================================================================
+
+
+async def _become_student_in_one_class(teacher_user_id: int, student_user_id: int, class_name: str = "10 А") -> dict:
+    code = await _create_class_and_get_code(teacher_user_id, name=class_name)
+    state = _state()
+    await cmd_join(FakeMessage(text="/join", user_id=student_user_id), state)
+    await student_join_code_received(FakeMessage(text=code, user_id=student_user_id), state)
+    await student_join_confirmed(
+        FakeCallbackQuery(data="student_join_confirm", message=FakeMessage(user_id=student_user_id), user_id=student_user_id),
+        state,
+    )
+    class_id = query("SELECT id FROM classes WHERE name = ?", (class_name,))[0]["id"]
+    return {"class_id": class_id}
+
+
+async def test_sverka_not_a_student_gets_polite_refusal(isolated_env):
+    _create_teacher(860)
+    message = FakeMessage(text="/sverka", user_id=860)
+    await cmd_sverka(message)
+    assert message.sent[-1]["text"] == texts.SVERKA_NOT_A_STUDENT
+
+
+async def test_sverka_student_without_classes_is_told_to_join(isolated_env):
+    execute("INSERT INTO students (telegram_id, name) VALUES (861, 'Ученик')")
+    message = FakeMessage(text="/sverka", user_id=861)
+    await cmd_sverka(message)
+    assert message.sent[-1]["text"] == texts.SVERKA_NO_CLASSES
+
+
+async def test_sverka_single_class_skips_class_choice_shows_no_transcript(isolated_env):
+    """Ловушка У4, дословно: если у урока нет расшифровки — сказать
+    прямо, не выдавать пустой результат."""
+    await _become_student_in_one_class(862, 863)
+    message = FakeMessage(text="/sverka", user_id=863)
+    await cmd_sverka(message)
+    assert message.sent[-1]["text"] == texts.SVERKA_NO_TRANSCRIPT
+
+
+async def test_sverka_shows_recent_lessons_when_transcript_exists(isolated_env):
+    seed = await _seed_sverka_lesson(864, 865, "расшифровка про давление")
+    message = FakeMessage(text="/sverka", user_id=865)
+    await cmd_sverka(message)
+
+    assert message.sent[-1]["text"] == texts.SVERKA_ASK_LESSON
+    assert message.sent[-1]["reply_markup"] is not None
+    button_text = message.sent[-1]["reply_markup"].inline_keyboard[0][0].text
+    assert texts.SVERKA_LESSON_NO_TOPIC in button_text  # тема не указана в этом сиде
+
+
+async def test_sverka_multiple_classes_asks_which_one_first(isolated_env):
+    teacher_id = _create_teacher(866)
+    class_a = execute("INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '10 А', 'AAA111')", (teacher_id,))
+    class_b = execute("INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '10 Б', 'BBB222')", (teacher_id,))
+    student_id = execute("INSERT INTO students (telegram_id, name) VALUES (867, 'Ученик')")
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (class_a, student_id))
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (class_b, student_id))
+
+    message = FakeMessage(text="/sverka", user_id=867)
+    await cmd_sverka(message)
+    assert message.sent[-1]["text"] == texts.SVERKA_ASK_CLASS
+
+
+async def test_sverka_lesson_choice_from_foreign_teacher_is_rejected(isolated_env):
+    """Callback_data с transcript_id нельзя доверять без проверки — чужой
+    учитель не должен быть доступен через подделанный callback."""
+    await _become_student_in_one_class(868, 869)
+    other_seed = await _seed_sverka_lesson(870, 999999, "чужая расшифровка")
+
+    state = _state()
+    callback = FakeCallbackQuery(
+        data=f"sverka_lesson:{other_seed['transcript_id']}", message=FakeMessage(user_id=869), user_id=869
+    )
+    await sverka_lesson_chosen(callback, state)
+
+    assert callback.answered[-1]["text"] == texts.SVERKA_LESSON_NOT_FOUND
+    assert await state.get_state() is None
+
+
+async def test_sverka_lesson_choice_leads_to_photo_request(isolated_env):
+    seed = await _seed_sverka_lesson(871, 872, "расшифровка")
+    state = _state()
+    callback = FakeCallbackQuery(
+        data=f"sverka_lesson:{seed['transcript_id']}", message=FakeMessage(user_id=872), user_id=872
+    )
+    await sverka_lesson_chosen(callback, state)
+
+    assert await state.get_state() == "SverkaCheck:waiting_for_photo"
+    assert callback.message.sent[-1]["text"] == texts.SVERKA_ASK_PHOTO
+    assert (await state.get_data())["transcript_id"] == seed["transcript_id"]
+
+
+async def test_sverka_wrong_input_reasks_for_photo(isolated_env):
+    message = FakeMessage(text="какой-то текст", user_id=873)
+    await sverka_wrong_input(message)
+    assert message.sent[-1]["text"] == texts.SVERKA_ASK_PHOTO
+
+
+async def test_sverka_photo_received_enqueues_task_and_clears_state(isolated_env):
+    seed = await _seed_sverka_lesson(874, 875, "расшифровка")
+    state = _state()
+    await state.update_data(transcript_id=seed["transcript_id"])
+    await state.set_state(SverkaCheck.waiting_for_photo)
+
+    message = FakeMessage(user_id=875, photo=[FakePhotoSize(file_size=1000)])
+    bot = FakeBot()
+    await sverka_photo_received(message, state, bot)
+
+    tasks = query("SELECT * FROM tasks WHERE type = 'sverka_tetradi'")
+    assert len(tasks) == 1
+    payload = json.loads(tasks[0]["payload"])
+    assert payload["transcript_id"] == seed["transcript_id"]
+    assert payload["student_id"] == seed["student_id"]
+    assert Path(payload["photo_path"]).exists()  # скачано на диск, ждёт обработчика задачи
+
+    assert message.sent[-1]["text"] == texts.SVERKA_PROCESSING
+    assert await state.get_state() is None
+
+
+async def test_sverka_photo_too_large_is_rejected_before_download(isolated_env):
+    seed = await _seed_sverka_lesson(876, 877, "расшифровка")
+    state = _state()
+    await state.update_data(transcript_id=seed["transcript_id"])
+    await state.set_state(SverkaCheck.waiting_for_photo)
+
+    huge_photo = FakePhotoSize(file_size=MAX_FILE_SIZE_BYTES + 1)
+    message = FakeMessage(user_id=877, photo=[huge_photo])
+    bot = FakeBot()
+    await sverka_photo_received(message, state, bot)
+
+    assert query("SELECT * FROM tasks WHERE type = 'sverka_tetradi'") == []
+    assert bot.downloaded == []
+
+
+# =====================================================================
 # /delete_my_data (Ю2, PLAN.md)
 # =====================================================================
 
@@ -3537,6 +3681,199 @@ async def test_transcribe_handler_enqueues_generate_konspekt_task(isolated_env, 
     payload = json.loads(konspekt_tasks[0]["payload"])
     assert payload["teacher_id"] == teacher_id
     assert payload["transcript_id"] == result["transcript_id"]
+
+
+async def _seed_sverka_lesson(teacher_user_id: int, student_user_id: int, transcript_text: str) -> dict:
+    """Заводит учителя, класс, ученика-члена класса и расшифровку урока —
+    минимальный набор, нужный make_sverka_handler."""
+    teacher_id = _create_teacher(teacher_user_id)
+    class_id = execute(
+        "INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '10 А', ?)",
+        (teacher_id, f"CODE{teacher_user_id}"),
+    )
+    student_id = execute(
+        "INSERT INTO students (telegram_id, name) VALUES (?, 'Ученик Тестов')", (student_user_id,)
+    )
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (class_id, student_id))
+    transcript_id = f"tr-sverka-{teacher_user_id}"
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES (?, ?, 'audio', ?, 47, 'ru')",
+        (transcript_id, teacher_id, transcript_text),
+    )
+    return {"teacher_id": teacher_id, "class_id": class_id, "student_id": student_id, "transcript_id": transcript_id}
+
+
+async def test_sverka_handler_sends_missing_items_and_records_usage(isolated_env, monkeypatch, tmp_path):
+    seed = await _seed_sverka_lesson(950, 951, "расшифровка урока про импульс")
+    photo_path = tmp_path / "notebook.jpg"
+    photo_path.write_bytes(b"fake photo bytes")
+
+    async def fake_ocr(image_bytes, image_mime, llm_client=None):
+        assert image_bytes == b"fake photo bytes"
+        return "конспект ученика: импульс это ..."
+
+    async def fake_compare(transcript_text, notebook_text, llm_client=None):
+        assert transcript_text == "расшифровка урока про импульс"
+        assert notebook_text == "конспект ученика: импульс это ..."
+        return ["пропущен вывод формулы сохранения импульса", "не записано домашнее задание"]
+
+    monkeypatch.setattr("bot.handlers.recognize_textbook_page", fake_ocr)
+    monkeypatch.setattr("bot.handlers.compare_notebook_to_transcript", fake_compare)
+
+    bot = FakeBot()
+    handler = make_sverka_handler(bot)
+    task = {
+        "id": "sv1",
+        "type": "sverka_tetradi",
+        "telegram_chat_id": 951,
+        "retries": 0,
+        "payload": {
+            "student_id": seed["student_id"],
+            "transcript_id": seed["transcript_id"],
+            "photo_path": str(photo_path),
+        },
+    }
+    result = await handler(task)
+
+    assert result["missing_items"] == ["пропущен вывод формулы сохранения импульса", "не записано домашнее задание"]
+    assert len(bot.sent_messages) == 1
+    sent_text = bot.sent_messages[0][1]
+    assert "пропущен вывод формулы сохранения импульса" in sent_text
+    assert "не записано домашнее задание" in sent_text
+
+    # У4, ловушка: фото удалено сразу после сверки.
+    assert not photo_path.exists()
+
+    # Счётчик ученика (У3) — записан.
+    from core.limits import get_student_usage_today
+
+    assert get_student_usage_today(951, db_path=None) == 1
+
+
+async def test_sverka_handler_nothing_missing_sends_positive_message(isolated_env, monkeypatch, tmp_path):
+    seed = await _seed_sverka_lesson(952, 953, "расшифровка")
+    photo_path = tmp_path / "notebook.jpg"
+    photo_path.write_bytes(b"fake photo bytes")
+
+    monkeypatch.setattr("bot.handlers.recognize_textbook_page", lambda *a, **k: _async_return("текст"))
+    monkeypatch.setattr("bot.handlers.compare_notebook_to_transcript", lambda *a, **k: _async_return([]))
+
+    bot = FakeBot()
+    handler = make_sverka_handler(bot)
+    task = {
+        "id": "sv2",
+        "type": "sverka_tetradi",
+        "telegram_chat_id": 953,
+        "retries": 0,
+        "payload": {
+            "student_id": seed["student_id"],
+            "transcript_id": seed["transcript_id"],
+            "photo_path": str(photo_path),
+        },
+    }
+    result = await handler(task)
+
+    assert result["missing_items"] == []
+    assert bot.sent_messages[0][1] == texts.SVERKA_NOTHING_MISSING
+    assert not photo_path.exists()
+
+
+async def test_sverka_handler_deletes_photo_even_when_ocr_fails(isolated_env, monkeypatch, tmp_path):
+    """У4, ловушка (та же, что у аудио): фото удаляется и при провале, не
+    только при успехе."""
+    from core.textbook_ocr import TextbookOCRError
+
+    seed = await _seed_sverka_lesson(954, 955, "расшифровка")
+    photo_path = tmp_path / "notebook.jpg"
+    photo_path.write_bytes(b"fake photo bytes")
+
+    async def failing_ocr(image_bytes, image_mime, llm_client=None):
+        raise TextbookOCRError("не распозналось")
+
+    monkeypatch.setattr("bot.handlers.recognize_textbook_page", failing_ocr)
+
+    bot = FakeBot()
+    handler = make_sverka_handler(bot)
+    task = {
+        "id": "sv3",
+        "type": "sverka_tetradi",
+        "telegram_chat_id": 955,
+        "retries": 0,
+        "payload": {
+            "student_id": seed["student_id"],
+            "transcript_id": seed["transcript_id"],
+            "photo_path": str(photo_path),
+        },
+    }
+    with pytest.raises(TextbookOCRError):
+        await handler(task)
+
+    assert not photo_path.exists()
+    assert bot.sent_messages == []
+
+
+async def test_sverka_handler_missing_transcript_raises_and_deletes_photo(isolated_env, tmp_path):
+    from core.konspekt_compare import KonspektCompareError
+
+    photo_path = tmp_path / "notebook.jpg"
+    photo_path.write_bytes(b"fake photo bytes")
+
+    bot = FakeBot()
+    handler = make_sverka_handler(bot)
+    task = {
+        "id": "sv4",
+        "type": "sverka_tetradi",
+        "telegram_chat_id": 956,
+        "retries": 0,
+        "payload": {"student_id": 1, "transcript_id": "нет-такого-id", "photo_path": str(photo_path)},
+    }
+    with pytest.raises(KonspektCompareError):
+        await handler(task)
+
+    assert not photo_path.exists()
+
+
+async def test_sverka_handler_does_not_retry_after_photo_already_deleted(isolated_env, monkeypatch):
+    """Регрессия: фото удаляется в finally и при провале тоже (та же
+    ловушка 2.8, что у аудио) — значит вторая попытка (retries > 0) НЕ
+    имеет права заново пытаться читать файл, которого уже нет. Раньше
+    (до фикса, по образцу TRANSCRIBE_REAL_ATTEMPT_LIMIT в этом же файле)
+    повторная попытка падала бы FileNotFoundError вместо честного
+    SVERKA_RETRY_DISABLED — при этом даже не дойдя до записи в лог,
+    почему именно она не удалась."""
+    seed = await _seed_sverka_lesson(957, 958, "расшифровка")
+
+    async def should_not_be_called(*args, **kwargs):
+        raise AssertionError("OCR не должен вызываться повторно — фото уже удалено")
+
+    monkeypatch.setattr("bot.handlers.recognize_textbook_page", should_not_be_called)
+
+    bot = FakeBot()
+    handler = make_sverka_handler(bot)
+    # Фото физически не существует — как было бы после первой попытки,
+    # чей finally уже его удалил.
+    missing_photo_path = "/tmp/этого-файла-точно-нет-nonexistent-sverka.jpg"
+    task = {
+        "id": "sv5",
+        "type": "sverka_tetradi",
+        "telegram_chat_id": 958,
+        "retries": 1,  # вторая попытка
+        "payload": {
+            "student_id": seed["student_id"],
+            "transcript_id": seed["transcript_id"],
+            "photo_path": missing_photo_path,
+        },
+    }
+    with pytest.raises(KonspektCompareError, match="повторные попытки отключены"):
+        await handler(task)
+
+
+def _async_return(value):
+    async def _inner(*args, **kwargs):
+        return value
+
+    return _inner()
 
 
 async def test_same_audio_has_student_and_teacher_paths_without_teacher_llm(isolated_env, monkeypatch):

@@ -57,6 +57,7 @@ from bot.states import (
     GenerateKTP,
     Konspekt,
     StudentJoin,
+    SverkaCheck,
     TeacherProfile,
     UploadKSP,
     UploadKTP,
@@ -68,8 +69,9 @@ from core.db import SupabaseDatabaseError, execute, query
 from core.generation_defaults import collect as collect_generation_defaults
 from core.limits import (
     DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_token_limit,
-    get_usage_today, grant_admin_access, record_usage,
+    get_usage_today, grant_admin_access, record_student_usage, record_usage,
 )
+from core.konspekt_compare import KonspektCompareError, compare_notebook_to_transcript
 from core.ksp_generator import (
     MAX_VIDY_DEYATELNOSTI,
     LessonOptions,
@@ -681,6 +683,215 @@ async def student_join_cancelled(callback: CallbackQuery, state: FSMContext) -> 
     await state.clear()
     await callback.message.answer(texts.STUDENT_JOIN_CANCELLED)
     await callback.answer()
+
+
+# =====================================================================
+# /sverka (У4, PLAN.md) — ядро продукта ученика: фото тетради -> список
+# того, чего не хватает по сравнению с записью урока. Регистрируется
+# ПОСЛЕ menu_button_pressed/back_button_pressed/cancel_button_pressed
+# (грабля 2.4, та же причина, что у /join выше) — SverkaCheck.waiting_for_photo
+# матчит любое сообщение в этом состоянии, включая текст кнопки "Отменить".
+#
+# Выбор класса и урока — inline-кнопки без FSM: они не принимают
+# свободный текст, а go_to/go_back для них не нужен — каждый шаг просто
+# показывает новое сообщение с кнопками, "Отменить" всегда работает
+# глобально независимо от того, заведено состояние или нет.
+# =====================================================================
+
+
+def _student_classes_with_ids(telegram_id: int, db_path=None) -> list[dict]:
+    rows = query(
+        "SELECT c.id AS class_id, c.name AS class_name, c.teacher_id AS teacher_id "
+        "FROM class_members cm "
+        "JOIN classes c ON c.id = cm.class_id "
+        "JOIN students s ON s.id = cm.student_id "
+        "WHERE s.telegram_id = ? ORDER BY cm.joined_at",
+        (telegram_id,),
+        db_path=db_path,
+    )
+    return [dict(row) for row in rows]
+
+
+def _recent_transcripts_for_teacher(teacher_id: int, limit: int = 8, db_path=None) -> list[dict]:
+    rows = query(
+        "SELECT t.id AS id, t.text AS text, t.created_at AS created_at, k.topic AS topic "
+        "FROM transcripts t LEFT JOIN ktp_entries k ON k.id = t.ktp_entry_id "
+        "WHERE t.teacher_id = ? ORDER BY t.created_at DESC LIMIT ?",
+        (teacher_id, limit),
+        db_path=db_path,
+    )
+    return [dict(row) for row in rows]
+
+
+def _sverka_lesson_label(row: dict) -> str:
+    date_str = str(row["created_at"])[:10]
+    topic = row["topic"] or texts.SVERKA_LESSON_NO_TOPIC
+    return texts.SVERKA_LESSON_ROW_BUTTON.format(date=date_str, topic=topic)[:64]
+
+
+async def _show_sverka_lessons(message: Message, teacher_id: int) -> None:
+    lessons = _recent_transcripts_for_teacher(teacher_id)
+    if not lessons:
+        # У4, дословно: сказать прямо, что записи ещё нет — не пустой
+        # результат сверки.
+        await message.answer(texts.SVERKA_NO_TRANSCRIPT)
+        return
+    rows = [
+        [InlineKeyboardButton(text=_sverka_lesson_label(row), callback_data=f"sverka_lesson:{row['id']}")]
+        for row in lessons
+    ]
+    await message.answer(texts.SVERKA_ASK_LESSON, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.message(Command("sverka"))
+async def cmd_sverka(message: Message) -> None:
+    """Не в BOT_COMMANDS/MAIN_MENU — команда ученика (тот же принцип,
+    что у /join)."""
+    telegram_id = message.from_user.id
+    if not _is_student(telegram_id):
+        await message.answer(texts.SVERKA_NOT_A_STUDENT)
+        return
+    classes = _student_classes_with_ids(telegram_id)
+    if not classes:
+        await message.answer(texts.SVERKA_NO_CLASSES)
+        return
+    if len(classes) == 1:
+        await _show_sverka_lessons(message, classes[0]["teacher_id"])
+        return
+    rows = [
+        [InlineKeyboardButton(text=c["class_name"], callback_data=f"sverka_class:{c['class_id']}")] for c in classes
+    ]
+    await message.answer(texts.SVERKA_ASK_CLASS, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("sverka_class:"))
+async def sverka_class_chosen(callback: CallbackQuery) -> None:
+    class_id = int(callback.data.split(":", 1)[1])
+    telegram_id = callback.from_user.id
+    classes = {c["class_id"]: c for c in _student_classes_with_ids(telegram_id)}
+    class_row = classes.get(class_id)
+    if class_row is None:
+        await callback.answer(texts.CLASS_NOT_FOUND, show_alert=True)
+        return
+    await _show_sverka_lessons(callback.message, class_row["teacher_id"])
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sverka_lesson:"))
+async def sverka_lesson_chosen(callback: CallbackQuery, state: FSMContext) -> None:
+    transcript_id = callback.data.split(":", 1)[1]
+    telegram_id = callback.from_user.id
+
+    # Перепроверка владения: transcript_id пришёл в callback_data от
+    # клиента, доверять ему без проверки нельзя — учитель должен быть
+    # учителем одного из классов ЭТОГО ученика.
+    teacher_ids = {c["teacher_id"] for c in _student_classes_with_ids(telegram_id)}
+    rows = query("SELECT teacher_id FROM transcripts WHERE id = ?", (transcript_id,))
+    if not rows or rows[0]["teacher_id"] not in teacher_ids:
+        await callback.answer(texts.SVERKA_LESSON_NOT_FOUND, show_alert=True)
+        return
+
+    await go_to(state, SverkaCheck.waiting_for_photo)
+    await state.update_data(transcript_id=transcript_id)
+    await callback.message.answer(texts.SVERKA_ASK_PHOTO, reply_markup=keyboards.cancel_only_keyboard())
+    await callback.answer()
+
+
+@router.message(SverkaCheck.waiting_for_photo, F.photo)
+async def sverka_photo_received(message: Message, state: FSMContext, bot: Bot) -> None:
+    largest = message.photo[-1]
+    size_error = _check_file_size(largest)
+    if size_error:
+        await message.answer(size_error)
+        return
+
+    data = await state.get_data()
+    transcript_id = data["transcript_id"]
+    telegram_id = message.from_user.id
+    student_row = query("SELECT id FROM students WHERE telegram_id = ?", (telegram_id,))
+    if not student_row:
+        await state.clear()
+        return
+    student_id = student_row[0]["id"]
+
+    dest = settings.uploads_dir / f"{uuid.uuid4()}.jpg"
+    await bot.download(largest, destination=dest)
+    await state.clear()
+
+    enqueue(
+        "sverka_tetradi",
+        {"student_id": student_id, "transcript_id": transcript_id, "photo_path": str(dest)},
+        chat_id=message.chat.id,
+    )
+    await message.answer(texts.SVERKA_PROCESSING, reply_markup=ReplyKeyboardRemove())
+
+
+@router.message(SverkaCheck.waiting_for_photo)
+async def sverka_wrong_input(message: Message) -> None:
+    await message.answer(texts.SVERKA_ASK_PHOTO, reply_markup=keyboards.cancel_only_keyboard())
+
+
+# Ровно тот же приём, что TRANSCRIBE_REAL_ATTEMPT_LIMIT (bot/handlers.py,
+# К2.4): фото удаляется в finally и при провале тоже (У4, ловушка) — а
+# значит повторная попытка после первого провала читала бы уже
+# несуществующий файл. Вместо честного повторного вызова OCR/сравнения
+# retries > 0 сразу и честно отказывает, не пытаясь читать удалённое
+# фото. Ретраи очереди при этом не бесполезны: они всё равно нужны для
+# гарантии уведомления (KPI, MASTER.md п.1.7) — просто без повторной
+# реальной попытки.
+SVERKA_REAL_ATTEMPT_LIMIT = 0
+
+
+def make_sverka_handler(bot: Bot):
+    """Задача очереди (У4): OCR фото тетради + LLM-сравнение с
+    расшифровкой урока — оба вызова к LLM, той же причиной, что
+    распознавание фото учебника в make_generate_ksp_handler живёт в
+    очереди, а не синхронно в диалоге: может занять до минуты, нужны
+    ретраи и гарантия уведомления."""
+
+    async def handler(task: dict) -> dict:
+        payload = task["payload"]
+        chat_id = task["telegram_chat_id"]
+        photo_path = Path(payload["photo_path"])
+
+        if task.get("retries", 0) > SVERKA_REAL_ATTEMPT_LIMIT:
+            photo_path.unlink(missing_ok=True)
+            raise KonspektCompareError(texts.SVERKA_RETRY_DISABLED)
+
+        try:
+            transcript_rows = query("SELECT text FROM transcripts WHERE id = ?", (payload["transcript_id"],))
+            if not transcript_rows:
+                raise KonspektCompareError(
+                    f"транскрипт {payload['transcript_id']} не найден — не может сверить с ним тетрадь"
+                )
+            transcript_text = transcript_rows[0]["text"]
+
+            image_bytes = photo_path.read_bytes()
+            notebook_text = await recognize_textbook_page(image_bytes, "image/jpeg")
+
+            llm_client = LLMClient()
+            try:
+                missing_items = await compare_notebook_to_transcript(
+                    transcript_text, notebook_text, llm_client=llm_client
+                )
+            finally:
+                record_student_usage(chat_id)
+                await llm_client.aclose()
+        finally:
+            # У4, ловушка (та же, что у аудио, грабля 2.8): фото хранится
+            # ровно столько, сколько нужно для сверки — и при успехе, и
+            # при провале.
+            photo_path.unlink(missing_ok=True)
+
+        if missing_items:
+            lines = "\n".join(texts.SVERKA_RESULT_ITEM.format(item=item) for item in missing_items)
+            text = f"{texts.SVERKA_RESULT_HEADER}\n{lines}"
+        else:
+            text = texts.SVERKA_NOTHING_MISSING
+        await bot.send_message(chat_id, text)
+        return {"missing_items": missing_items}
+
+    return handler
 
 
 # =====================================================================

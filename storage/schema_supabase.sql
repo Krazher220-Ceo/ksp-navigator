@@ -74,7 +74,12 @@ create table if not exists public.generated_ksp (
 
 create table if not exists public.tasks (
     id text primary key,
-    type text check (type in ('parse_ksp', 'generate_ksp', 'generate_ktp', 'transcribe', 'generate_konspekt')),
+    -- 'sverka_tetradi' добавлен блоком У4 (PLAN.md). ⚠️ CREATE TABLE IF NOT
+    -- EXISTS не меняет CHECK уже существующей таблицы — на прод, где
+    -- tasks уже есть, это применяется отдельным ALTER TABLE через SQL
+    -- Editor (готовый SQL — в отчёте по блоку У4), не автоматическим
+    -- перезапуском этого файла.
+    type text check (type in ('parse_ksp', 'generate_ksp', 'generate_ktp', 'transcribe', 'generate_konspekt', 'sverka_tetradi')),
     status text check (status in ('pending', 'processing', 'done', 'failed')) default 'pending',
     payload text,
     result text,

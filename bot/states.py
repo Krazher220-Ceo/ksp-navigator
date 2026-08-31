@@ -71,6 +71,15 @@ class StudentJoin(StatesGroup):
     waiting_for_confirmation = State()
 
 
+class SverkaCheck(StatesGroup):
+    """/sverka: ученик присылает фото тетради для сверки с расшифровкой
+    урока (блок У4, PLAN.md). Выбор класса и урока — обычные inline-шаги
+    без FSM (короткие, не текстовый ввод) — состояние заводится только
+    на последнем шаге, ожидании фото."""
+
+    waiting_for_photo = State()
+
+
 class Konspekt(StatesGroup):
     """/konspekt: сначала выбор назначения записи, затем сбор аудио.
 

@@ -90,12 +90,14 @@ CREATE TABLE IF NOT EXISTS generated_ksp (
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
     -- 'generate_ktp' добавлен блоком Р4.3 (PLAN_STAGE1_EXT.md). 'transcribe'
-    -- и 'generate_konspekt' — блоком К2.1 (PLAN_STAGE2.md). Для базы,
-    -- созданной ДО этих блоков, одного перезапуска schema.sql недостаточно —
-    -- CREATE TABLE IF NOT EXISTS не трогает уже существующую таблицу с
-    -- другим CHECK. См. scripts/migrate_add_generate_ktp_task_type.py и
-    -- scripts/migrate_add_transcribe_task_type.py.
-    type TEXT CHECK(type IN ('parse_ksp','generate_ksp','generate_ktp','transcribe','generate_konspekt')),
+    -- и 'generate_konspekt' — блоком К2.1 (PLAN_STAGE2.md). 'sverka_tetradi' —
+    -- блоком У4 (PLAN.md): OCR фото тетради + LLM-сравнение с расшифровкой
+    -- урока, оба вызова к LLM, задача очереди тем же принципом, что и
+    -- остальные. Для базы, созданной ДО этих блоков, одного перезапуска
+    -- schema.sql недостаточно — CREATE TABLE IF NOT EXISTS не трогает уже
+    -- существующую таблицу с другим CHECK. См. scripts/migrate_add_generate_ktp_task_type.py,
+    -- scripts/migrate_add_transcribe_task_type.py и scripts/migrate_add_sverka_task_type.py.
+    type TEXT CHECK(type IN ('parse_ksp','generate_ksp','generate_ktp','transcribe','generate_konspekt','sverka_tetradi')),
     status TEXT CHECK(status IN ('pending','processing','done','failed')) DEFAULT 'pending',
     payload TEXT,
     result TEXT,
