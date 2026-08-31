@@ -176,11 +176,16 @@ def record_usage(telegram_user_id: int, operation: str, *, count_delta: int = 0,
     потрачены, даже если сама операция в итоге провалилась — деньги уже
     ушли провайдеру независимо от исхода."""
     day = _today_kostanay()
+    # Колонки в SET квалифицированы именем таблицы (usage_daily.count, а
+    # не голое count): на Supabase голое имя даёт 42702 "column reference
+    # ambiguous" — RPC ksp_execute_sql выполняет запрос в контексте, где
+    # "count" не однозначно указывает на колонку таблицы. SQLite такую
+    # квалификацию тоже принимает, отдельной ветки под бэкенд не нужно.
     execute(
         "INSERT INTO usage_daily (telegram_user_id, day, operation, count, tokens) "
         "VALUES (?, ?, ?, ?, ?) "
         "ON CONFLICT(telegram_user_id, day, operation) DO UPDATE SET "
-        "count = count + excluded.count, tokens = tokens + excluded.tokens",
+        "count = usage_daily.count + excluded.count, tokens = usage_daily.tokens + excluded.tokens",
         (telegram_user_id, day, operation, count_delta, tokens_delta),
         db_path=db_path,
     )
