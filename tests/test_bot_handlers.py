@@ -4176,8 +4176,14 @@ async def _seed_sverka_lesson(teacher_user_id: int, student_user_id: int, transc
     return {"teacher_id": teacher_id, "class_id": class_id, "student_id": student_id, "transcript_id": transcript_id}
 
 
+# Расшифровка настоящего урока — тысячи символов; в тестах ниже она
+# должна быть правдоподобной длины, иначе два коротких пункта пропусков
+# перевешивают её и срабатывает потолок выдачи (Находка 7 AUDIT.md).
+LONG_TRANSCRIPT = "расшифровка урока про импульс. " * 60
+
+
 async def test_sverka_handler_sends_missing_items_and_records_usage(isolated_env, monkeypatch, tmp_path):
-    seed = await _seed_sverka_lesson(950, 951, "расшифровка урока про импульс")
+    seed = await _seed_sverka_lesson(950, 951, LONG_TRANSCRIPT)
     photo_path = tmp_path / "notebook.jpg"
     photo_path.write_bytes(b"fake photo bytes")
 
@@ -4186,7 +4192,7 @@ async def test_sverka_handler_sends_missing_items_and_records_usage(isolated_env
         return "конспект ученика: импульс это ..."
 
     async def fake_compare(transcript_text, notebook_text, llm_client=None):
-        assert transcript_text == "расшифровка урока про импульс"
+        assert transcript_text == LONG_TRANSCRIPT
         assert notebook_text == "конспект ученика: импульс это ..."
         return ["пропущен вывод формулы сохранения импульса", "не записано домашнее задание"]
 
@@ -4221,6 +4227,82 @@ async def test_sverka_handler_sends_missing_items_and_records_usage(isolated_env
     from core.limits import get_student_usage_today
 
     assert get_student_usage_today(951, db_path=None) == 1
+
+
+async def _run_sverka_handler(seed, missing_items, tmp_path, monkeypatch, chat_id):
+    photo_path = tmp_path / f"notebook-{chat_id}.jpg"
+    photo_path.write_bytes(b"fake photo bytes")
+    monkeypatch.setattr(
+        "bot.handlers.recognize_textbook_page",
+        lambda *a, **k: _async_return("Конспект ученика: импульс, формула p = m*v, задача."),
+    )
+    monkeypatch.setattr(
+        "bot.handlers.compare_notebook_to_transcript", lambda *a, **k: _async_return(missing_items)
+    )
+    bot = FakeBot()
+    handler = make_sverka_handler(bot)
+    await handler(
+        {
+            "id": f"sv-{chat_id}",
+            "type": "sverka_tetradi",
+            "telegram_chat_id": chat_id,
+            "retries": 0,
+            "payload": {
+                "student_id": seed["student_id"],
+                "transcript_id": seed["transcript_id"],
+                "photo_path": str(photo_path),
+            },
+        }
+    )
+    return bot
+
+
+async def test_sverka_handler_refuses_to_send_a_retelling_of_the_lesson(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Находка 7 AUDIT.md: гарантия «ученик не получает полную
+    расшифровку» (MASTER.md 0.9 п.3) держалась только на фразе в
+    промпте. Здесь модель нарочно возвращает пересказ урока — код обязан
+    его не отправить."""
+    from core.konspekt_compare import MAX_MISSING_SHARE_OF_TRANSCRIPT
+
+    transcript = "речь учителя на уроке. " * 100
+    seed = await _seed_sverka_lesson(954, 955, transcript)
+    retelling = [transcript[:2000]]
+    assert len(retelling[0]) > len(transcript) * MAX_MISSING_SHARE_OF_TRANSCRIPT
+
+    bot = await _run_sverka_handler(seed, retelling, tmp_path, monkeypatch, 955)
+
+    assert bot.sent_messages[0][1] == texts.SVERKA_TOO_MUCH_MISSING
+    assert transcript[:200] not in bot.sent_messages[0][1]
+
+
+async def test_sverka_handler_refuses_when_items_are_too_many(isolated_env, monkeypatch, tmp_path):
+    """Второе условие потолка: длинный урок можно пересказать множеством
+    коротких пунктов, доля от расшифровки при этом останется небольшой."""
+    from core.konspekt_compare import MAX_MISSING_ITEMS
+
+    seed = await _seed_sverka_lesson(958, 959, "речь учителя на уроке. " * 400)
+    many = [f"пункт {i}" for i in range(MAX_MISSING_ITEMS + 1)]
+
+    bot = await _run_sverka_handler(seed, many, tmp_path, monkeypatch, 959)
+
+    assert bot.sent_messages[0][1] == texts.SVERKA_TOO_MUCH_MISSING
+
+
+async def test_sverka_handler_sends_ordinary_result_below_the_ceiling(
+    isolated_env, monkeypatch, tmp_path
+):
+    """Замер аудита на настоящем уроке — 13 пунктов и 7,1 % от
+    расшифровки: обычная честная сверка потолком задеваться не должна."""
+    transcript = "речь учителя на уроке. " * 700
+    seed = await _seed_sverka_lesson(968, 969, transcript)
+    realistic = [f"Отсутствует пункт номер {i} из разобранного на уроке" for i in range(13)]
+
+    bot = await _run_sverka_handler(seed, realistic, tmp_path, monkeypatch, 969)
+
+    assert bot.sent_messages[0][1].startswith(texts.SVERKA_RESULT_HEADER)
+    assert "Отсутствует пункт номер 0" in bot.sent_messages[0][1]
 
 
 async def test_sverka_handler_unreadable_notebook_does_not_say_everything_is_fine(

@@ -127,3 +127,44 @@ def test_notebook_unreadable_is_a_compare_error():
     """Вызывающий код, ловящий KonspektCompareError, не должен внезапно
     пропустить новую ошибку мимо себя."""
     assert issubclass(NotebookUnreadableError, KonspektCompareError)
+
+
+# --- Находка 7 AUDIT.md: кодовый потолок на объём выдачи ученику ---
+
+
+def test_ceiling_lets_a_realistic_check_through():
+    """Замер аудита на настоящем уроке: 13 пунктов, 7,1 % от
+    расшифровки. Обычная честная сверка потолком задеваться не должна —
+    иначе он превратится в глушилку продукта."""
+    from core.konspekt_compare import exceeds_output_ceiling
+
+    transcript = "речь учителя на уроке. " * 700
+    items = [f"Отсутствует пункт {i} из разобранного на уроке" for i in range(13)]
+    assert sum(len(i) for i in items) < len(transcript) * 0.08
+    assert exceeds_output_ceiling(items, transcript) is False
+
+
+def test_ceiling_catches_a_retelling_by_length():
+    from core.konspekt_compare import MAX_MISSING_SHARE_OF_TRANSCRIPT, exceeds_output_ceiling
+
+    transcript = "речь учителя на уроке. " * 100
+    retelling = [transcript[: int(len(transcript) * (MAX_MISSING_SHARE_OF_TRANSCRIPT + 0.1))]]
+    assert exceeds_output_ceiling(retelling, transcript) is True
+
+
+def test_ceiling_catches_a_retelling_by_number_of_items():
+    """Длинный урок можно пересказать множеством коротких пунктов —
+    доля от расшифровки при этом останется маленькой."""
+    from core.konspekt_compare import MAX_MISSING_ITEMS, exceeds_output_ceiling
+
+    transcript = "речь учителя на уроке. " * 1000
+    many = [f"пункт {i}" for i in range(MAX_MISSING_ITEMS + 1)]
+    assert sum(len(i) for i in many) < len(transcript) * 0.25
+    assert exceeds_output_ceiling(many, transcript) is True
+
+
+def test_ceiling_does_not_divide_by_zero_on_empty_transcript():
+    from core.konspekt_compare import exceeds_output_ceiling
+
+    assert exceeds_output_ceiling(["пропуск"], "") is False
+    assert exceeds_output_ceiling([], "") is False

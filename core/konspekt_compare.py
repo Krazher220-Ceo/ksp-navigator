@@ -77,6 +77,40 @@ def notebook_is_unreadable(notebook_text: str) -> bool:
     return len((notebook_text or "").strip()) < MIN_NOTEBOOK_TEXT_LENGTH
 
 
+# Находка 7 AUDIT.md: гарантия «ученик не получает полную расшифровку»
+# (MASTER.md 0.9 п.3 — условие допуска в школу, а не пожелание) держалась
+# только на фразе в SYSTEM_PROMPT. Сегодня модель ведёт себя правильно —
+# замер на настоящем уроке дал 7,1 % от расшифровки в виде скелета по
+# темам, — но это её добрая воля, а не свойство системы: смена модели или
+# провайдера в цепочке LLM_PROVIDERS может дать другой результат, и
+# узнает об этом школа, а не мы.
+#
+# ⚠️ ЧИСЛА НИЖЕ — ПРЕДВАРИТЕЛЬНЫЕ И ЖДУТ РЕШЕНИЯ АВТОРА (AUDIT.md,
+# раздел 6, пункт 4: «сколько пунктов и какая доля от урока считаются
+# уже пересказом — педагогическое решение, не техническое»). Взяты с
+# большим запасом к единственному имеющемуся замеру (13 пунктов, 7,1 %),
+# чтобы сработать на пересказе и не сработать на честной сверке.
+# Механизм от чисел не зависит: поменять их — поменять две константы.
+MAX_MISSING_ITEMS = 25
+MAX_MISSING_SHARE_OF_TRANSCRIPT = 0.25
+
+
+def exceeds_output_ceiling(missing_items: list[str], transcript_text: str) -> bool:
+    """Выдача ученику подобралась к пересказу урока целиком?
+
+    Два независимых условия — по числу пунктов и по суммарной длине
+    относительно расшифровки: короткий урок можно пересказать немногими
+    длинными пунктами, длинный — множеством коротких.
+    """
+    if len(missing_items) > MAX_MISSING_ITEMS:
+        return True
+    transcript_length = len(transcript_text or "")
+    if transcript_length == 0:
+        return False
+    total_length = sum(len(item) for item in missing_items)
+    return total_length > transcript_length * MAX_MISSING_SHARE_OF_TRANSCRIPT
+
+
 async def compare_notebook_to_transcript(
     transcript_text: str,
     notebook_text: str,

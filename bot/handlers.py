@@ -75,6 +75,7 @@ from core.limits import (
 from core.konspekt_compare import (
     KonspektCompareError,
     compare_notebook_to_transcript,
+    exceeds_output_ceiling,
     notebook_is_unreadable,
 )
 from core.ksp_generator import (
@@ -1021,7 +1022,14 @@ def make_sverka_handler(bot: Bot):
             # при провале.
             photo_path.unlink(missing_ok=True)
 
-        if missing_items:
+        if exceeds_output_ceiling(missing_items, transcript_text):
+            # Находка 7 AUDIT.md: кодовый потолок рядом с отправкой.
+            # Гарантия «ученик не получает полную расшифровку» — условие
+            # допуска в школу (MASTER.md 0.9 п.3), и держаться на одной
+            # фразе в промпте она не может. Не режем молча: честно
+            # говорим, почему списка нет, и отправляем к учителю.
+            text = texts.SVERKA_TOO_MUCH_MISSING
+        elif missing_items:
             lines = "\n".join(texts.SVERKA_RESULT_ITEM.format(item=item) for item in missing_items)
             text = f"{texts.SVERKA_RESULT_HEADER}\n{lines}"
         else:
