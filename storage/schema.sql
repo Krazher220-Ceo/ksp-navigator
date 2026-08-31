@@ -196,6 +196,52 @@ CREATE TABLE IF NOT EXISTS consents (
     given_at TIMESTAMP NOT NULL
 );
 
+-- classes/students/class_members — класс и ученики (блок У1, MASTER.md
+-- 0.9 п.2: мультипользовательский режим разрешён РОВНО в этом объёме —
+-- педагог и ученик, без ролей и рейтингов сверх этого).
+--
+-- Персональных данных ученика — минимум: telegram_id и имя. Не заводить
+-- сюда ИИН, фамилию отдельно от имени, дату рождения или оценки —
+-- ловушка блока прямо запрещает.
+--
+-- students — не "ученик этого учителя", а ученик вообще: один ученик
+-- может состоять в нескольких классах (например, у разных учителей
+-- одного предмета), поэтому связь — отдельная таблица class_members, не
+-- teacher_id в самой students.
+CREATE TABLE IF NOT EXISTS classes (
+    id INTEGER PRIMARY KEY,
+    teacher_id INTEGER NOT NULL REFERENCES teachers(id),
+    name TEXT NOT NULL,             -- как ввёл педагог, например "10 А"
+    subject TEXT,
+    -- Код приглашения генерирует core/classes.py (блок У2) — короткий,
+    -- читаемый вслух, без похожих символов (0/O, 1/l). Можно отозвать и
+    -- перевыпустить: это обычный UPDATE значения, старый код при этом
+    -- просто перестаёт находиться — отдельно хранить историю кодов не
+    -- нужно, план этого не требует.
+    invite_code TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS students (
+    id INTEGER PRIMARY KEY,
+    telegram_id INTEGER NOT NULL,
+    name TEXT,
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- когда стал учеником в системе, не в конкретном классе
+);
+
+CREATE TABLE IF NOT EXISTS class_members (
+    id INTEGER PRIMARY KEY,
+    class_id INTEGER NOT NULL REFERENCES classes(id),
+    student_id INTEGER NOT NULL REFERENCES students(id),
+    joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_classes_invite_code ON classes(invite_code);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_students_telegram_id ON students(telegram_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_class_members_unique ON class_members(class_id, student_id);
+CREATE INDEX IF NOT EXISTS idx_classes_teacher ON classes(teacher_id);
+CREATE INDEX IF NOT EXISTS idx_class_members_student ON class_members(student_id);
+
 -- Индексы сверх документа (PLAN_STAGE1.md, задача Б1.1)
 CREATE INDEX IF NOT EXISTS idx_ktp_teacher ON ktp_entries(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);

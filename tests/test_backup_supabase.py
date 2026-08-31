@@ -209,6 +209,9 @@ def test_tables_from_schema_matches_exact_set_of_real_tables():
         "incidents",
         "worker_heartbeat",
         "consents",
+        "classes",
+        "students",
+        "class_members",
     }
     tables = backup_supabase.tables_from_schema(PROJECT_ROOT / "storage" / "schema.sql")
     assert set(tables) == expected
