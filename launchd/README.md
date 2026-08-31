@@ -158,7 +158,12 @@ curl -I https://ksp.alikhandev.com
 | `com.alikhan.kspbot.plist` | Держит бота живым, автоперезапуск | да |
 | `com.alikhan.webapi.plist` | FastAPI для Mini App на `localhost:8000` | добавлено по факту — без него Cloudflare Tunnel проксирует в пустоту (530), см. раздел 1 |
 | `com.alikhan.watchdog.plist` | Запускает `scripts/watchdog.sh` раз в 5 минут | добавлено сверх списка Б11.2 — без расписания скрипт сам по себе ничего не проверяет |
-| `com.alikhan.backup.plist` | Запускает `scripts/backup_db.sh` ежедневно в 03:00 | добавлено по той же причине |
+| `com.alikhan.backup.plist` | Запускает `scripts/backup_supabase.py` ежедневно в 03:00 (боевая база — Supabase; на локальный `scripts/backup_db.sh`, резервный режим `DB_BACKEND=sqlite`, переведён блоком Э4, `PLAN.md`) | добавлено по той же причине |
+
+Файлы этой папки до блока Э5 (`PLAN.md`) лежали на диске, но не были
+закоммичены — половина связки живучести существовала только здесь, на
+этом MacBook, и не пережила бы отказ диска. С блока Э5 все пять файлов в
+репозитории.
 
 ### Ловушка: launchd не видит `PATH`
 
@@ -179,6 +184,27 @@ launchd запускает процессы не через login-шелл — `
 'core'`. Проверено вручную: `python bot/main.py` — падает, `python -m
 bot.main` из `WorkingDirectory` (корень проекта) — нет.
 
+### Ловушка: пути в plist — абсолютные и не переносимые
+
+Во всех пяти файлах `/Users/kr220/Documents/Projects/ksp-navigator/...` и
+`/Users/kr220/logs/...` зашиты буквально: launchd не подставляет `~` и не
+разворачивает переменные окружения в `ProgramArguments`/`StandardOutPath`,
+поэтому относительный путь или `$HOME` здесь просто не сработают. Это не
+секрет (никакого ключа или пароля в этих путях нет), но и не переносимо:
+при установке на другую машину (другой пользователь, перенос на сервер
+школы — `MASTER.md`, 0.10 п.2) пути во всех пяти `.plist` нужно поправить
+руками, командой вроде
+
+```bash
+sed -i '' 's#/Users/kr220/Documents/Projects/ksp-navigator#/новый/путь#g; s#/Users/kr220/logs#/новый/путь/к/логам#g' launchd/*.plist
+```
+
+перед тем, как копировать их в `~/Library/LaunchAgents/`. Автоматической
+подстановки путей этот блок не делает — на одной машине автора она не
+нужна, а универсальный шаблон (`envsubst`, генерация plist из шаблона)
+это отдельная работа, которую не стоит делать заранее, пока не появилась
+вторая машина, которой она реально нужна.
+
 ### У тебя уже установлены keepawake, kspbot, watchdog, backup
 
 Осталось добавить `webapi` — файл появился уже после того, как ты
@@ -188,6 +214,19 @@ bot.main` из `WorkingDirectory` (корень проекта) — нет.
 cp launchd/com.alikhan.webapi.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.alikhan.webapi.plist
 launchctl list | grep com.alikhan
+```
+
+**После блока Э4** содержимое `com.alikhan.backup.plist` в репозитории
+изменилось (`scripts/backup_db.sh` → `scripts/backup_supabase.py`) —
+установленная у тебя копия в `~/Library/LaunchAgents/` этого не знает
+сама по себе, `cp` нужно повторить и агент перезагрузить, иначе он тихо
+продолжит бэкапить уже мёртвый `storage/app.db` тем же способом, что
+описан в блоке Э4:
+
+```bash
+cp launchd/com.alikhan.backup.plist ~/Library/LaunchAgents/
+launchctl unload ~/Library/LaunchAgents/com.alikhan.backup.plist
+launchctl load ~/Library/LaunchAgents/com.alikhan.backup.plist
 ```
 
 Если ставишь всё с нуля (например на другой машине):
@@ -257,10 +296,21 @@ tail -f ~/logs/kspbot.err.log
 - `scripts/watchdog.sh` — раз в 5 минут проверяет `api.telegram.org` и
   что `launchctl` видит агент бота. Три неудачи подряд → строка
   `ТРЕВОГА` в `~/logs/watchdog.log`.
-- `scripts/backup_db.sh` — ежедневно в 03:00, `sqlite3 ... ".backup"`
-  (не `cp` — база в режиме WAL, обычное копирование работающего файла
-  может дать неполную или битую копию). Хранит 14 дней, старше — удаляет.
-  Лог: `~/logs/backup.log`.
+- `scripts/backup_supabase.py` — ежедневно в 03:00, снимает копию боевой
+  базы Supabase в файл SQLite (`backup/supabase_ГГГГ-ММ-ДД.db`), читая
+  все таблицы через `core.db.query` — тот же HTTP/RPC, каким бот и так
+  работает с Supabase. Хранит 14 дней, старше — удаляет. Лог:
+  `~/logs/backup.log`. Подробности и как восстановиться — `README.md`
+  корня проекта, раздел 10.1.
+- `scripts/backup_db.sh` — тот же принцип (`sqlite3 ... ".backup"`, не
+  `cp` — база в режиме WAL, обычное копирование работающего файла может
+  дать неполную или битую копию), но для локального резервного режима
+  `DB_BACKEND=sqlite`. С блока Э4 по расписанию **не запускается** —
+  боевая база больше не `storage/app.db`. Держать `backup.plist`,
+  указывающий на него, было бы тихой поломкой: скрипт исправно
+  отработал бы и написал `OK` в лог, копируя уже мёртвый файл — ровно
+  так репозиторий и остался без рабочего бэкапа на двое суток до
+  блока Э4 (`PLAN.md`, разбор в самом блоке).
 
 Найти тревогу в логе:
 
@@ -271,12 +321,12 @@ grep ТРЕВОГА ~/logs/watchdog.log
 ### Проверка бэкапа руками
 
 ```bash
-bash scripts/backup_db.sh
+venv/bin/python scripts/backup_supabase.py
 ls -la backup/
 ```
 
 Отдельно посмотреть, что в файле реально есть данные:
 
 ```bash
-sqlite3 "backup/app_$(date +%Y-%m-%d).db" "SELECT COUNT(*) FROM curriculum_objectives;"
+sqlite3 "backup/supabase_$(date +%Y-%m-%d).db" "SELECT COUNT(*) FROM curriculum_objectives;"
 ```

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd/com.alikhan.watchdog.plist — запускает scripts/watchdog.sh
+  раз в 5 минут (PLAN_STAGE1.md, Б11.3).
+
+  Не входит в список файлов Б11.2 буквально (там только keepawake и
+  kspbot), но без расписания scripts/watchdog.sh просто лежал бы и
+  ничего не проверял — "раз в 5 минут" не бывает само по себе.
+  StartInterval — не KeepAlive: это разовый запуск раз в N секунд,
+  а не постоянно работающий процесс.
+
+  Устанавливается в ~/Library/LaunchAgents/ (см. launchd/README.md).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.alikhan.watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/kr220/Documents/Projects/ksp-navigator/scripts/watchdog.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/kr220/Documents/Projects/ksp-navigator</string>
+
+    <key>StartInterval</key>
+    <integer>300</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kr220/logs/watchdog.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kr220/logs/watchdog.err.log</string>
+</dict>
+</plist>

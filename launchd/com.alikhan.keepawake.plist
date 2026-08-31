@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd/com.alikhan.keepawake.plist — не даёт Mac уснуть (MASTER.md, п.1.4).
+
+  Устанавливается в ~/Library/LaunchAgents/ (см. launchd/README.md —
+  инструкция по установке всех агентов этого блока).
+
+  caffeinate в обычном терминале умирает вместе с терминалом при
+  закрытии сессии — нужен именно launchd, чтобы держать его живым
+  между перезагрузками и логаутами.
+
+  -d  — не давать погаснуть экрану (display sleep)
+  -i  — не давать уйти в system idle sleep
+  -s  — то же для питания от сети (AC power)
+  -u  — считать пользователя "активным" (сбрасывает таймер бездействия)
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.alikhan.keepawake</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-disu</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kr220/logs/keepawake.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kr220/logs/keepawake.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd/com.alikhan.backup.plist — запускает scripts/backup_supabase.py
+  ежедневно в 03:00 (PLAN_STAGE1.md, Б11.3: "ежедневно через launchd/cron";
+  на Supabase переведён блоком Э4, PLAN.md — до этого здесь стоял
+  scripts/backup_db.sh, который с 30.08 бэкапил уже мёртвый storage/app.db).
+
+  Тоже не в буквальном списке файлов Б11.2, тем же обоснованием, что и
+  watchdog — расписание нужно, чтобы "ежедневно" реально происходило.
+  StartCalendarInterval — конкретное время суток, а не просто раз в
+  сутки от момента загрузки (что было бы у StartInterval=86400 — тогда
+  время бэкапа плавало бы и могло случайно совпасть с активной работой
+  бота).
+
+  Python — из venv, абсолютным путём, той же причиной, что в
+  com.alikhan.kspbot.plist: launchd не видит PATH шелла, а "-m" через
+  WorkingDirectory нужен, чтобы "from core import db" в скрипте нашёл пакет.
+
+  Устанавливается в ~/Library/LaunchAgents/ (см. launchd/README.md).
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.alikhan.backup</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/kr220/Documents/Projects/ksp-navigator/venv/bin/python3.11</string>
+        <string>-m</string>
+        <string>scripts.backup_supabase</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/kr220/Documents/Projects/ksp-navigator</string>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/kr220/logs/backup.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kr220/logs/backup.err.log</string>
+</dict>
+</plist>
