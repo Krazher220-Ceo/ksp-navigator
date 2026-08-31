@@ -274,7 +274,7 @@ def _state():
     return FSMContext(storage=MemoryStorage(), key=StorageKey(bot_id=0, chat_id=1, user_id=1))
 
 
-async def _start_konspekt(state, user_id: int, mode_button: str = "Для ученика"):
+async def _start_konspekt(state, user_id: int, mode_button: str = texts.KONSPEKT_MODE_STUDENT_BUTTON):
     """Проходит обязательный выбор режима и оставляет FSM на сборе аудио."""
     from bot.handlers import konspekt_mode_chosen
 
@@ -2242,8 +2242,8 @@ async def test_konspekt_starts_collecting_state(isolated_env):
 @pytest.mark.parametrize(
     ("button_text", "expected_mode"),
     [
-        ("Для ученика", "student"),
-        ("Для учителя", "teacher"),
+        (texts.KONSPEKT_MODE_STUDENT_BUTTON, "student"),
+        (texts.KONSPEKT_MODE_TEACHER_BUTTON, "teacher"),
     ],
 )
 async def test_konspekt_mode_choice_is_saved_before_audio(isolated_env, button_text, expected_mode):
