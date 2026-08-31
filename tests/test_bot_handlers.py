@@ -2498,6 +2498,93 @@ async def test_delete_my_data_confirm_also_revokes_consent(isolated_env, tmp_pat
     assert has_given_consent(954) is False
 
 
+# --- Находка 5 AUDIT.md: ветка ученика и данные групп У ---
+
+
+async def _make_student_in_class(teacher_user_id: int, student_user_id: int, class_name: str = "10 А") -> str:
+    """Педагог заводит класс, ученик в него вступает. Возвращает код.
+
+    Педагог создаётся, только если его ещё нет: часть тестов заводит его
+    заранее через _seed_personal_data, а telegram_user_id в teachers
+    уникален."""
+    if not query("SELECT 1 FROM teachers WHERE telegram_user_id = ?", (teacher_user_id,)):
+        _create_teacher(teacher_user_id)
+    _, code = await _create_class_via_dialog(teacher_user_id, name=class_name)
+    execute("INSERT INTO students (telegram_id, name) VALUES (?, 'Ученик Тестовый')", (student_user_id,))
+    record_consent(student_user_id)
+    state = _state()
+    await cmd_join(FakeMessage(text="/join", user_id=student_user_id), state)
+    await student_join_code_received(FakeMessage(text=code, user_id=student_user_id), state)
+    await student_join_confirmed(
+        FakeCallbackQuery(
+            data="student_join_confirm", message=FakeMessage(user_id=student_user_id), user_id=student_user_id
+        ),
+        state,
+    )
+    return code
+
+
+async def test_delete_my_data_for_student_shows_own_summary_not_teacher_offer(isolated_env):
+    """Ученику обещали эту команду в тексте согласия, а он получал
+    «Сначала заведите профиль: /teacher»."""
+    await _make_student_in_class(960, 961)
+
+    message = FakeMessage(text="/delete_my_data", user_id=961)
+    await cmd_delete_my_data(message)
+
+    text = message.sent[-1]["text"]
+    assert text != texts.ERROR_NO_TEACHER_PROFILE
+    assert "членство в классах: 1" in text
+    assert message.sent[-1]["reply_markup"] is not None
+    # без подтверждения не удалено ничего
+    assert query("SELECT 1 FROM students WHERE telegram_id = 961")
+
+
+async def test_delete_my_data_for_student_confirm_removes_student_and_membership(isolated_env):
+    await _make_student_in_class(962, 963)
+    from bot.handlers import _consent_given_cache
+
+    callback = FakeCallbackQuery(data="delete_my_data_confirm", message=FakeMessage(user_id=963), user_id=963)
+    await delete_my_data_confirmed(callback)
+
+    assert query("SELECT 1 FROM students WHERE telegram_id = 963") == []
+    assert query("SELECT 1 FROM class_members") == []
+    assert query("SELECT 1 FROM consents WHERE telegram_user_id = 963") == []
+    assert 963 not in _consent_given_cache
+    # класс педагога и сам педагог не тронуты
+    assert query("SELECT 1 FROM classes")
+    assert query("SELECT 1 FROM teachers WHERE telegram_user_id = 962")
+
+
+async def test_delete_my_data_for_student_without_data_says_nothing_to_delete(isolated_env):
+    record_consent(964)
+    execute("INSERT INTO students (telegram_id, name) VALUES (964, 'Ученик')")
+    execute("DELETE FROM students WHERE telegram_id = 964")
+    message = FakeMessage(text="/delete_my_data", user_id=964)
+    await cmd_delete_my_data(message)
+    # строки students нет — это уже не ученик, ветка педагога
+    assert message.sent[-1]["text"] == texts.ERROR_NO_TEACHER_PROFILE
+
+
+async def test_delete_my_data_for_teacher_removes_classes_but_keeps_students(isolated_env, tmp_path):
+    """Вторая половина Находки 5: блок Ю2 писался до У1 и о таблицах
+    classes/class_members не знал вообще."""
+    await _seed_personal_data(965, tmp_path)
+    await _make_student_in_class(965, 966, class_name="11 В")
+
+    message = FakeMessage(text="/delete_my_data", user_id=965)
+    await cmd_delete_my_data(message)
+    assert "классов: 1" in message.sent[-1]["text"]
+
+    callback = FakeCallbackQuery(data="delete_my_data_confirm", message=FakeMessage(user_id=965), user_id=965)
+    await delete_my_data_confirmed(callback)
+
+    assert query("SELECT 1 FROM classes") == []
+    assert query("SELECT 1 FROM class_members") == []
+    # сам ученик остаётся — то же правило, что при удалении класса (У2)
+    assert query("SELECT 1 FROM students WHERE telegram_id = 966")
+
+
 async def test_delete_my_data_cancel_deletes_nothing(isolated_env, tmp_path):
     paths = await _seed_personal_data(953, tmp_path)
 

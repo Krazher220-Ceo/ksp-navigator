@@ -2995,12 +2995,33 @@ def _count_personal_data(teacher_id: int, telegram_user_id: int) -> dict:
     transcripts = query("SELECT COUNT(*) AS c FROM transcripts WHERE teacher_id = ?", (teacher_id,))[0]["c"]
     konspekty_count = query("SELECT COUNT(*) AS c FROM konspekty WHERE teacher_id = ?", (teacher_id,))[0]["c"]
     generated_count = query("SELECT COUNT(*) AS c FROM generated_ksp WHERE teacher_id = ?", (teacher_id,))[0]["c"]
+    # Находка 5 AUDIT.md: блок Ю2 писался до блока У1 и о классах не
+    # знал — педагог, удаливший свои данные, оставлял после себя классы
+    # и членство в них.
+    classes_count = query("SELECT COUNT(*) AS c FROM classes WHERE teacher_id = ?", (teacher_id,))[0]["c"]
     return {
         "transcripts": transcripts,
         "konspekty": konspekty_count,
         "generated_ksp": generated_count,
         "style_profile": _has_style_profile(teacher_id),
         "uploaded_files": len(_uploaded_ksp_file_paths(telegram_user_id)),
+        "classes": classes_count,
+    }
+
+
+def _count_student_personal_data(telegram_id: int) -> dict:
+    """Всё, что система знает об ученике: членство в классах и он сам.
+
+    Расшифровки и конспекты сюда не входят сознательно — они
+    принадлежат педагогу и персональных данных ученика не содержат."""
+    memberships = query(
+        "SELECT COUNT(*) AS c FROM class_members cm JOIN students s ON s.id = cm.student_id "
+        "WHERE s.telegram_id = ?",
+        (telegram_id,),
+    )[0]["c"]
+    return {
+        "memberships": memberships,
+        "student_row": bool(query("SELECT 1 FROM students WHERE telegram_id = ?", (telegram_id,))),
     }
 
 
@@ -3042,8 +3063,41 @@ def _delete_personal_data(teacher_id: int, telegram_user_id: int) -> dict:
 
     execute("DELETE FROM transcripts WHERE teacher_id = ?", (teacher_id,))
     execute("DELETE FROM style_profiles WHERE teacher_id = ?", (teacher_id,))
+
+    # Классы педагога (Находка 5 AUDIT.md). Порядок обязателен: сначала
+    # class_members, потом classes — у class_members.class_id внешний
+    # ключ на classes, и удаление родителя первым упало бы на FOREIGN KEY
+    # что в SQLite, что в Postgres. Сами ученики при этом остаются: это
+    # то же правило, по которому удаление класса не удаляет учеников
+    # (блок У2), и оно не должно расходиться между двумя командами.
+    execute(
+        "DELETE FROM class_members WHERE class_id IN (SELECT id FROM classes WHERE teacher_id = ?)",
+        (teacher_id,),
+    )
+    execute("DELETE FROM classes WHERE teacher_id = ?", (teacher_id,))
+
     execute("DELETE FROM consents WHERE telegram_user_id = ?", (telegram_user_id,))
     _consent_given_cache.discard(telegram_user_id)
+
+    return counts
+
+
+def _delete_student_personal_data(telegram_id: int) -> dict:
+    """Удаление по ветке ученика. Порядок тот же: дети раньше родителей.
+
+    Удаление данных — это отзыв согласия (статьи 18, 24, 25 Закона о
+    ПДн), поэтому здесь тоже уходит строка consents и запись из
+    _consent_given_cache. Файлов у ученика на диске нет: фотография
+    тетради удаляется сразу после сверки (блок У4)."""
+    counts = _count_student_personal_data(telegram_id)
+
+    execute(
+        "DELETE FROM class_members WHERE student_id IN (SELECT id FROM students WHERE telegram_id = ?)",
+        (telegram_id,),
+    )
+    execute("DELETE FROM students WHERE telegram_id = ?", (telegram_id,))
+    execute("DELETE FROM consents WHERE telegram_user_id = ?", (telegram_id,))
+    _consent_given_cache.discard(telegram_id)
 
     return counts
 
@@ -3055,6 +3109,14 @@ def _format_delete_my_data_counts(template: str, counts: dict) -> str:
         generated_ksp=counts["generated_ksp"],
         style_profile=texts.DELETE_MY_DATA_YES if counts["style_profile"] else texts.DELETE_MY_DATA_NO,
         uploaded_files=counts["uploaded_files"],
+        classes=counts["classes"],
+    )
+
+
+def _format_student_delete_counts(template: str, counts: dict) -> str:
+    return template.format(
+        memberships=counts["memberships"],
+        student_row=texts.DELETE_MY_DATA_YES if counts["student_row"] else texts.DELETE_MY_DATA_NO,
     )
 
 
@@ -3075,10 +3137,24 @@ def _delete_my_data_keyboard() -> InlineKeyboardMarkup:
 
 @router.message(Command("delete_my_data"))
 async def cmd_delete_my_data(message: Message) -> None:
+    """Находка 5 AUDIT.md: команда разветвлена по роли. До правки она
+    начиналась с _require_teacher, и ученик вместо удаления своих данных
+    получал предложение стать педагогом — при том, что текст согласия,
+    который он принял, эту команду ему прямо обещает."""
+    telegram_id = message.from_user.id
+    if _is_student(telegram_id):
+        counts = _count_student_personal_data(telegram_id)
+        if not any(counts.values()):
+            await message.answer(texts.DELETE_MY_DATA_NOTHING_TO_DELETE)
+            return
+        text = _format_student_delete_counts(texts.DELETE_MY_DATA_STUDENT_SUMMARY, counts)
+        await message.answer(text, reply_markup=_delete_my_data_keyboard())
+        return
+
     teacher = await _require_teacher(message)
     if teacher is None:
         return
-    counts = _count_personal_data(teacher["id"], message.from_user.id)
+    counts = _count_personal_data(teacher["id"], telegram_id)
     if not any(counts.values()):
         await message.answer(texts.DELETE_MY_DATA_NOTHING_TO_DELETE)
         return
@@ -3088,11 +3164,20 @@ async def cmd_delete_my_data(message: Message) -> None:
 
 @router.callback_query(F.data == "delete_my_data_confirm")
 async def delete_my_data_confirmed(callback: CallbackQuery) -> None:
-    teacher = _get_teacher(callback.from_user.id)
+    telegram_id = callback.from_user.id
+    if _is_student(telegram_id):
+        counts = _delete_student_personal_data(telegram_id)
+        await callback.message.answer(
+            _format_student_delete_counts(texts.DELETE_MY_DATA_STUDENT_DONE, counts)
+        )
+        await callback.answer()
+        return
+
+    teacher = _get_teacher(telegram_id)
     if teacher is None:
         await callback.answer()
         return
-    counts = _delete_personal_data(teacher["id"], callback.from_user.id)
+    counts = _delete_personal_data(teacher["id"], telegram_id)
     await callback.message.answer(_format_delete_my_data_counts(texts.DELETE_MY_DATA_DONE, counts))
     await callback.answer()
 
