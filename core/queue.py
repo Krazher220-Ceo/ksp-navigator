@@ -121,6 +121,12 @@ def _build_claim_query(db_path=None) -> str:
     cases = "\n".join(f"WHEN {i + 1} THEN {delay}" for i, delay in enumerate(RETRY_DELAYS_SECONDS))
     max_delay = RETRY_DELAYS_SECONDS[-1]
     if using_supabase(db_path):
+        # .strip() обязателен: RPC ksp_execute_sql на стороне Supabase
+        # проверяет, с какого ключевого слова начинается запрос, и не
+        # прощает ведущий перевод строки от отступа f-строки — с ним
+        # 400 Bad Request "Разрешены только SELECT, WITH, INSERT, UPDATE
+        # и DELETE" на каждом вызове (найдено вживую при перезапуске бота
+        # после блока Н1: claim_next не забирал ни одной задачи).
         return f"""
             UPDATE tasks
             SET status = 'processing', updated_at = CURRENT_TIMESTAMP
@@ -141,7 +147,7 @@ def _build_claim_query(db_path=None) -> str:
             )
             AND status = 'pending'
             RETURNING *
-        """
+        """.strip()
     return f"""
         UPDATE tasks
         SET status = 'processing', updated_at = CURRENT_TIMESTAMP
@@ -162,7 +168,7 @@ def _build_claim_query(db_path=None) -> str:
         )
         AND status = 'pending'
         RETURNING *;
-    """
+    """.strip()
 
 
 _CLAIM_QUERY = _build_claim_query()

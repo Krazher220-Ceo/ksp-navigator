@@ -12,12 +12,14 @@ from pathlib import Path
 
 import pytest
 
+from core.config import settings
 from core.db import execute, init_db, query, transaction
 from core.queue import (
     MAX_RETRIES,
     RETRY_DELAYS_SECONDS,
     STUCK_PROCESSING_MINUTES_BY_TYPE,
     QueueWorker,
+    _build_claim_query,
     claim_next,
     complete,
     enqueue,
@@ -48,6 +50,24 @@ def _age_updated_at(task_id: str, seconds_ago: int, db_path) -> None:
 
 
 # --- Б7.1: базовые примитивы ---
+
+
+@pytest.mark.parametrize("db_backend", ["sqlite", "supabase"])
+def test_build_claim_query_has_no_leading_or_trailing_whitespace(db_backend):
+    """Регресс: RPC ksp_execute_sql на стороне Supabase отклоняет запрос
+    с 400 Bad Request, если он начинается с перевода строки от отступа
+    f-строки — заметно только на реальном проде, SQLite к пробелам
+    равнодушен, поэтому баг не ловился тестами до сих пор (найдено при
+    перезапуске бота после блока Н1, PLAN.md)."""
+    original = settings.db_backend
+    object.__setattr__(settings, "db_backend", db_backend)
+    try:
+        sql = _build_claim_query()
+    finally:
+        object.__setattr__(settings, "db_backend", original)
+
+    assert sql == sql.strip()
+    assert sql.upper().startswith("UPDATE")
 
 
 def test_enqueue_creates_pending_task(db_path):
