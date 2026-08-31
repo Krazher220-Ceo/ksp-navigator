@@ -85,7 +85,7 @@ from bot.states import Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKS
 from core import ksp_generator as ksp_generator_module
 from core.config import settings
 from core.ksp_generator import MAX_VIDY_DEYATELNOSTI
-from core.db import execute, init_db, query
+from core.db import SupabaseDatabaseError, execute, init_db, query
 from core.konspekt_generator import CELI_NOT_STATED_NOTE, KonspektGenerationError
 from core.limits import get_usage_today, record_usage
 from core.pdf_export import PdfExportError
@@ -128,11 +128,22 @@ def isolated_env(tmp_path):
     object.__setattr__(settings, "db_backend", "sqlite")
     object.__setattr__(settings, "uploads_dir", uploads_dir)
     object.__setattr__(settings, "generated_dir", generated_dir)
+    # Э3: has_given_consent кэширует положительный ответ в module-level
+    # set внутри bot/handlers.py — без сброса между тестами telegram_user_id,
+    # once закэшированный в одном тесте (своя, временная SQLite), молча
+    # считался бы согласившимся и в следующем тесте с чистой базой того
+    # же tmp_path, но другим содержимым. Чистим и до, и после — на случай
+    # теста, который проверяет саму утечку кэша (падение при откате
+    # правки — часть КГ этого блока).
+    from bot.handlers import _consent_given_cache
+
+    _consent_given_cache.clear()
     try:
         yield {"db_path": db_path, "uploads_dir": uploads_dir, "generated_dir": generated_dir}
     finally:
         for key, value in originals.items():
             object.__setattr__(settings, key, value)
+        _consent_given_cache.clear()
 
 
 def test_isolated_env_uses_sqlite_not_supabase(isolated_env):
@@ -404,6 +415,80 @@ async def test_consent_gate_allows_everything_once_consented(isolated_env):
     await _consent_gate(dummy, message, {})
 
     assert calls == [message]
+
+
+# --- Э3: положительный ответ has_given_consent кэшируется в памяти ---
+
+
+async def test_has_given_consent_caches_positive_answer(isolated_env):
+    from bot.handlers import _consent_given_cache
+
+    record_consent(709)
+    assert 709 in _consent_given_cache
+
+    # строку в базе убрали в обход record_consent (например, ручным SQL) —
+    # кэш продолжает отвечать "да", это и есть смысл кэширования только
+    # положительного ответа
+    execute("DELETE FROM consents WHERE telegram_user_id = ?", (709,))
+    assert has_given_consent(709) is True
+
+
+async def test_has_given_consent_does_not_cache_negative_answer(isolated_env):
+    from bot.handlers import _consent_given_cache
+
+    assert has_given_consent(710) is False
+    assert 710 not in _consent_given_cache
+
+    # согласие появилось в базе позже (другим процессом/путём) — следующая
+    # проверка обязана его увидеть, а не молчать про старый отказ
+    execute("INSERT INTO consents (telegram_user_id, given_at) VALUES (?, CURRENT_TIMESTAMP)", (710,))
+    assert has_given_consent(710) is True
+
+
+# --- Э3: недоступность базы не пропускает вперёд, а честно сообщает ---
+
+
+async def test_consent_gate_reports_db_unavailable_for_message(isolated_env, monkeypatch):
+    import bot.handlers as handlers_module
+
+    def _boom(telegram_user_id, db_path=None):
+        raise SupabaseDatabaseError("Supabase недоступна")
+
+    monkeypatch.setattr(handlers_module, "has_given_consent", _boom)
+
+    calls = []
+
+    async def dummy(event, data):
+        calls.append(event)
+
+    message = FakeMessage(text="что угодно", user_id=711)
+    result = await _consent_gate(dummy, message, {})
+
+    assert calls == []  # НЕ пропущен вперёд "на всякий случай"
+    assert result is None
+    assert message.sent[-1]["text"] == texts.CONSENT_CHECK_UNAVAILABLE
+
+
+async def test_consent_gate_reports_db_unavailable_for_callback(isolated_env, monkeypatch):
+    import bot.handlers as handlers_module
+
+    def _boom(telegram_user_id, db_path=None):
+        raise SupabaseDatabaseError("Supabase недоступна")
+
+    monkeypatch.setattr(handlers_module, "has_given_consent", _boom)
+
+    calls = []
+
+    async def dummy(event, data):
+        calls.append(event)
+
+    callback = FakeCallbackQuery(data="gen_confirm", message=FakeMessage(), user_id=712)
+    result = await _consent_gate(dummy, callback, {})
+
+    assert calls == []
+    assert result is None
+    assert callback.message.sent[-1]["text"] == texts.CONSENT_CHECK_UNAVAILABLE
+    assert len(callback.answered) == 1  # спиннер закрыт, не висит
 
 
 # =====================================================================
@@ -1436,6 +1521,24 @@ async def test_delete_my_data_confirm_deletes_rows_and_files_keeps_teacher(isola
     assert query("SELECT * FROM incidents")
 
     assert "Готово" in callback.message.sent[-1]["text"]
+
+
+async def test_delete_my_data_confirm_also_revokes_consent(isolated_env, tmp_path):
+    """Э3: удаление данных — это и отзыв согласия, и сброс кэша
+    has_given_consent, иначе следующее сообщение прошло бы _consent_gate
+    без проверки до перезапуска процесса."""
+    from bot.handlers import _consent_given_cache
+
+    paths = await _seed_personal_data(954, tmp_path)
+    record_consent(954)
+    assert 954 in _consent_given_cache
+
+    callback = FakeCallbackQuery(data="delete_my_data_confirm", message=FakeMessage(), user_id=954)
+    await delete_my_data_confirmed(callback)
+
+    assert query("SELECT * FROM consents WHERE telegram_user_id = ?", (954,)) == []
+    assert 954 not in _consent_given_cache
+    assert has_given_consent(954) is False
 
 
 async def test_delete_my_data_cancel_deletes_nothing(isolated_env, tmp_path):

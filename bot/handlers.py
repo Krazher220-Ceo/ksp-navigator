@@ -53,7 +53,7 @@ from bot.navigation import go_back, go_to
 from bot.states import Generate, GenerateKTP, Konspekt, TeacherProfile, UploadKSP, UploadKTP, UploadTemplate
 from core.config import settings
 from core.dashboard import collect as collect_dashboard
-from core.db import execute, query
+from core.db import SupabaseDatabaseError, execute, query
 from core.generation_defaults import collect as collect_generation_defaults
 from core.limits import (
     DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_token_limit,
@@ -113,13 +113,30 @@ def _has_style_profile(teacher_id: int, db_path=None) -> bool:
     return bool(rows)
 
 
+# Э3 (PLAN.md): положительный ответ has_given_consent кэшируется в памяти
+# процесса — раньше _consent_gate (ниже) ходил в Supabase на КАЖДОЕ
+# входящее сообщение и нажатие кнопки, хотя согласие, однажды данное, само
+# по себе не отзывается. Кэшируется ТОЛЬКО "дано": "не дано" не кладётся в
+# кэш и перепроверяется каждый раз — иначе отозванное через
+# /delete_my_data согласие продолжало бы молча считаться данным до
+# перезапуска процесса. Обычный set рядом с функцией, без библиотек и
+# TTL — процесс и так перезапускается launchd, этого достаточно.
+_consent_given_cache: set[int] = set()
+
+
 def has_given_consent(telegram_user_id: int, db_path=None) -> bool:
     """Ю3: есть ли строка в consents — отдельной таблице, не в teachers
-    (см. storage/schema.sql, там же полное обоснование)."""
+    (см. storage/schema.sql, там же полное обоснование). Положительный
+    ответ кэшируется в памяти процесса (Э3, см. _consent_given_cache)."""
+    if telegram_user_id in _consent_given_cache:
+        return True
     rows = query(
         "SELECT 1 FROM consents WHERE telegram_user_id = ?", (telegram_user_id,), db_path=db_path
     )
-    return bool(rows)
+    given = bool(rows)
+    if given:
+        _consent_given_cache.add(telegram_user_id)
+    return given
 
 
 def record_consent(telegram_user_id: int, db_path=None) -> None:
@@ -129,6 +146,7 @@ def record_consent(telegram_user_id: int, db_path=None) -> None:
         (telegram_user_id,),
         db_path=db_path,
     )
+    _consent_given_cache.add(telegram_user_id)
 
 
 def _check_file_size(document) -> str | None:
@@ -182,10 +200,29 @@ async def _consent_gate(handler, event, data):
         if text.split()[0:1] == ["/start"]:
             return await handler(event, data)
 
-    if has_given_consent(from_user.id):
+    target = event.message if is_callback else event
+
+    try:
+        consented = has_given_consent(from_user.id)
+    except SupabaseDatabaseError:
+        # Э3: недоступность базы НЕ пропускает пользователя вперёд "на
+        # всякий случай" — это значило бы дать работать без проверки
+        # согласия, ровно то, что запрещает Ю3. Честно говорим, что
+        # временно не можем ответить, а не молчим и не делаем вид, что
+        # всё в порядке.
+        logger.warning(
+            "_consent_gate: не удалось проверить согласие telegram_user_id=%s — база недоступна",
+            from_user.id,
+            exc_info=True,
+        )
+        await target.answer(texts.CONSENT_CHECK_UNAVAILABLE)
+        if is_callback:
+            await event.answer()
+        return None
+
+    if consented:
         return await handler(event, data)
 
-    target = event.message if is_callback else event
     await target.answer(texts.CONSENT_REQUIRED_REDIRECT)
     if is_callback:
         await event.answer()
@@ -1998,6 +2035,13 @@ async def cmd_history(message: Message) -> None:
 # статистика и журнал инцидентов, персональных данных в них нет, не
 # удаляются (сказано прямо в тексте подтверждения, не молчанием).
 #
+# Блок Э3 добавил сюда же удаление строки consents: удаление данных —
+# это и есть отзыв согласия по тем же статьям 18/24/25, которые прямо
+# выше в этом комментарии, а без удаления самой строки нечего было бы
+# держать в синхронизации с _consent_given_cache. Следствие для
+# пользователя прямо в тексте подтверждения: после удаления согласие
+# нужно будет принять заново.
+#
 # Файлы, загруженные для /upload_ksp, не удаляются автоматически после
 # разбора (в отличие от аудио) — их пути нигде не хранятся, кроме
 # payload задач parse_ksp в tasks. Отдельной таблицы под них в схеме
@@ -2045,7 +2089,15 @@ def _delete_personal_data(teacher_id: int, telegram_user_id: int) -> dict:
     иначе останутся файлы-сироты, на которые уже никто не ссылается
     (Ю2, ловушка). Внутри базы — konspekty раньше transcripts: у
     konspekty.transcript_id внешний ключ на transcripts, удаление
-    родителя первым упадёт на FOREIGN KEY (что в SQLite, что в Postgres)."""
+    родителя первым упадёт на FOREIGN KEY (что в SQLite, что в Postgres).
+
+    Э3: удаление данных — это и есть отзыв согласия (статьи 18, 24, 25
+    Закона о ПДн, те же, что в основании блока Ю2: "данные подлежат
+    уничтожению... по отзыву согласия; субъект вправе отозвать
+    согласие"), поэтому здесь же удаляется строка consents и запись
+    выкидывается из _consent_given_cache — иначе кэш продолжал бы
+    считать согласие данным до перезапуска процесса, а следующее
+    сообщение пользователя прошло бы _consent_gate без проверки."""
     counts = _count_personal_data(teacher_id, telegram_user_id)
 
     for path_str in _uploaded_ksp_file_paths(telegram_user_id):
@@ -2061,6 +2113,8 @@ def _delete_personal_data(teacher_id: int, telegram_user_id: int) -> dict:
 
     execute("DELETE FROM transcripts WHERE teacher_id = ?", (teacher_id,))
     execute("DELETE FROM style_profiles WHERE teacher_id = ?", (teacher_id,))
+    execute("DELETE FROM consents WHERE telegram_user_id = ?", (telegram_user_id,))
+    _consent_given_cache.discard(telegram_user_id)
 
     return counts
 
