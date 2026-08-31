@@ -362,6 +362,100 @@ async def _send_student_home(message: Message, telegram_id: int) -> None:
     await message.answer(texts.STUDENT_HOME_WITH_CLASSES.format(classes_list=listing), reply_markup=ReplyKeyboardRemove())
 
 
+# =====================================================================
+# Находка 1 AUDIT.md — педагогические команды не существуют для ученика.
+#
+# Требование блока У3 (PLAN.md) дословно: «Ученику доступны только его
+# команды. Педагогические (/generate, /ktp, /upload) для него не
+# существуют — не "нет доступа", а не показываются». До этой правки
+# роль не проверял ни один хендлер, кроме cmd_start: ребёнок, набравший
+# /menu, получал полное меню педагога, а подсказка «Сначала заведите
+# профиль: /teacher» из _require_teacher действительно заводила ему
+# профиль педагога — после чего он мог создать класс, выдать код
+# приглашения другим детям и тратить генерации.
+#
+# Сделано тем же способом, что _consent_gate выше: одно место применения
+# правила, а не проверка в каждом из ~20 хендлеров (та же причина —
+# ловушка 2.6: один забытый хендлер, и правило молча не выполняется
+# именно там). Регистрация ПОСЛЕ _consent_gate, поэтому согласие
+# проверяется первым, а роль — вторым.
+#
+# Проверяются только точки входа педагога: команды не из списка
+# разрешённых ученику и тексты кнопок постоянного меню. Свободный текст
+# (код приглашения, подпись к фото) пропускается без единого запроса к
+# базе — иначе на каждое сообщение ученика лёг бы лишний поход в
+# Supabase, ровно то, от чего уходил блок Э3.
+#
+# Callback-кнопки не фильтруются сознательно: inline-клавиатуры педагога
+# ученику никто не присылает, а те, где идентификатор приходит из
+# callback_data, и так перепроверяют владение (блок У2).
+# =====================================================================
+
+_STUDENT_ALLOWED_COMMANDS = {"start", "join", "sverka", "cancel", "back", "delete_my_data"}
+
+
+def _command_name(text: str) -> str | None:
+    """"/generate@my_bot тема" -> "generate"; не команда -> None."""
+    if not text.startswith("/"):
+        return None
+    first_word = text.split(maxsplit=1)[0]
+    return first_word[1:].split("@", 1)[0].lower() or None
+
+
+def _is_teacher_entry_point(text: str) -> bool:
+    """Сообщение — попытка воспользоваться функцией педагога?"""
+    command = _command_name(text)
+    if command is not None:
+        return command not in _STUDENT_ALLOWED_COMMANDS
+    return text in keyboards.MAIN_MENU_BUTTON_TEXTS
+
+
+async def _student_gate(handler, event, data):
+    """Не пускает ученика в педагогические хендлеры.
+
+    Различает Message и CallbackQuery по наличию атрибутов, а не через
+    isinstance — по той же причине, что и _consent_gate: тесты дублируют
+    события лёгкими объектами, настоящие классы aiogram там не
+    используются.
+    """
+    from_user = getattr(event, "from_user", None)
+    if from_user is None:
+        return await handler(event, data)
+
+    is_callback = hasattr(event, "data") and hasattr(event, "message")
+    if is_callback:
+        return await handler(event, data)
+
+    text = getattr(event, "text", None) or ""
+    if not _is_teacher_entry_point(text):
+        return await handler(event, data)
+
+    try:
+        student = _is_student(from_user.id)
+    except SupabaseDatabaseError:
+        logger.warning(
+            "_student_gate: не удалось определить роль telegram_user_id=%s — база недоступна",
+            from_user.id,
+            exc_info=True,
+        )
+        await event.answer(texts.ROLE_CHECK_UNAVAILABLE)
+        return None
+
+    if not student:
+        return await handler(event, data)
+
+    # Ученику показываем не отказ в доступе, а то, что он действительно
+    # может: его классы и /sverka. Клавиатура педагога при этом убирается
+    # (ReplyKeyboardRemove внутри _send_student_home) — если она осталась
+    # у него с прошлых версий бота, здесь она и исчезнет.
+    await event.answer(texts.STUDENT_TEACHER_COMMAND_UNAVAILABLE)
+    await _send_student_home(event, from_user.id)
+    return None
+
+
+router.message.outer_middleware(_student_gate)
+
+
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()

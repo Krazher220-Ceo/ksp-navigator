@@ -24,6 +24,7 @@ from bot.handlers import (
     back_button_pressed,
     back_callback_pressed,
     _consent_gate,
+    _student_gate,
     cancel_button_pressed,
     class_create_confirmed,
     class_create_started,
@@ -1897,6 +1898,146 @@ async def test_consent_gate_exempts_role_and_student_consent_callbacks(isolated_
         callback = FakeCallbackQuery(data=data, message=FakeMessage(), user_id=830)
         await _consent_gate(dummy, callback, {})
         assert calls == [callback], f"{data} не должен блокироваться _consent_gate"
+
+
+# =====================================================================
+# Находка 1 AUDIT.md — _student_gate: педагогические команды для ученика
+# не существуют. Как и у _consent_gate выше, прямые вызовы хендлеров
+# минуют router и middleware, поэтому гейт вызывается здесь сам по себе.
+# =====================================================================
+
+
+def _register_student(telegram_id: int, name: str = "Ученик Тестовый") -> None:
+    execute("INSERT INTO students (telegram_id, name) VALUES (?, ?)", (telegram_id, name))
+    record_consent(telegram_id)
+
+
+async def _pass_through_student_gate(text: str, user_id: int):
+    """Возвращает (список пропущенных событий, само событие)."""
+    calls = []
+
+    async def dummy(event, data):
+        calls.append(event)
+
+    message = FakeMessage(text=text, user_id=user_id)
+    await _student_gate(dummy, message, {})
+    return calls, message
+
+
+async def test_student_gate_blocks_menu_command_for_student(isolated_env):
+    """Главный сценарий находки: ребёнок набирает /menu и получает
+    клавиатуру педагога со всеми его функциями."""
+    _register_student(840)
+    calls, message = await _pass_through_student_gate("/menu", 840)
+
+    assert calls == []
+    assert message.sent[0]["text"] == texts.STUDENT_TEACHER_COMMAND_UNAVAILABLE
+    assert message.sent[-1]["reply_markup"] is not keyboards.MAIN_MENU
+
+
+async def test_student_gate_blocks_teacher_command_for_student(isolated_env):
+    """Вторая половина находки: бот сам называл ребёнку команду, которой
+    система обходится, и после неё ребёнок становился педагогом."""
+    _register_student(841)
+    calls, message = await _pass_through_student_gate("/teacher", 841)
+
+    assert calls == []
+    assert query("SELECT 1 FROM teachers WHERE telegram_user_id = 841") == []
+
+
+async def test_student_gate_blocks_every_teacher_command(isolated_env):
+    _register_student(842)
+    for command in ("/generate", "/generate_ktp", "/upload_ksp", "/upload_ktp", "/konspekt",
+                    "/templates", "/upload_template", "/status", "/history", "/class",
+                    "/dashboard", "/admin"):
+        calls, _ = await _pass_through_student_gate(command, 842)
+        assert calls == [], f"{command} не должна доходить до хендлера у ученика"
+
+
+async def test_student_gate_blocks_menu_buttons_for_student(isolated_env):
+    """Кнопки постоянного меню — такая же точка входа педагога, как
+    команды: menu_button_pressed раздавал их кому угодно."""
+    _register_student(843)
+    for button_text in sorted(keyboards.MAIN_MENU_BUTTON_TEXTS):
+        calls, _ = await _pass_through_student_gate(button_text, 843)
+        assert calls == [], f"кнопка {button_text!r} не должна доходить до хендлера у ученика"
+
+
+async def test_student_gate_allows_student_own_commands(isolated_env):
+    _register_student(844)
+    for command in ("/start", "/join", "/sverka", "/cancel", "/back", "/delete_my_data"):
+        calls, _ = await _pass_through_student_gate(command, 844)
+        assert calls != [], f"{command} — команда ученика, гейт не должен её блокировать"
+
+
+async def test_student_gate_allows_free_text_of_student_dialogs(isolated_env):
+    """Код приглашения, подпись к фото и прочий свободный текст ученика
+    гейт пропускает и в базу за ролью при этом не ходит."""
+    _register_student(845)
+    calls, _ = await _pass_through_student_gate("ABCDEF", 845)
+    assert calls != []
+
+
+async def test_student_gate_does_not_touch_teacher(isolated_env):
+    """Страховка: педагог, который дал согласие, но не проходил /teacher,
+    обязан продолжать работать — гейт про роль, а не про профиль."""
+    record_consent(846)
+    for command in ("/menu", "/generate", "/teacher"):
+        calls, _ = await _pass_through_student_gate(command, 846)
+        assert calls != [], f"{command} у педагога не должна блокироваться"
+
+
+async def test_student_gate_does_not_query_db_for_ordinary_text(isolated_env, monkeypatch):
+    """Э3: лишнего похода в Supabase на каждое сообщение быть не должно —
+    роль спрашивается только на точке входа педагога."""
+    import bot.handlers as handlers_module
+
+    def _boom(telegram_id, db_path=None):
+        raise AssertionError("гейт не должен спрашивать роль на обычном тексте")
+
+    monkeypatch.setattr(handlers_module, "_is_student", _boom)
+    calls, _ = await _pass_through_student_gate("просто текст", 847)
+    assert calls != []
+
+
+async def test_student_gate_reports_db_unavailable_instead_of_letting_through(isolated_env, monkeypatch):
+    """Э3, та же сторона отказа: не зная роли, вперёд не пропускаем."""
+    import bot.handlers as handlers_module
+
+    def _boom(telegram_id, db_path=None):
+        raise SupabaseDatabaseError("Supabase недоступна")
+
+    monkeypatch.setattr(handlers_module, "_is_student", _boom)
+    calls, message = await _pass_through_student_gate("/menu", 848)
+
+    assert calls == []
+    assert message.sent[-1]["text"] == texts.ROLE_CHECK_UNAVAILABLE
+
+
+async def test_student_gate_lists_classes_instead_of_teacher_menu(isolated_env):
+    """Ученику вместо меню педагога — его собственное домашнее сообщение."""
+    code = await _create_class_and_get_code(849, name="11 Б")
+    _register_student(850)
+    state = _state()
+    await cmd_join(FakeMessage(text="/join", user_id=850), state)
+    await student_join_code_received(FakeMessage(text=code, user_id=850), state)
+    await student_join_confirmed(
+        FakeCallbackQuery(data="student_join_confirm", message=FakeMessage(user_id=850), user_id=850), state
+    )
+
+    calls, message = await _pass_through_student_gate("/menu", 850)
+    assert calls == []
+    assert "11 Б" in message.sent[-1]["text"]
+
+
+def test_command_name_parses_mention_and_arguments():
+    from bot.handlers import _command_name
+
+    assert _command_name("/generate") == "generate"
+    assert _command_name("/generate@ksp_navigator_bot") == "generate"
+    assert _command_name("/generate тема урока") == "generate"
+    assert _command_name("обычный текст") is None
+    assert _command_name("") is None
 
 
 # =====================================================================
