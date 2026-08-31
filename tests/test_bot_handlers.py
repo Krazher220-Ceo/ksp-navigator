@@ -12,6 +12,7 @@ finally (fixture isolated_env). Реальные Telegram/LLM вызовы не
 
 import json
 import re
+import uuid
 from pathlib import Path
 
 import pytest
@@ -87,6 +88,9 @@ from bot.handlers import (
     role_student_chosen,
     role_teacher_chosen,
     router,
+    send_konspekt_class_chosen,
+    send_konspekt_requested,
+    send_konspekt_student_chosen,
     sverka_class_chosen,
     sverka_lesson_chosen,
     sverka_photo_received,
@@ -2029,6 +2033,192 @@ async def test_sverka_photo_too_large_is_rejected_before_download(isolated_env):
 
     assert query("SELECT * FROM tasks WHERE type = 'sverka_tetradi'") == []
     assert bot.downloaded == []
+
+
+# =====================================================================
+# У5 (PLAN.md) — педагог отправляет конспект пропустившему ученику
+# =====================================================================
+
+
+async def _seed_student_konspekt(teacher_user_id: int, tmp_path, tema: str = "Импульс") -> dict:
+    """Заводит педагога и конспект в режиме 'student' (единственный
+    режим, который У5 разрешает отправлять) с настоящим файлом на диске."""
+    teacher_id = _create_teacher(teacher_user_id)
+    docx_path = tmp_path / "konspekt.docx"
+    docx_path.write_bytes(b"fake konspekt docx")
+    konspekt_id = str(uuid.uuid4())
+    execute(
+        "INSERT INTO konspekty (id, teacher_id, mode, tema, content_json, docx_path) "
+        "VALUES (?, ?, 'student', ?, '{}', ?)",
+        (konspekt_id, teacher_id, tema, str(docx_path)),
+    )
+    return {"teacher_id": teacher_id, "konspekt_id": konspekt_id, "docx_path": docx_path}
+
+
+async def _seed_teacher_mode_konspekt(teacher_user_id: int) -> dict:
+    """Голая расшифровка (режим 'teacher', блок К0) — У5 обязан
+    отказаться её отправлять: это и есть полная запись урока."""
+    teacher_id = _create_teacher(teacher_user_id)
+    konspekt_id = str(uuid.uuid4())
+    execute(
+        "INSERT INTO konspekty (id, teacher_id, mode, tema, content_json) "
+        "VALUES (?, ?, 'teacher', 'Расшифровка урока', '{}')",
+        (konspekt_id, teacher_id),
+    )
+    return {"teacher_id": teacher_id, "konspekt_id": konspekt_id}
+
+
+async def test_konspekt_final_message_has_both_ksp_and_send_buttons(isolated_env, monkeypatch):
+    """У5: кнопка «Отправить ученику» появляется на той же карточке, что
+    и «Собрать КСП по этому конспекту», не заменяет её."""
+    teacher_id = _create_teacher(960)
+    execute(
+        "INSERT INTO transcripts (id, teacher_id, source, text, duration_seconds, language) "
+        "VALUES ('tr-960', ?, 'audio', 'расшифровка', 47, 'ru')",
+        (teacher_id,),
+    )
+
+    async def fake_generate_konspekt(transcript_text, *, llm_client=None, **kwargs):
+        return dict(_SAMPLE_KONSPEKT_CONTENT)
+
+    monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
+
+    bot = FakeBot()
+    handler = make_konspekt_handler(bot)
+    task = {
+        "id": "k-960",
+        "type": "generate_konspekt",
+        "telegram_chat_id": 960,
+        "retries": 0,
+        "payload": {"teacher_id": teacher_id, "transcript_id": "tr-960"},
+    }
+    result = await handler(task)
+
+    last_markup = bot.sent_messages[-1][2]
+    assert last_markup.inline_keyboard[0][0].text == texts.KSP_FROM_KONSPEKT_BUTTON
+    assert last_markup.inline_keyboard[1][0].text == texts.SEND_KONSPEKT_BUTTON
+    assert last_markup.inline_keyboard[1][0].callback_data == f"sk:{result['konspekt_id']}"
+
+
+async def test_send_konspekt_teacher_mode_is_rejected(isolated_env):
+    """У5, дословно (через MASTER.md 0.9 п.3): голую расшифровку
+    (режим 'teacher') отправлять ученику нельзя — это и есть полная
+    запись урока."""
+    seed = await _seed_teacher_mode_konspekt(961)
+    callback = FakeCallbackQuery(data=f"sk:{seed['konspekt_id']}", message=FakeMessage(user_id=961), user_id=961)
+    await send_konspekt_requested(callback)
+    assert callback.answered[-1]["text"] == texts.SEND_KONSPEKT_NOT_FOUND
+
+
+async def test_send_konspekt_no_classes_tells_teacher_to_create_one(isolated_env, tmp_path):
+    seed = await _seed_student_konspekt(962, tmp_path)
+    callback = FakeCallbackQuery(data=f"sk:{seed['konspekt_id']}", message=FakeMessage(user_id=962), user_id=962)
+    await send_konspekt_requested(callback)
+    assert callback.message.sent[-1]["text"] == texts.SEND_KONSPEKT_NO_CLASSES
+
+
+async def test_send_konspekt_single_class_skips_straight_to_student_picker(isolated_env, tmp_path):
+    seed = await _seed_student_konspekt(963, tmp_path)
+    execute(
+        "INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '10 А', 'AAA111')", (seed["teacher_id"],)
+    )
+    execute("INSERT INTO students (telegram_id, name) VALUES (964, 'Ученик Тестов')")
+    class_id = query("SELECT id FROM classes")[0]["id"]
+    student_id = query("SELECT id FROM students")[0]["id"]
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (class_id, student_id))
+
+    callback = FakeCallbackQuery(data=f"sk:{seed['konspekt_id']}", message=FakeMessage(user_id=963), user_id=963)
+    await send_konspekt_requested(callback)
+
+    assert callback.message.sent[-1]["text"] == texts.SEND_KONSPEKT_ASK_STUDENT
+    button = callback.message.sent[-1]["reply_markup"].inline_keyboard[0][0]
+    assert button.text == "Ученик Тестов"
+    assert button.callback_data == f"sks:{seed['konspekt_id']}:{student_id}"
+
+
+async def test_send_konspekt_multiple_classes_asks_which_first(isolated_env, tmp_path):
+    seed = await _seed_student_konspekt(965, tmp_path)
+    execute("INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '10 А', 'AAA111')", (seed["teacher_id"],))
+    execute("INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '10 Б', 'BBB222')", (seed["teacher_id"],))
+
+    callback = FakeCallbackQuery(data=f"sk:{seed['konspekt_id']}", message=FakeMessage(user_id=965), user_id=965)
+    await send_konspekt_requested(callback)
+    assert callback.message.sent[-1]["text"] == texts.SEND_KONSPEKT_ASK_CLASS
+
+
+async def test_send_konspekt_class_with_no_members(isolated_env, tmp_path):
+    seed = await _seed_student_konspekt(966, tmp_path)
+    execute("INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '10 А', 'AAA111')", (seed["teacher_id"],))
+    class_id = query("SELECT id FROM classes")[0]["id"]
+
+    callback = FakeCallbackQuery(
+        data=f"skc:{seed['konspekt_id']}:{class_id}", message=FakeMessage(user_id=966), user_id=966
+    )
+    await send_konspekt_class_chosen(callback)
+    assert callback.message.sent[-1]["text"] == texts.SEND_KONSPEKT_NO_MEMBERS
+
+
+async def test_send_konspekt_student_chosen_sends_document_with_caption(isolated_env, tmp_path):
+    seed = await _seed_student_konspekt(967, tmp_path, tema="Импульс")
+    execute("INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '10 А', 'AAA111')", (seed["teacher_id"],))
+    execute("INSERT INTO students (telegram_id, name) VALUES (968, 'Ученик Тестов')")
+    class_id = query("SELECT id FROM classes")[0]["id"]
+    student_id = query("SELECT id FROM students")[0]["id"]
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (class_id, student_id))
+
+    bot = FakeBot()
+    callback = FakeCallbackQuery(
+        data=f"sks:{seed['konspekt_id']}:{student_id}", message=FakeMessage(user_id=967), user_id=967
+    )
+    await send_konspekt_student_chosen(callback, bot)
+
+    assert len(bot.sent_documents) == 1
+    sent = bot.sent_documents[0]
+    assert sent["chat_id"] == 968
+    assert sent["caption"] == texts.SEND_KONSPEKT_CAPTION.format(teacher_name="Тестов Тест", tema="Импульс")
+    assert callback.message.sent[-1]["text"] == texts.SEND_KONSPEKT_SENT.format(student_name="Ученик Тестов")
+
+
+async def test_send_konspekt_to_student_of_another_teacher_is_rejected(isolated_env, tmp_path):
+    """Регрессия: student_id в callback_data не привязан к конкретному
+    классу — без перепроверки владения через class_members/classes
+    подделанный student_id отправил бы конспект чужому ученику любого
+    учителя в системе."""
+    seed = await _seed_student_konspekt(969, tmp_path)
+    other_teacher_id = _create_teacher(970)
+    execute("INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '9 В', 'ZZZ999')", (other_teacher_id,))
+    execute("INSERT INTO students (telegram_id, name) VALUES (971, 'Чужой Ученик')")
+    other_class_id = query("SELECT id FROM classes WHERE teacher_id = ?", (other_teacher_id,))[0]["id"]
+    other_student_id = query("SELECT id FROM students WHERE telegram_id = 971")[0]["id"]
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (other_class_id, other_student_id))
+
+    bot = FakeBot()
+    callback = FakeCallbackQuery(
+        data=f"sks:{seed['konspekt_id']}:{other_student_id}", message=FakeMessage(user_id=969), user_id=969
+    )
+    await send_konspekt_student_chosen(callback, bot)
+
+    assert bot.sent_documents == []
+    assert callback.answered[-1]["text"] == texts.SEND_KONSPEKT_STUDENT_NOT_FOUND
+
+
+async def test_send_konspekt_missing_docx_file(isolated_env, tmp_path):
+    seed = await _seed_student_konspekt(972, tmp_path)
+    seed["docx_path"].unlink()  # файл пропал с диска
+    execute("INSERT INTO classes (teacher_id, name, invite_code) VALUES (?, '10 А', 'AAA111')", (seed["teacher_id"],))
+    execute("INSERT INTO students (telegram_id, name) VALUES (973, 'Ученик')")
+    class_id = query("SELECT id FROM classes")[0]["id"]
+    student_id = query("SELECT id FROM students")[0]["id"]
+    execute("INSERT INTO class_members (class_id, student_id) VALUES (?, ?)", (class_id, student_id))
+
+    bot = FakeBot()
+    callback = FakeCallbackQuery(
+        data=f"sks:{seed['konspekt_id']}:{student_id}", message=FakeMessage(user_id=972), user_id=972
+    )
+    await send_konspekt_student_chosen(callback, bot)
+
+    assert bot.sent_documents == []
+    assert callback.message.sent[-1]["text"] == texts.SEND_KONSPEKT_FILE_MISSING
 
 
 # =====================================================================

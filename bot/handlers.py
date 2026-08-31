@@ -1878,6 +1878,143 @@ async def _proceed_with_topic(message: Message, state: FSMContext, topic: str) -
         await _ask_generate_objective_code(message, state)
 
 
+# =====================================================================
+# У5 (PLAN.md) — педагог отправляет готовый конспект пропустившему
+# ученику. Кнопка «Отправить ученику» — на той же карточке готового
+# конспекта, что и «Собрать КСП по этому конспекту» (make_konspekt_handler,
+# ниже по файлу, в блоке обработчиков задач очереди).
+#
+# Решение принимает человек: ученик не может запросить конспект сам —
+# для этого нет ни одной команды, — и автоматической рассылки классу
+# нет и не появится в этом блоке (ловушка, дословно). Три шага
+# (класс -> ученик -> отправка) — обычные inline-кнопки без FSM, тем
+# же приёмом, что и у /sverka (блок У4): короче для короткого выбора,
+# не текстовый ввод.
+# =====================================================================
+
+
+def _get_owned_student_konspekt(konspekt_id: str, teacher_id: int, db_path=None) -> dict | None:
+    """Только mode='student' — учительский режим (голая расшифровка,
+    блок К0) отправлять ученику нельзя ни при каком условии: это и есть
+    полная запись урока, которую MASTER.md 0.9 п.3 запрещает выдавать."""
+    rows = query(
+        "SELECT id, teacher_id, tema, docx_path FROM konspekty WHERE id = ? AND teacher_id = ? AND mode = 'student'",
+        (konspekt_id, teacher_id),
+        db_path=db_path,
+    )
+    return dict(rows[0]) if rows else None
+
+
+def _class_members_for_teacher(class_id: int, teacher_id: int, db_path=None) -> list[dict]:
+    """JOIN на classes.teacher_id — тем же способом, что владение
+    конспектом выше, отсекает чужой class_id, даже если он пришёл в
+    callback_data подделанным."""
+    rows = query(
+        "SELECT s.id AS student_id, s.name AS name FROM class_members cm "
+        "JOIN students s ON s.id = cm.student_id "
+        "JOIN classes c ON c.id = cm.class_id "
+        "WHERE cm.class_id = ? AND c.teacher_id = ? ORDER BY cm.joined_at",
+        (class_id, teacher_id),
+        db_path=db_path,
+    )
+    return [dict(row) for row in rows]
+
+
+async def _show_send_konspekt_student_picker(message: Message, konspekt_id: str, class_id: int, teacher_id: int) -> None:
+    members = _class_members_for_teacher(class_id, teacher_id)
+    if not members:
+        await message.answer(texts.SEND_KONSPEKT_NO_MEMBERS)
+        return
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=m["name"] or texts.SEND_KONSPEKT_STUDENT_NO_NAME.format(id=m["student_id"]),
+                callback_data=f"sks:{konspekt_id}:{m['student_id']}",
+            )
+        ]
+        for m in members
+    ]
+    await message.answer(texts.SEND_KONSPEKT_ASK_STUDENT, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+
+
+@router.callback_query(F.data.startswith("sk:"))
+async def send_konspekt_requested(callback: CallbackQuery) -> None:
+    konspekt_id = callback.data.split(":", 1)[1]
+    teacher = _get_teacher(callback.from_user.id)
+    konspekt = _get_owned_student_konspekt(konspekt_id, teacher["id"]) if teacher else None
+    if konspekt is None:
+        await callback.answer(texts.SEND_KONSPEKT_NOT_FOUND, show_alert=True)
+        return
+
+    classes = query("SELECT id, name FROM classes WHERE teacher_id = ? ORDER BY created_at", (teacher["id"],))
+    if not classes:
+        await callback.message.answer(texts.SEND_KONSPEKT_NO_CLASSES)
+        await callback.answer()
+        return
+    if len(classes) == 1:
+        await _show_send_konspekt_student_picker(callback.message, konspekt_id, classes[0]["id"], teacher["id"])
+        await callback.answer()
+        return
+
+    rows = [
+        [InlineKeyboardButton(text=c["name"], callback_data=f"skc:{konspekt_id}:{c['id']}")] for c in classes
+    ]
+    await callback.message.answer(texts.SEND_KONSPEKT_ASK_CLASS, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("skc:"))
+async def send_konspekt_class_chosen(callback: CallbackQuery) -> None:
+    _, konspekt_id, class_id_text = callback.data.split(":", 2)
+    teacher = _get_teacher(callback.from_user.id)
+    konspekt = _get_owned_student_konspekt(konspekt_id, teacher["id"]) if teacher else None
+    if konspekt is None:
+        await callback.answer(texts.SEND_KONSPEKT_NOT_FOUND, show_alert=True)
+        return
+    await _show_send_konspekt_student_picker(callback.message, konspekt_id, int(class_id_text), teacher["id"])
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("sks:"))
+async def send_konspekt_student_chosen(callback: CallbackQuery, bot: Bot) -> None:
+    _, konspekt_id, student_id_text = callback.data.split(":", 2)
+    student_id = int(student_id_text)
+    teacher = _get_teacher(callback.from_user.id)
+    konspekt = _get_owned_student_konspekt(konspekt_id, teacher["id"]) if teacher else None
+    if konspekt is None:
+        await callback.answer(texts.SEND_KONSPEKT_NOT_FOUND, show_alert=True)
+        return
+
+    # Перепроверка владения студентом: student_id пришёл в callback_data
+    # от клиента — список кнопок его показал сам бот, отфильтрованным по
+    # классам ЭТОГО учителя, но доверять самому идентификатору без
+    # проверки нельзя (тот же принцип, что konspekt/class выше). Без
+    # этой проверки подделанный student_id отправил бы конспект чужому
+    # ученику любого учителя в системе.
+    student_rows = query(
+        "SELECT s.telegram_id AS telegram_id, s.name AS name FROM students s "
+        "JOIN class_members cm ON cm.student_id = s.id "
+        "JOIN classes c ON c.id = cm.class_id "
+        "WHERE s.id = ? AND c.teacher_id = ? LIMIT 1",
+        (student_id, teacher["id"]),
+    )
+    if not student_rows:
+        await callback.answer(texts.SEND_KONSPEKT_STUDENT_NOT_FOUND, show_alert=True)
+        return
+
+    if not konspekt["docx_path"] or not Path(konspekt["docx_path"]).exists():
+        await callback.message.answer(texts.SEND_KONSPEKT_FILE_MISSING)
+        await callback.answer()
+        return
+
+    caption = texts.SEND_KONSPEKT_CAPTION.format(teacher_name=teacher["name"], tema=konspekt["tema"])
+    await bot.send_document(student_rows[0]["telegram_id"], FSInputFile(konspekt["docx_path"]), caption=caption)
+
+    student_name = student_rows[0]["name"] or texts.SEND_KONSPEKT_STUDENT_NO_NAME.format(id=student_id)
+    await callback.message.answer(texts.SEND_KONSPEKT_SENT.format(student_name=student_name))
+    await callback.answer()
+
+
 @router.message(Generate.waiting_for_topic)
 async def generate_topic_received(message: Message, state: FSMContext) -> None:
     topic = (message.text or "").strip()
@@ -3516,11 +3653,14 @@ def make_konspekt_handler(bot: Bot):
 
         # К5: кнопка на ПОСЛЕДНЕМ текстовом сообщении (не на каждом — при
         # разбивке на несколько частей одна кнопка под всем конспектом
-        # достаточна).
+        # достаточна). У5: «Отправить ученику» — на той же карточке, второй
+        # кнопкой отдельным рядом (не тем же рядом с КСП — разные по весу
+        # действия, объединять в один ряд визуально их равняло бы).
         chunks = _split_for_telegram(format_konspekt_text(content))
         ksp_button = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text=texts.KSP_FROM_KONSPEKT_BUTTON, callback_data=f"ksp_from_konspekt:{konspekt_id}")]
+                [InlineKeyboardButton(text=texts.KSP_FROM_KONSPEKT_BUTTON, callback_data=f"ksp_from_konspekt:{konspekt_id}")],
+                [InlineKeyboardButton(text=texts.SEND_KONSPEKT_BUTTON, callback_data=f"sk:{konspekt_id}")],
             ]
         )
         for i, chunk in enumerate(chunks):

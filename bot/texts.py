@@ -726,3 +726,17 @@ KSP_FROM_KONSPEKT_LONG_TRANSCRIPT_WARNING = (
 
 KONSPEKT_DOCX_CAPTION = "Конспект: {tema}. Это рабочий материал, не отчётный документ — проверьте перед использованием."
 KONSPEKT_PDF_CAPTION = "То же самое, в PDF."
+
+# --- У5 (PLAN.md): педагог отправляет конспект пропустившему ученику ---
+
+SEND_KONSPEKT_BUTTON = "📤 Отправить ученику"
+SEND_KONSPEKT_NOT_FOUND = "Не нашёл этот конспект — возможно, он относится к другому профилю."
+SEND_KONSPEKT_NO_CLASSES = "У вас пока нет классов — создайте класс командой /class, чтобы было кому отправлять."
+SEND_KONSPEKT_ASK_CLASS = "В какой класс отправить?"
+SEND_KONSPEKT_NO_MEMBERS = "В этом классе пока нет ни одного ученика."
+SEND_KONSPEKT_ASK_STUDENT = "Кому отправить?"
+SEND_KONSPEKT_STUDENT_NO_NAME = "ученику #{id}"
+SEND_KONSPEKT_STUDENT_NOT_FOUND = "Этот ученик больше не найден."
+SEND_KONSPEKT_FILE_MISSING = "Файл конспекта больше не найден на диске, к сожалению."
+SEND_KONSPEKT_CAPTION = "Конспект от {teacher_name}, тема: {tema}."
+SEND_KONSPEKT_SENT = "Отправлено ученику: {student_name}."
