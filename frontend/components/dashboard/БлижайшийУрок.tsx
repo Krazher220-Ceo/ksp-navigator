@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { Button } from '@/components/Button';
 import { Chip } from '@/components/Chip';
 import { Icon } from '@/components/Icon';
@@ -47,12 +48,14 @@ export function БлижайшийУрок({ данные }: { данные: Д�
             {урок.topic}
           </h2>
           <div className="row" style={{ position: 'relative', gap: 10, marginTop: 'auto', paddingTop: 20 }}>
-            <Button
-              icon="mic" arrow
-              style={{ background: 'linear-gradient(180deg,#1ECBE4,#009FBB)', color: '#052A38', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.5),0 10px 22px -10px rgba(0,175,202,.85)' }}
-            >
-              Начать запись
-            </Button>
+            <Link href="/app/urok">
+              <Button
+                icon="mic" arrow
+                style={{ background: 'linear-gradient(180deg,#1ECBE4,#009FBB)', color: '#052A38', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.5),0 10px 22px -10px rgba(0,175,202,.85)' }}
+              >
+                Начать запись
+              </Button>
+            </Link>
             <Button icon="doc" style={{ background: 'rgba(255,255,255,.09)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.13)' }}>
               Собрать КСП заранее
             </Button>
@@ -74,12 +77,14 @@ export function БлижайшийУрок({ данные }: { данные: Д�
               : 'Пока профиля нет, показываем только общее: расход и живучесть сервера. Числа появятся вместе с КТП.'}
           </p>
           <div className="row" style={{ position: 'relative', gap: 10, marginTop: 'auto', paddingTop: 20 }}>
-            <Button
-              icon="mic" arrow
-              style={{ background: 'linear-gradient(180deg,#1ECBE4,#009FBB)', color: '#052A38', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.5),0 10px 22px -10px rgba(0,175,202,.85)' }}
-            >
-              Записать урок
-            </Button>
+            <Link href="/app/urok">
+              <Button
+                icon="mic" arrow
+                style={{ background: 'linear-gradient(180deg,#1ECBE4,#009FBB)', color: '#052A38', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.5),0 10px 22px -10px rgba(0,175,202,.85)' }}
+              >
+                Записать урок
+              </Button>
+            </Link>
           </div>
         </>
       )}

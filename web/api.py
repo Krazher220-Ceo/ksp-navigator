@@ -58,7 +58,17 @@ app.add_middleware(
     allow_origins=list(settings.cors_origins),
     allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Telegram-Init-Data"],
+    # Каждый заголовок, который кабинет отправляет сам, обязан быть здесь:
+    # предполётный запрос браузера сверяется именно с этим списком, и
+    # забытое имя выглядит как «сервер недоступен», а не как отказ. На
+    # X-Filename я на этом уже попался (блок Ф6).
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "X-Telegram-Init-Data",
+        "X-Filename",
+        "X-Konspekt-Mode",
+    ],
 )
 
 # Ф2: единый формат ошибки для /api/v1/*. Старые /api/* обработчики

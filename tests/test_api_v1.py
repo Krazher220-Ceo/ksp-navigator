@@ -216,6 +216,18 @@ def test_cors_список_берётся_из_config_а_не_прошит_в_к
     assert _cors_настройки()["allow_origins"] == list(settings.cors_origins)
 
 
+@pytest.mark.parametrize("заголовок", [
+    "Authorization", "Content-Type", "X-Telegram-Init-Data", "X-Filename", "X-Konspekt-Mode",
+])
+def test_cors_пропускает_каждый_заголовок_который_шлёт_кабинет(заголовок):
+    """
+    Предполётный запрос браузера сверяется ровно с этим списком. Забытое
+    имя выглядит для человека как «сервер недоступен» — так и случилось с
+    X-Filename при первой сборке загрузки записи урока.
+    """
+    assert заголовок in _cors_настройки()["allow_headers"]
+
+
 def test_cors_не_разрешает_куки():
     """Кабинет ходит с заголовком Authorization; куки включать нельзя —
     с ними allow_origins перестаёт быть настоящей границей."""

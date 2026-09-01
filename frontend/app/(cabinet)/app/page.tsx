@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '@/components/Button';
 import { Card } from '@/components/Card';
@@ -60,7 +61,7 @@ export default function DashboardPage() {
         title={обращение}
         searchPlaceholder="Тема, класс или код цели"
         hasAlerts={Boolean(данные && данные.queue.failed_7d > 0)}
-        action={<Button icon="mic" arrow>Записать урок</Button>}
+        action={<Link href="/app/urok"><Button icon="mic" arrow>Записать урок</Button></Link>}
       />
 
       <div className="body" style={{ display: 'grid', gridTemplateColumns: 'repeat(12,minmax(0,1fr))', gridTemplateRows: 'auto 1fr', gap: 14, minHeight: 0 }}>

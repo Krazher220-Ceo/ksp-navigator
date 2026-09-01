@@ -93,8 +93,81 @@ export type Дэшборд = {
   generated_at_label: string;
 };
 
+/** Ответ /api/v1/task/{id}. */
+export type Задача = {
+  task_id: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  type: string;
+  retries: number;
+  error?: string;
+  result?: { transcript_id?: string; konspekt_id?: string; mode?: string } | null;
+};
+
+/** Ответ /api/v1/konspekt/{id}. */
+export type Конспект = {
+  konspekt_id: string;
+  tema: string | null;
+  mode: string | null;
+  content: {
+    opornye_repliki?: string[];
+    konspekt_uchenika?: {
+      tema?: string;
+      celi?: string[];
+      glavnoe?: string[];
+      formuly?: { formula: string; znachenie: string }[];
+      primery?: string[];
+      terminy?: { termin: string; opredelenie: string }[];
+      voprosy_dlya_samoproverki?: string[];
+      domashnee_zadanie?: string;
+    };
+    transcript_text?: string;
+    tema?: string;
+  };
+  transcript: { text: string; duration_seconds: number | null } | null;
+  has_docx: boolean;
+};
+
+/**
+ * Отправка записи урока. Идёт телом запроса, а не multipart: так не
+ * понадобилась отдельная зависимость на сервере, а браузер отдаёт Blob
+ * как есть.
+ */
+export async function отправитьЗапись(
+  файл: Blob, имя: string, режим: 'student' | 'teacher',
+): Promise<{ task_id: string; status: string; size_bytes: number }> {
+  const шапка: Record<string, string> = {
+    'Content-Type': файл.type || 'application/octet-stream',
+    'X-Filename': имя,
+    'X-Konspekt-Mode': режим,
+  };
+  if (входПоПочтеНастроен()) {
+    const { data } = await supabase().auth.getSession();
+    if (data.session?.access_token) шапка.Authorization = `Bearer ${data.session.access_token}`;
+  }
+
+  let ответ: Response;
+  try {
+    ответ = await fetch(`${БАЗА}/api/v1/lesson/upload`, { method: 'POST', headers: шапка, body: файл });
+  } catch {
+    throw new ОшибкаApi('NETWORK', ТЕКСТЫ.API_SERVER_UNAVAILABLE, 0);
+  }
+  const разобрано = await ответ.json().catch(() => null);
+  if (!ответ.ok) {
+    const ошибка = (разобрано as { error?: { code?: string; message?: string } } | null)?.error;
+    throw new ОшибкаApi(ошибка?.code ?? 'INTERNAL', ошибка?.message ?? ТЕКСТЫ.ERROR_UNEXPECTED, ответ.status);
+  }
+  return разобрано as { task_id: string; status: string; size_bytes: number };
+}
+
+/** Ссылка на .docx конспекта — открывается обычным переходом. */
+export function ссылкаНаDocx(konspekt_id: string): string {
+  return `${БАЗА}/api/v1/konspekt/${konspekt_id}/docx`;
+}
+
 export const апи = {
   дэшборд: () => запрос<Дэшборд>('/api/v1/dashboard'),
+  задача: (task_id: string) => запрос<Задача>(`/api/v1/task/${task_id}`),
+  конспект: (konspekt_id: string) => запрос<Конспект>(`/api/v1/konspekt/${konspekt_id}`),
   я: () => запрос<Я>('/api/v1/me'),
   согласие: () => запрос<{ consent_given: boolean }>('/api/v1/consent', {}),
   регистрацияПедагога: (данные: { name: string; subject: string; school?: string; city?: string }) =>

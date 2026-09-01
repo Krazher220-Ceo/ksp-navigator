@@ -3758,7 +3758,8 @@ def make_transcribe_handler(bot: Bot):
             raise TranscriptionError(texts.KONSPEKT_TRANSCRIBE_RETRY_DISABLED)
 
         total_estimate_seconds = sum(await asyncio.gather(*(_safe_probe(p) for p in audio_paths)))
-        await bot.send_message(
+        await _tell_telegram(
+            bot,
             chat_id,
             texts.KONSPEKT_TRANSCRIBING_STARTED.format(
                 parts=len(audio_paths),
@@ -3795,7 +3796,8 @@ def make_transcribe_handler(bot: Bot):
 
         if mode == "student":
             preview = full_text[:300] + ("…" if len(full_text) > 300 else "")
-            await bot.send_message(
+            await _tell_telegram(
+                bot,
                 chat_id,
                 texts.KONSPEKT_TRANSCRIPT_READY.format(duration=_format_duration(total_duration), preview=preview),
             )
@@ -3840,7 +3842,8 @@ def make_transcribe_handler(bot: Bot):
                 ]
             )
             for index, chunk in enumerate(chunks):
-                await bot.send_message(
+                await _tell_telegram(
+                    bot,
                     chat_id,
                     chunk,
                     reply_markup=ksp_button if index == len(chunks) - 1 else None,
@@ -3887,9 +3890,14 @@ def make_konspekt_handler(bot: Bot):
         try:
             content = await generate_konspekt(transcript_text, llm_client=llm_client)
         finally:
-            record_usage(chat_id, "generate_konspekt", tokens_delta=llm_client.total_tokens_used)
+            # Расход в core/limits.py ключуется telegram_user_id. У задачи
+            # из кабинета его может не быть — тогда расход по ней не
+            # считается, и дэшборд честно говорит об этом вместо «0 из 0».
+            if chat_id is not None:
+                record_usage(chat_id, "generate_konspekt", tokens_delta=llm_client.total_tokens_used)
             await llm_client.aclose()
-        record_usage(chat_id, "generate_konspekt", count_delta=1)
+        if chat_id is not None:
+            record_usage(chat_id, "generate_konspekt", count_delta=1)
 
         konspekt_id = str(uuid.uuid4())
 
@@ -3915,10 +3923,12 @@ def make_konspekt_handler(bot: Bot):
             ),
         )
 
-        await bot.send_document(
-            chat_id, FSInputFile(docx_path), caption=texts.KONSPEKT_DOCX_CAPTION.format(tema=student_content["tema"])
+        await _send_document_to_telegram(
+            bot, chat_id, FSInputFile(docx_path),
+            caption=texts.KONSPEKT_DOCX_CAPTION.format(tema=student_content["tema"]),
         )
-        await _try_send_pdf(bot, chat_id, docx_path, texts.KONSPEKT_PDF_CAPTION)
+        if chat_id is not None:
+            await _try_send_pdf(bot, chat_id, docx_path, texts.KONSPEKT_PDF_CAPTION)
 
         # К5: кнопка на ПОСЛЕДНЕМ текстовом сообщении (не на каждом — при
         # разбивке на несколько частей одна кнопка под всем конспектом
@@ -3934,11 +3944,38 @@ def make_konspekt_handler(bot: Bot):
         )
         for i, chunk in enumerate(chunks):
             is_last = i == len(chunks) - 1
-            await bot.send_message(chat_id, chunk, reply_markup=ksp_button if is_last else None)
+            await _tell_telegram(bot, chat_id, chunk, reply_markup=ksp_button if is_last else None)
 
         return {"konspekt_id": konspekt_id, "docx_path": str(docx_path)}
 
     return handler
+
+
+# Ф6 (FRONTEND_PLAN.md): в очередь теперь кладёт задачи не только бот, но
+# и кабинет. У задачи из кабинета телеграм-чата может не быть вовсе —
+# педагог зарегистрировался по почте и Telegram не привязывал. Слать в
+# None нельзя, а разводить два обработчика на один тип задачи — тем более:
+# пайплайн обязан остаться единственным, иначе появится второй путь, где
+# аудио, например, не удаляется. Поэтому отправка в чат стала
+# необязательной, а всё остальное в обработчиках не изменилось.
+#
+# Про такую задачу человек узнаёт опросом статуса в кабинете
+# (GET /api/v1/task/{id}) — это не обход гарантии уведомления, а второй
+# её канал: сама гарантия живёт в core/queue.py и никуда не делась.
+
+
+async def _tell_telegram(bot: Bot, chat_id: int | None, text: str, **kwargs):
+    """Сообщение в чат, если чат есть. Нет чата — молча ничего."""
+    if chat_id is None:
+        return None
+    return await bot.send_message(chat_id, text, **kwargs)
+
+
+async def _send_document_to_telegram(bot: Bot, chat_id: int | None, *args, **kwargs):
+    """То же для документа."""
+    if chat_id is None:
+        return None
+    return await bot.send_document(chat_id, *args, **kwargs)
 
 
 _TELEGRAM_MESSAGE_LIMIT = 4000  # с запасом от настоящего лимита Telegram в 4096

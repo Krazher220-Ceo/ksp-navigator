@@ -9,9 +9,9 @@ web/api_v1.py — версионированный API для собственн
 обёртка: проверил доступ, вызвал функцию из core/, вернул JSON. Никакой
 арифметики: числа считает core, иначе бот и кабинет разойдутся.
 
-Чего здесь пока нет: конспект, КСП, классы и история — они приезжают
-своими блоками (Ф6–Ф9). Сейчас здесь живут /health (Ф2), вход с
-регистрацией (Ф4) и дэшборд (Ф5).
+Чего здесь пока нет: КСП, классы и история — они приезжают своими
+блоками (Ф7–Ф9). Сейчас здесь живут /health (Ф2), вход с регистрацией
+(Ф4), дэшборд (Ф5) и конспект урока (Ф6).
 
 Правило, которое нельзя нарушать: каждый новый эндпоинт получает
 Depends(current_user) или Depends(verify_init_data). Сервер публично
@@ -20,18 +20,30 @@ Depends(current_user) или Depends(verify_init_data). Сервер публи�
 web/api_v1.PUBLIC_PATHS, чтобы про него знал и человек, и тест.
 """
 
+import json
+import uuid
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Body, Depends, Header, Request
+from fastapi.responses import FileResponse, JSONResponse
 
 from bot import texts
 from core import accounts
 from core.config import settings
 from core.dashboard import collect as collect_dashboard
 from core.db import query
+from core.limits import WEB_AUDIO_MAX_BYTES
+from core.queue import SOURCE_WEB, enqueue
 from web.auth import ROLE_STUDENT, ROLE_TEACHER, CurrentUser, current_user, require_consent
-from web.errors import CODE_NOT_FOUND, CODE_SERVER_UNAVAILABLE, ApiError, error_body
+from web.errors import (
+    CODE_BAD_REQUEST,
+    CODE_CONSENT_REQUIRED,
+    CODE_NOT_FOUND,
+    CODE_SERVER_UNAVAILABLE,
+    ApiError,
+    error_body,
+)
 
 API_VERSION = "v1"
 
@@ -265,3 +277,249 @@ async def dashboard(человек: CurrentUser = Depends(current_user)) -> dict
         "generated_at": собрано.isoformat(timespec="seconds"),
         "generated_at_label": собрано.strftime("%H:%M"),
     }
+
+
+# =====================================================================
+# Ф6: конспект урока через веб
+#
+# Главный сценарий продукта: запись урока -> расшифровка -> конспект.
+# Веб-загрузка идёт ТЕМ ЖЕ путём, что и загрузка из Telegram: файл ложится
+# в storage/uploads, задача 'transcribe' ставится в ту же очередь, и тот
+# же обработчик удаляет аудио сразу после расшифровки. Второго пути, где
+# файл сохраняется «на всякий случай», в проекте нет и быть не может —
+# это прямое нарушение текста согласия.
+# =====================================================================
+
+# Расширения, которые умеет прочитать ffmpeg по дороге в xAI STT. Список
+# закрытый: принимать «что угодно» значит принять .exe и узнать об этом
+# от воркера через минуту.
+РАСШИРЕНИЯ_АУДИО = {".m4a", ".mp3", ".wav", ".ogg", ".oga", ".opus", ".webm", ".mp4", ".aac", ".flac"}
+
+# Сколько байт читаем за раз. Файл не собирается в памяти целиком:
+# запись урока — это десятки мегабайт, и держать их в оперативке ради
+# одного запроса незачем.
+РАЗМЕР_КУСКА = 1024 * 1024
+
+
+def _расширение(имя: str | None) -> str:
+    return Path(имя or "").suffix.lower()
+
+
+async def _сохранить_запись(request: Request, имя_файла: str | None) -> Path:
+    """Пишет тело запроса в storage/uploads и возвращает путь.
+
+    Файл идёт потоком и обрывается на превышении предела: клиент, который
+    решит прислать гигабайт, не должен ни занять память, ни забить диск.
+    Недописанный файл при обрыве удаляется здесь же.
+    """
+    расширение = _расширение(имя_файла)
+    if расширение and расширение not in РАСШИРЕНИЯ_АУДИО:
+        raise ApiError(415, CODE_BAD_REQUEST, texts.API_AUDIO_UNSUPPORTED)
+
+    путь = settings.uploads_dir / f"web-{uuid.uuid4().hex}{расширение or '.m4a'}"
+    записано = 0
+    try:
+        with открыть_на_запись(путь) as файл:
+            async for кусок in request.stream():
+                записано += len(кусок)
+                if записано > WEB_AUDIO_MAX_BYTES:
+                    raise ApiError(
+                        413, CODE_BAD_REQUEST,
+                        texts.API_AUDIO_TOO_LARGE.format(limit_mb=WEB_AUDIO_MAX_BYTES // (1024 * 1024)),
+                    )
+                файл.write(кусок)
+    except BaseException:
+        путь.unlink(missing_ok=True)
+        raise
+
+    if записано == 0:
+        путь.unlink(missing_ok=True)
+        raise ApiError(400, CODE_BAD_REQUEST, texts.API_AUDIO_EMPTY)
+    return путь
+
+
+def открыть_на_запись(путь: Path):
+    """Отдельная функция ровно затем, чтобы тест мог подменить запись на
+    диск, не подменяя весь эндпоинт."""
+    return путь.open("wb")
+
+
+@router.post("/lesson/upload")
+async def lesson_upload(
+    request: Request,
+    человек: CurrentUser = Depends(current_user),
+    имя_файла: str | None = Header(default=None, alias="X-Filename"),
+    режим: str = Header(default="student", alias="X-Konspekt-Mode"),
+) -> dict:
+    """
+    Принимает запись урока и ставит её в очередь.
+
+    Обработку здесь НЕ запускает: расшифровка занимает десятки секунд, а
+    HTTP-запрос, который столько ждёт, обрывается по дороге у первого же
+    мобильного оператора. Задача уходит в core/queue.py — ту же очередь,
+    что у бота, — и кабинет спрашивает её статус.
+
+    Файл приходит телом запроса, без multipart. Так не понадобилась
+    отдельная зависимость ради одного поля, а поток пишется на диск
+    кусками и обрывается на превышении предела.
+    """
+    await require_consent(человек)
+
+    teacher_id = _teacher_id(человек)
+    if teacher_id is None:
+        raise ApiError(403, CODE_CONSENT_REQUIRED, texts.API_PROFILE_REQUIRED)
+    if режим not in {"student", "teacher"}:
+        raise ApiError(422, CODE_BAD_REQUEST, texts.API_BAD_REQUEST.format(reason="неизвестный режим обработки"))
+
+    путь = await _сохранить_запись(request, имя_файла)
+
+    # chat_id — чтобы бот сообщил о ходе работы тому, у кого Telegram
+    # привязан. Не привязан — None, и обработчик просто ничего не шлёт;
+    # человек следит за задачей в кабинете.
+    профиль = (
+        accounts.find_teacher_by_auth_user(человек.auth_user_id)
+        if человек.auth_user_id
+        else accounts.find_teacher_by_telegram(человек.telegram_user_id)
+    )
+    chat_id = профиль.get("telegram_user_id") if профиль else None
+
+    task_id = enqueue(
+        "transcribe",
+        {
+            "teacher_id": teacher_id,
+            "audio_paths": [str(путь)],
+            "mode": режим,
+            "source": SOURCE_WEB,
+        },
+        chat_id=chat_id,
+    )
+    return {"task_id": task_id, "status": "queued", "size_bytes": путь.stat().st_size}
+
+
+# Статусы очереди наружу отдаются как есть: pending и processing — это
+# «queued» и «running» на языке кабинета, и переименовывать их в базе
+# ради этого не нужно.
+СТАТУС_НАРУЖУ = {"pending": "queued", "processing": "running", "done": "done", "failed": "failed"}
+
+
+def _задача_этого_педагога(task_id: str, teacher_id: int | None) -> dict:
+    """Задача, если она принадлежит этому педагогу. Иначе 404.
+
+    Чужая задача отдаёт 404, а не 403: мы не подтверждаем даже факт
+    существования чужой записи — решение блока Б9.2, оно же действует для
+    generated_ksp.
+    """
+    строки = query("SELECT * FROM tasks WHERE id = ?", (task_id,))
+    if not строки:
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+    задача = dict(строки[0])
+    try:
+        payload = json.loads(задача["payload"]) if задача["payload"] else {}
+    except (ValueError, TypeError):
+        payload = {}
+    if teacher_id is None or payload.get("teacher_id") != teacher_id:
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+    задача["payload_разобран"] = payload
+    return задача
+
+
+@router.get("/task/{task_id}")
+async def task_status(task_id: str, человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Статус задачи: queued, running, done или failed.
+
+    Провал приходит сюда вместе с причиной — это и есть канал, которым о
+    нём узнаёт тот, у кого нет Telegram. Гарантию уведомления в
+    core/queue.py это не подменяет и не обходит: она по-прежнему шлёт
+    сообщение всем, у кого чат есть.
+    """
+    задача = _задача_этого_педагога(task_id, _teacher_id(человек))
+    статус = СТАТУС_НАРУЖУ.get(задача["status"], задача["status"])
+
+    ответ: dict = {
+        "task_id": task_id,
+        "status": статус,
+        "type": задача["type"],
+        "retries": задача["retries"],
+    }
+    if статус == "failed":
+        # Текст ошибки пишет обработчик, и он уже по-русски: тексты
+        # провалов лежат в bot/texts.py, как и всё остальное.
+        ответ["error"] = задача["error"] or texts.ERROR_UNEXPECTED
+    if статус == "done" and задача["result"]:
+        try:
+            ответ["result"] = json.loads(задача["result"])
+        except (ValueError, TypeError):
+            ответ["result"] = None
+    return ответ
+
+
+@router.get("/konspekt/{konspekt_id}")
+async def konspekt(konspekt_id: str, человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Готовый конспект и расшифровка, по которой он собран.
+
+    Чужой конспект — 404, тем же правилом, что и чужая задача. Текст
+    расшифровки отдаётся целиком: его видит только сам педагог, ни
+    администрация, ни ученики доступа не имеют.
+    """
+    teacher_id = _teacher_id(человек)
+    строки = query("SELECT * FROM konspekty WHERE id = ?", (konspekt_id,))
+    if not строки or teacher_id is None or строки[0]["teacher_id"] != teacher_id:
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+    запись = dict(строки[0])
+
+    try:
+        содержимое = json.loads(запись["content_json"]) if запись["content_json"] else {}
+    except (ValueError, TypeError):
+        содержимое = {}
+
+    транскрипт = None
+    if запись.get("transcript_id"):
+        строки_т = query(
+            "SELECT text, duration_seconds FROM transcripts WHERE id = ?", (запись["transcript_id"],)
+        )
+        if строки_т:
+            транскрипт = {
+                "text": строки_т[0]["text"],
+                "duration_seconds": строки_т[0]["duration_seconds"],
+            }
+
+    return {
+        "konspekt_id": konspekt_id,
+        "tema": запись.get("tema"),
+        "mode": запись.get("mode"),
+        "content": содержимое,
+        "transcript": транскрипт,
+        "has_docx": bool(запись.get("docx_path")),
+    }
+
+
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+@router.get("/konspekt/{konspekt_id}/docx")
+async def konspekt_docx(konspekt_id: str, человек: CurrentUser = Depends(current_user)) -> FileResponse:
+    """
+    Отдаёт .docx конспекта — тот самый файл, который бот шлёт в чат.
+
+    Собран он был один раз, обработчиком очереди; здесь только отдаётся.
+    Пересобирать по запросу нельзя: два пути сборки одного документа
+    разойдутся, и педагог получит из веба не то, что уже видел в
+    Telegram.
+
+    PDF отсюда не отдаётся: его конвертирует LibreOffice, это десятки
+    секунд и внешний процесс — такому место в очереди, а не в обработчике
+    запроса. Скачивание PDF приезжает блоком Ф9 вместе с историей.
+    """
+    teacher_id = _teacher_id(человек)
+    строки = query("SELECT teacher_id, tema, docx_path FROM konspekty WHERE id = ?", (konspekt_id,))
+    if not строки or teacher_id is None or строки[0]["teacher_id"] != teacher_id:
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+
+    путь = Path(строки[0]["docx_path"] or "")
+    if not путь.name or not путь.exists():
+        # Файл собран, но с диска исчез — честный 404 с тем же текстом:
+        # клиенту незачем различать «не ваш» и «потерялся».
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+    return FileResponse(путь, filename=путь.name, media_type=DOCX_MEDIA_TYPE)

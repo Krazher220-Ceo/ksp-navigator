@@ -308,6 +308,29 @@ TaskHandler = Callable[[dict], Awaitable[Any]]
 NotifyFn = Callable[[int, str], Awaitable[None]]
 
 
+# Ф6: метка источника в payload. Отдельной колонки в tasks нет намеренно —
+# схему в проде код изменить не может, а payload и так свободной формы.
+SOURCE_WEB = "web"
+
+
+def _is_from_web(task: dict) -> bool:
+    """Задача поставлена кабинетом, а не ботом.
+
+    payload может прийти и разобранным словарём, и сырой строкой: в
+    _fail_and_maybe_notify задача попадает в обоих видах, в том числе
+    когда разобрать её как раз и не вышло. Поэтому здесь ничего не
+    падает — не разобралось, значит считаем, что задача не из кабинета,
+    и громкая жалоба в лог остаётся.
+    """
+    payload = task.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload) if payload else {}
+        except (ValueError, TypeError):
+            return False
+    return isinstance(payload, dict) and payload.get("source") == SOURCE_WEB
+
+
 def _default_failure_message(task: dict, error: str) -> str:
     return (
         "Не получилось выполнить задачу после нескольких попыток.\n"
@@ -487,6 +510,20 @@ class QueueWorker:
 
         chat_id = task.get("telegram_chat_id")
         if chat_id is None:
+            # Ф6: задачу мог поставить кабинет, а не бот, и телеграм-чата у
+            # неё нет по существу — человек зарегистрировался по почте. Про
+            # такой провал он узнаёт опросом статуса задачи
+            # (GET /api/v1/task/{id}), и это не дыра в гарантии, а второй её
+            # канал. Отличаем по метке источника в payload: у задачи из
+            # Telegram чат обязан быть, и его отсутствие — по-прежнему
+            # нарушение KPI, о котором надо кричать в лог.
+            if _is_from_web(task):
+                logger.info(
+                    "задача %s из кабинета провалилась окончательно; о провале "
+                    "узнают опросом статуса — телеграм-чата у неё нет",
+                    task["id"],
+                )
+                return
             logger.error(
                 "задача %s провалилась окончательно, но у нее нет telegram_chat_id — "
                 "уведомить пользователя невозможно",
