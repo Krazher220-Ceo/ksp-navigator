@@ -9,9 +9,9 @@ web/api_v1.py — версионированный API для собственн
 обёртка: проверил доступ, вызвал функцию из core/, вернул JSON. Никакой
 арифметики: числа считает core, иначе бот и кабинет разойдутся.
 
-Чего здесь пока нет: всё, кроме /health. Дэшборд, конспект, КСП, классы
-и история приезжают своими блоками (Ф5–Ф9) — этот блок кладёт под них
-префикс, единый формат ошибки и CORS.
+Чего здесь пока нет: дэшборд, конспект, КСП, история — они приезжают
+своими блоками (Ф5–Ф9). Сейчас здесь живут /health (блок Ф2) и вход с
+регистрацией (блок Ф4).
 
 Правило, которое нельзя нарушать: каждый новый эндпоинт получает
 Depends(current_user) или Depends(verify_init_data). Сервер публично
@@ -20,13 +20,15 @@ Depends(current_user) или Depends(verify_init_data). Сервер публи�
 web/api_v1.PUBLIC_PATHS, чтобы про него знал и человек, и тест.
 """
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse
 
 from bot import texts
+from core import accounts
 from core.config import settings
 from core.db import query
-from web.errors import CODE_SERVER_UNAVAILABLE, error_body
+from web.auth import ROLE_STUDENT, ROLE_TEACHER, CurrentUser, current_user, require_consent
+from web.errors import CODE_NOT_FOUND, CODE_SERVER_UNAVAILABLE, ApiError, error_body
 
 API_VERSION = "v1"
 
@@ -70,3 +72,149 @@ async def health() -> JSONResponse:
         тело.update(error_body(CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE))
         return JSONResponse(status_code=503, content=тело)
     return JSONResponse(status_code=200, content=тело)
+
+
+# =====================================================================
+# Ф4: вход, согласие и регистрация
+#
+# Порядок в каждом действии один и тот же: опознали человека
+# (current_user), проверили согласие (require_consent), позвали функцию
+# из core/accounts.py, вернули JSON. Ни одной формулы здесь нет — они не
+# нужны, а если появятся, значит логика уехала не туда.
+# =====================================================================
+
+
+@router.get("/me")
+async def me(человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Кто вошёл, что он уже принял и есть ли у него профиль.
+
+    Это первый запрос кабинета после входа: по нему фронтенд решает, что
+    показать — согласие, регистрацию, дэшборд педагога или экран ученика.
+    Решает по ответу сервера, а не по собственным догадкам.
+    """
+    согласие = accounts.has_given_consent(
+        telegram_user_id=человек.telegram_user_id, auth_user_id=человек.auth_user_id
+    )
+    профиль = None
+    if человек.role == ROLE_TEACHER:
+        строка = (
+            accounts.find_teacher_by_auth_user(человек.auth_user_id)
+            if человек.auth_user_id
+            else accounts.find_teacher_by_telegram(человек.telegram_user_id)
+        )
+        if строка:
+            профиль = {
+                "name": строка.get("name"),
+                "subject": строка.get("subject"),
+                "school": строка.get("school"),
+                "city": строка.get("city"),
+            }
+    return {
+        "user_id": человек.user_id,
+        "telegram_user_id": человек.telegram_user_id,
+        "role": человек.role,
+        "consent_given": согласие,
+        "profile": профиль,
+    }
+
+
+@router.post("/consent")
+async def consent(человек: CurrentUser = Depends(current_user)) -> dict:
+    """Записывает согласие. Текст показывает фронтенд — он один и тот же
+    у бота и у веба (bot/texts.py, CONSENT_TEXT и STUDENT_CONSENT_TEXT)."""
+    accounts.record_consent(
+        telegram_user_id=человек.telegram_user_id, auth_user_id=человек.auth_user_id
+    )
+    return {"consent_given": True}
+
+
+@router.post("/teacher")
+async def register_teacher(
+    name: str = Body(...),
+    subject: str = Body(...),
+    school: str | None = Body(default=None),
+    city: str | None = Body(default=None),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """
+    Заводит профиль педагога — тем же путём, что /teacher в боте.
+
+    Согласие проверяется до записи, а не после: человек, не принявший
+    условия, не должен оставить о себе строку в базе.
+    """
+    await require_consent(человек)
+    профиль = accounts.create_teacher(
+        name=name.strip(),
+        subject=subject.strip(),
+        school=(school or "").strip() or None,
+        city=(city or "").strip() or None,
+        auth_user_id=человек.auth_user_id,
+        telegram_user_id=человек.telegram_user_id if человек.auth_user_id is None else None,
+    )
+    return {
+        "role": ROLE_TEACHER,
+        "profile": {
+            "name": профиль.get("name"),
+            "subject": профиль.get("subject"),
+            "school": профиль.get("school"),
+            "city": профиль.get("city"),
+        },
+    }
+
+
+@router.post("/class/preview")
+async def class_preview(
+    code: str = Body(..., embed=True),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """
+    Что за класс скрыт за кодом приглашения.
+
+    Отдельный шаг перед вступлением: ребёнок услышал код вслух и должен
+    увидеть, куда именно вступает, — «класс такой-то, педагог такой-то».
+    Ошибочный код здесь и заканчивается: 404 с текстом «код не найден» и
+    без выброса в меню (требование блока У3, дословно).
+    """
+    класс = accounts.find_class_by_invite_code(code)
+    if класс is None:
+        raise ApiError(404, CODE_NOT_FOUND, texts.STUDENT_JOIN_CODE_NOT_FOUND)
+    return {"class_name": класс["name"], "teacher_name": класс["teacher_name"]}
+
+
+@router.post("/class/join")
+async def class_join(
+    code: str = Body(..., embed=True),
+    name: str | None = Body(default=None),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """
+    Вступление в класс по коду.
+
+    Об ученике сохраняется только имя и идентификатор. Ни ИИН, ни
+    фамилии в документах, ни даты рождения, ни оценок — их незачем
+    хранить, и место под них здесь не предусмотрено.
+    """
+    await require_consent(человек)
+    класс = accounts.find_class_by_invite_code(code)
+    if класс is None:
+        raise ApiError(404, CODE_NOT_FOUND, texts.STUDENT_JOIN_CODE_NOT_FOUND)
+
+    ученик = accounts.ensure_student(
+        name=(name or "").strip() or None,
+        auth_user_id=человек.auth_user_id,
+        telegram_id=человек.telegram_user_id if человек.auth_user_id is None else None,
+    )
+    вступил = accounts.join_class(класс["id"], ученик["id"])
+    сообщение = (
+        texts.STUDENT_JOIN_SUCCESS.format(class_name=класс["name"], teacher_name=класс["teacher_name"])
+        if вступил
+        else texts.STUDENT_JOIN_ALREADY_MEMBER.format(class_name=класс["name"])
+    )
+    return {
+        "role": ROLE_STUDENT,
+        "joined": вступил,
+        "class_name": класс["name"],
+        "teacher_name": класс["teacher_name"],
+        "message": сообщение,
+    }

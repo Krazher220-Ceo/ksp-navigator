@@ -61,3 +61,25 @@
  * потому, что на iOS 100vh прыгает вместе с адресной строкой. */
 .site { min-height: 100dvh; background: var(--card); }
 .site-wrap { max-width: 1440px; margin: 0 auto; }
+
+/* --- вход и регистрация (блок Ф4) --- */
+/* Макеты Vhod и Registraciya: слева фирменный фон, справа форма. На
+ * узком экране складывается в MobVhod — тёмная шапка и белый лист. */
+.auth { min-height: 100dvh; display: grid; grid-template-columns: minmax(0, 1fr) var(--auth-form); background: var(--card); }
+.auth-promo { position: relative; overflow: hidden; color: #fff; padding: 44px 52px; display: flex; flex-direction: column; }
+.auth-promo-body { position: relative; margin-top: auto; max-width: 460px; }
+.auth-form { display: flex; flex-direction: column; justify-content: center; padding: 0 76px; }
+/* display задаётся здесь, а не инлайном на элементе: инлайновый стиль
+ * перебил бы display: none из медиазапроса ниже, и плитки остались бы на
+ * телефоне. Один раз я на этом уже попался. */
+.auth-promo-tiles { display: flex; }
+
+@media (max-width: 1000px) {
+  .auth { grid-template-columns: minmax(0, 1fr); }
+  .auth-promo { padding: 56px 24px 30px; border-radius: 0 0 22px 22px; }
+  .auth-promo-body { margin-top: 28px; max-width: none; }
+  /* Плитки и сноска на телефоне не помещаются рядом с формой и уводят
+   * главное вниз экрана — на узком показывается только обещание. */
+  .auth-promo-tiles, .auth-promo-note { display: none; }
+  .auth-form { padding: 24px 22px 40px; justify-content: flex-start; }
+}

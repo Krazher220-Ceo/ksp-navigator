@@ -10,6 +10,7 @@ import { Input } from '@/components/Input';
 import { StatTile } from '@/components/StatTile';
 import { Switch } from '@/components/Switch';
 import { TabBar } from '@/components/TabBar';
+import { ТЕКСТЫ } from '@/content/texts.generated';
 
 /**
  * Служебная витрина базовых элементов.
@@ -77,7 +78,7 @@ export default function KitPage() {
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
             <Input id="kit-mail" label="Почта" icon="mail" type="email" autoComplete="email" placeholder="uchitel@school.kz" />
             <Input id="kit-pass" label="Пароль" icon="lock" type="password" autoComplete="current-password" placeholder="••••••••" />
-            <Input id="kit-code" label="Код приглашения" icon="users" placeholder="KZ-4H7M" error="Код не найден. Проверьте буквы и попробуйте ещё раз." />
+            <Input id="kit-code" label="Код приглашения" icon="users" placeholder="KZ-4H7M" error={ТЕКСТЫ.STUDENT_JOIN_CODE_NOT_FOUND} />
             <Switch checked={sound} onChange={setSound} label="Тип урока: изучение нового" />
             <Switch checked={oop} onChange={setOop} label="Учесть особые образовательные потребности" />
             <Switch checked={false} onChange={() => {}} label="Оплата (пилот безлимитный, включать нечего)" disabled />

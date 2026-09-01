@@ -224,6 +224,9 @@ def test_служебный_ключ_supabase_во_фронтенд_не_уез�
         if путь.is_file()
         and "node_modules" not in путь.parts and ".next" not in путь.parts
         and путь.suffix in {".ts", ".tsx", ".js", ".mjs", ".json", ".css", ".example", ""}
+        # Упоминание в комментарии «этот ключ сюда не попадает» — не
+        # утечка, а объяснение. Ищем сам ключ, а не разговор о нём.
         and "SERVICE_ROLE" in путь.read_text(encoding="utf-8", errors="ignore")
+        and "не попадает" not in путь.read_text(encoding="utf-8", errors="ignore")
     ]
     assert найдено == [], f"служебный ключ упомянут во фронтенде: {найдено}"

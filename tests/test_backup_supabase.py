@@ -313,6 +313,10 @@ def test_tables_from_schema_matches_exact_set_of_real_tables():
         "incidents",
         "worker_heartbeat",
         "consents",
+        # Ф4 (FRONTEND_PLAN.md): согласие того, кто вошёл по почте.
+        # В бэкап входит на общих основаниях — согласие, которого нет в
+        # резервной копии, придётся спрашивать заново.
+        "consents_web",
         "classes",
         "students",
         "class_members",

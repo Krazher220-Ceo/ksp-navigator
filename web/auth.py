@@ -52,9 +52,11 @@ from urllib.parse import parse_qsl
 from fastapi import Header, HTTPException
 
 from bot import texts
+from core import accounts
 from core.config import settings
 from core.db import SupabaseDatabaseError, query
 from web.errors import (
+    CODE_CONSENT_REQUIRED,
     CODE_NOT_AUTHORIZED,
     CODE_SERVER_UNAVAILABLE,
     ApiError,
@@ -204,8 +206,8 @@ class CurrentUser:
     сравнивать их без пометки всё равно опасно.
 
     role — "teacher", "student" или None. None значит «роль ещё не
-    определена», а не «никто»: так выглядит человек, который вошёл по
-    почте и пока не связан с профилем (см. ниже про недостающую колонку).
+    определена», а не «никто»: так выглядит человек, который вошёл, но
+    профиля пока не завёл. Ему показывают регистрацию, а не отказ.
     """
 
     user_id: str
@@ -234,6 +236,26 @@ def resolve_role(telegram_user_id: int, db_path=None) -> str | None:
     return None
 
 
+async def require_consent(человек: "CurrentUser") -> None:
+    """
+    Проверка согласия ПЕРЕД действием, а не после.
+
+    Вызывается первой строкой каждого эндпоинта, который что-то делает
+    (Ф4: регистрация педагога и вступление в класс). База не ответила —
+    честный отказ, а не тихий проход: ровно так уже сделано в боте
+    (CONSENT_CHECK_UNAVAILABLE).
+    """
+    try:
+        дано = accounts.has_given_consent(
+            telegram_user_id=человек.telegram_user_id, auth_user_id=человек.auth_user_id
+        )
+    except SupabaseDatabaseError:
+        logger.warning("require_consent: база недоступна, user_id=%s", человек.user_id, exc_info=True)
+        raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE) from None
+    if not дано:
+        raise ApiError(403, CODE_CONSENT_REQUIRED, texts.API_CONSENT_REQUIRED)
+
+
 def _не_авторизован() -> ApiError:
     return ApiError(401, CODE_NOT_AUTHORIZED, texts.API_NOT_AUTHORIZED)
 
@@ -250,13 +272,9 @@ async def current_user(
     выбор человека важнее. Не сработало ничего — 401. Промежуточного
     состояния «пропустим на всякий случай» здесь нет.
 
-    Чего эта зависимость пока не умеет: связать вошедшего по почте с его
-    профилем педагога или ученика. Связывать не с чем — в teachers и
-    students нет колонки под идентификатор Supabase Auth, а завести её
-    может только автор (FRONTEND_PLAN.md, раздел 6, пункт 4). До этого
-    вход по почте даёт опознанного человека без роли, и ни один эндпоинт
-    роли у него не найдёт. Это честнее, чем выдать роль по совпадению
-    почты, которой в teachers тоже нет.
+    Роль ищется по той двери, через которую человек вошёл: по
+    telegram_user_id или по auth_user_id (блок Ф4 завёл эту колонку).
+    База не ответила — 503, а не «пропустим без роли».
     """
     if authorization:
         if not authorization.startswith(BEARER_PREFIX):
@@ -270,7 +288,13 @@ async def current_user(
         except JwtError as exc:
             logger.info("current_user: токен отвергнут — %s", exc)
             raise _не_авторизован() from None
-        return CurrentUser(user_id=f"auth:{claims['sub']}", telegram_user_id=None, role=None)
+        auth_user_id = claims["sub"]
+        try:
+            роль = accounts.resolve_role_by_auth_user(auth_user_id)
+        except SupabaseDatabaseError:
+            logger.warning("current_user: роль не определена, база недоступна, sub=%s", auth_user_id, exc_info=True)
+            raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE) from None
+        return CurrentUser(user_id=f"auth:{auth_user_id}", telegram_user_id=None, role=роль)
 
     if init_data:
         try:

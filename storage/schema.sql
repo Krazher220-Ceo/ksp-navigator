@@ -18,7 +18,18 @@ CREATE TABLE IF NOT EXISTS teachers (
     -- см. scripts/migrate_add_school_to_teachers.py (аддитивная миграция,
     -- ALTER TABLE ... ADD COLUMN, SQLite это умеет напрямую).
     school TEXT,
+    -- Ф4: город спрашивается на экране регистрации в вебе (макет
+    -- Registraciya). У профилей, заведённых из бота, он пустой — /teacher
+    -- город не спрашивает, и менять диалог бота этот блок не стал.
+    city TEXT,
     telegram_user_id INTEGER,
+    -- Ф4 (FRONTEND_PLAN.md): идентификатор аккаунта в Supabase Auth для
+    -- тех, кто вошёл по почте. У пришедших из Telegram он пустой, у
+    -- пришедших с сайта пустой telegram_user_id — связываются две
+    -- половины отдельно, кодом из бота (блок Ф4). Для базы, созданной ДО
+    -- этого блока, CREATE TABLE IF NOT EXISTS колонку не добавит:
+    -- см. scripts/migrate_add_auth_user_id.py.
+    auth_user_id TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -198,6 +209,15 @@ CREATE TABLE IF NOT EXISTS consents (
     given_at TIMESTAMP NOT NULL
 );
 
+-- Ф4: согласие того, кто пришёл с сайта. Отдельной таблицей, а не
+-- колонкой в consents: там первичный ключ — telegram_user_id, и снять с
+-- него NOT NULL нельзя, не разобрав ключ работающей в проде таблицы.
+-- Решение автора от 02.09.2026 — аддитивный вариант.
+CREATE TABLE IF NOT EXISTS consents_web (
+    auth_user_id TEXT PRIMARY KEY,
+    given_at TIMESTAMP NOT NULL
+);
+
 -- classes/students/class_members — класс и ученики (блок У1, MASTER.md
 -- 0.9 п.2: мультипользовательский режим разрешён РОВНО в этом объёме —
 -- педагог и ученик, без ролей и рейтингов сверх этого).
@@ -226,7 +246,13 @@ CREATE TABLE IF NOT EXISTS classes (
 
 CREATE TABLE IF NOT EXISTS students (
     id INTEGER PRIMARY KEY,
-    telegram_id INTEGER NOT NULL,
+    -- Ф4: telegram_id перестал быть обязательным — ученик может прийти с
+    -- сайта, и тогда у него есть только auth_user_id. Ровно одно из двух
+    -- полей заполнено всегда; проверять это на уровне БД не стали:
+    -- в SQLite CHECK не добавляется через ALTER TABLE, а расходиться
+    -- локальной и прод-схеме нельзя.
+    telegram_id INTEGER,
+    auth_user_id TEXT,
     name TEXT,
     joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP  -- когда стал учеником в системе, не в конкретном классе
 );
@@ -240,6 +266,11 @@ CREATE TABLE IF NOT EXISTS class_members (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_classes_invite_code ON classes(invite_code);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_students_telegram_id ON students(telegram_id);
+-- Ф4: по auth_user_id ищется профиль вошедшего по почте — поиск идёт на
+-- каждый запрос кабинета, и он обязан быть по индексу. Уникальность —
+-- защита от второго профиля на тот же аккаунт.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_teachers_auth_user ON teachers(auth_user_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_students_auth_user ON students(auth_user_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_class_members_unique ON class_members(class_id, student_id);
 CREATE INDEX IF NOT EXISTS idx_classes_teacher ON classes(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_class_members_student ON class_members(student_id);
