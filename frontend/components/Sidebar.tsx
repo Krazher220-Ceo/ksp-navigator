@@ -24,7 +24,7 @@ type Group = { cap: string; items: Item[] };
 
 export const NAV: Group[] = [
   { cap: 'Работа', items: [
-    { key: 'dash', icon: 'home', label: 'Дэшборд', href: '/' },
+    { key: 'dash', icon: 'home', label: 'Дэшборд', href: '/app' },
     { key: 'konspekt', icon: 'mic', label: 'Конспект урока' },
     { key: 'ksp', icon: 'doc', label: 'Собрать КСП' },
     { key: 'ktp', icon: 'cal', label: 'Собрать КТП' },

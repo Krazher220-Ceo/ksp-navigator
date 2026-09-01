@@ -1,0 +1,63 @@
+/* Анимации макетов: лендинг и документация.
+ *
+ * Перенесены из design/src/_head.html дословно — это те же @keyframes и
+ * те же классы .an/.d1…/.wv, которыми собраны артборды. В base.css их
+ * нет намеренно: рабочим экранам кабинета они не нужны, а грузить их
+ * туда незачем.
+ *
+ * Одно добавление против макета — обёртка .reveal. В артборде анимации
+ * запускаются при загрузке страницы, потому что артборд помещается в
+ * один экран. На лендинге в семь экранов так нельзя: к моменту, когда
+ * человек долистает до секции, она бы уже отыграла. Поэтому анимации
+ * ставятся на паузу и снимаются с неё, когда секция попала в окно —
+ * через IntersectionObserver (components/landing/Reveal.tsx). Слушатель
+ * scroll не используется: он дёргается на каждый пиксель и убивает
+ * плавность на телефоне.
+ */
+
+/* --- анимации --- */
+@keyframes riseIn { from { opacity: 0; transform: translateY(18px); filter: blur(3px); } to { opacity: 1; transform: none; filter: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes zoomIn { from { opacity: 0; transform: scale(.955); } to { opacity: 1; transform: none; } }
+@keyframes slideL { from { opacity: 0; transform: translateX(30px); } to { opacity: 1; transform: none; } }
+@keyframes growW { from { width: 0; } }
+@keyframes pulse { 0%, 100% { transform: scale(1); opacity: .5; } 50% { transform: scale(1.5); opacity: 1; } }
+@keyframes waveY { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+@keyframes drift { 0% { transform: translateY(-12px); opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { transform: translateY(112px); opacity: 0; } }
+@keyframes caret { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.an { animation: riseIn .9s var(--ease) both; }
+.an-f { animation: fadeIn 1s var(--ease) both; }
+.an-z { animation: zoomIn .9s var(--ease) both; }
+.an-l { animation: slideL .9s var(--ease) both; }
+.d1 { animation-delay: .10s; } .d2 { animation-delay: .22s; } .d3 { animation-delay: .34s; }
+.d4 { animation-delay: .46s; } .d5 { animation-delay: .58s; } .d6 { animation-delay: .70s; }
+.d7 { animation-delay: .84s; } .d8 { animation-delay: .98s; } .d9 { animation-delay: 1.12s; }
+.wv > i { animation: waveY 1.1s ease-in-out infinite; transform-origin: center; }
+.wv > i:nth-child(2n) { animation-duration: .85s; }
+.wv > i:nth-child(3n) { animation-duration: 1.4s; }
+.wv > i:nth-child(4n) { animation-delay: .25s; }
+.wv > i:nth-child(5n) { animation-delay: .5s; }
+
+/* --- появление секции при прокрутке --- */
+/* На паузе анимация стоит на своём первом кадре (fill-mode: both), то
+ * есть секция честно не видна, пока до неё не долистали. */
+.reveal .an, .reveal .an-f, .reveal .an-z, .reveal .an-l { animation-play-state: paused; }
+.reveal.видна .an, .reveal.видна .an-f, .reveal.видна .an-z, .reveal.видна .an-l { animation-play-state: running; }
+
+/* Человеку, который просил систему не двигать картинку, её не двигаем:
+ * содержимое показывается сразу и целиком. */
+@media (prefers-reduced-motion: reduce) {
+  .an, .an-f, .an-z, .an-l, .wv > i, .reveal .an, .reveal .an-f, .reveal .an-z, .reveal .an-l {
+    animation: none !important;
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+/* --- страницы сайта --- */
+/* Кабинет живёт в фиксированной высоте окна, сайт — прокручивается.
+ * Поэтому здесь высота body отпускается, а 100dvh вместо 100vh взят
+ * потому, что на iOS 100vh прыгает вместе с адресной строкой. */
+.site { min-height: 100dvh; background: var(--card); }
+.site-wrap { max-width: 1440px; margin: 0 auto; }

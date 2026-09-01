@@ -8,6 +8,7 @@
 @import "tailwindcss";
 @import "./tokens.css";
 @import "./base.css";
+@import "./landing.css";
 
 @theme inline {
   /* Палитра, шрифты, тени, скругления и кривые Tailwind — под нож целиком. */

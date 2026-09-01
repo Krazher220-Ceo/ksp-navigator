@@ -23,6 +23,7 @@ DESIGN_ICONS = PROJECT_ROOT / "design" / "src" / "_icons.json"
 FRONTEND = PROJECT_ROOT / "frontend"
 TOKENS_CSS = FRONTEND / "app" / "tokens.css"
 BASE_CSS = FRONTEND / "app" / "base.css"
+LANDING_CSS = FRONTEND / "app" / "landing.css"
 GLOBALS_CSS = FRONTEND / "app" / "globals.css"
 ICON_TSX = FRONTEND / "components" / "Icon.tsx"
 
@@ -31,10 +32,16 @@ ICON_TSX = FRONTEND / "components" / "Icon.tsx"
 # переменная, а сама стопка обязана сохраниться дословно.
 FONT_TOKENS = {"--sans", "--serif", "--mono"}
 
-# Анимации артбордов в кабинет не переносились — они нужны лендингу
-# (блок Ф13), а не рабочим экранам. Список закрытый: появится в макетах
-# новый класс не из него — тест это заметит.
+# Анимации артбордов лежат не в base.css, а в landing.css: рабочим
+# экранам кабинета они не нужны, лендингу (блок Ф13) нужны. Правило ниже
+# только разводит их по файлам — потеряться при этом не может ни одно.
 ANIMATION_ONLY = re.compile(r"^\.(sc|an|an-f|an-z|an-l|d[1-9]|wv)\b")
+
+# Единственное, что не переносится: класс .sc и его анимации scene и
+# prog. Это покадровая смена сцен в промо-макетах для магазинов
+# приложений — картинки, а не интерфейс продукта.
+НЕ_ПЕРЕНОСИМ = re.compile(r"^\.sc\b")
+НЕ_ПЕРЕНОСИМ_АНИМАЦИИ = {"scene", "prog"}
 
 
 def _root_tokens(css: str) -> dict[str, str]:
@@ -84,38 +91,65 @@ def test_токены_кабинета_совпадают_с_макетами():
             assert cabinet[name] == value, f"токен {name} разошёлся с макетом"
 
 
-def test_правила_артборда_перенесены_в_кабинет_дословно():
-    """Каждое правило шапки макетов лежит в base.css без переделки."""
+def test_правила_артборда_перенесены_во_фронтенд_дословно():
+    """
+    Каждое правило шапки макетов лежит во фронтенде без переделки.
+
+    Разложены они по двум файлам: рабочие стили в base.css, анимации —
+    в landing.css. Тест смотрит на оба сразу, поэтому переложить правило
+    из файла в файл можно, а переписать или потерять — нет.
+    """
     design = _rules(_artboard_css())
-    cabinet = _rules(BASE_CSS.read_text(encoding="utf-8"))
+    фронтенд = _rules(BASE_CSS.read_text(encoding="utf-8"))
+    фронтенд.update(_rules(LANDING_CSS.read_text(encoding="utf-8")))
 
     пропущено = []
     for selector, decls in design.items():
-        if selector == ":root" or ANIMATION_ONLY.match(selector):
+        if selector == ":root" or НЕ_ПЕРЕНОСИМ.match(selector):
             пропущено.append(selector)
             continue
-        assert selector in cabinet, f"правило «{selector}» из макетов в кабинет не перенесено"
-        assert cabinet[selector] == decls, f"правило «{selector}» переписано против макета"
+        assert selector in фронтенд, f"правило «{selector}» из макетов во фронтенд не перенесено"
+        assert фронтенд[selector] == decls, f"правило «{selector}» переписано против макета"
 
-    # Пропустить можно только анимации и сам блок токенов: если из макетов
-    # выпал или в них появился какой-то другой класс — это надо заметить.
-    assert all(s == ":root" or ANIMATION_ONLY.match(s) for s in пропущено)
+    assert all(s == ":root" or НЕ_ПЕРЕНОСИМ.match(s) for s in пропущено)
 
 
-def test_рамок_1px_в_кабинете_нет():
-    """Волосяной контур живёт внутри тени; border: 1px solid — откат к типовому виду."""
+def test_анимации_макета_лежат_в_landing_css():
+    """@keyframes из макетов перенесены целиком: их вырезает _rules,
+    поэтому проверяются отдельно."""
+    в_макете = set(re.findall(r"@keyframes\s+(\w+)", _artboard_css()))
+    в_кабинете = set(re.findall(r"@keyframes\s+(\w+)", LANDING_CSS.read_text(encoding="utf-8")))
+    нужные = в_макете - НЕ_ПЕРЕНОСИМ_АНИМАЦИИ
+    assert нужные <= в_кабинете, f"потеряны анимации: {sorted(нужные - в_кабинете)}"
+
+
+# Рамка 1px запрещена не как таковая: разделители в шапке лендинга и
+# документации нарисованы в макетах именно ей, и цвет там токен --line.
+# Запрещён откат к типовому виду — рамка литеральным цветом вроде
+# #E5E7EB, которую волосяной контур внутри тени как раз и заменяет.
+РАМКА_1PX = re.compile(r"border[A-Za-z-]*\s*:\s*'?1px solid ([^;'\",)]+)")
+
+
+def test_рамок_1px_литеральным_цветом_нет():
+    """Волосяной контур живёт внутри тени; border: 1px solid #E5E7EB — откат."""
     подозрительные = []
     for path in sorted(FRONTEND.glob("**/*")):
         if path.is_dir() or "node_modules" in path.parts or ".next" in path.parts:
             continue
         if path.suffix not in {".css", ".ts", ".tsx"}:
             continue
-        text = path.read_text(encoding="utf-8")
-        if re.search(r"border(?:-\w+)?\s*:\s*1px\s+solid", text) or re.search(
-            r"border(?:Top|Right|Bottom|Left)?\s*:\s*'1px solid", text
-        ):
-            подозрительные.append(path.name)
-    assert подозрительные == [], f"вернулись рамки 1px: {подозрительные}"
+        for цвет in РАМКА_1PX.findall(path.read_text(encoding="utf-8")):
+            if not цвет.strip().startswith("var("):
+                подозрительные.append(f"{path.name}: {цвет.strip()}")
+    assert подозрительные == [], f"вернулись рамки 1px литеральным цветом: {подозрительные}"
+
+
+def test_у_карточки_рамки_нет_вовсе():
+    """У .card контур — только внутри тени --lift, как в макете."""
+    правило = _rules(BASE_CSS.read_text(encoding="utf-8"))[".card"]
+    # border-radius — не рамка, а скругление: его у карточки как раз 16px.
+    рамки = [d for d in правило if re.match(r"border(-(width|style|color))?\s*:", d)]
+    assert рамки == [], f"у карточки появилась рамка: {рамки}"
 
 
 def test_активный_пункт_меню_это_залитая_таблетка():
