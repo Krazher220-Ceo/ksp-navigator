@@ -69,6 +69,11 @@ class Settings:
     webapp_url: str | None
     webapp_port: int
 
+    # Ф2 (FRONTEND_PLAN.md): откуда браузеру разрешено дёргать /api/v1/*.
+    # Список живёт здесь, а не в web/api.py, чтобы менять его правкой .env,
+    # а не кода: адрес на Vercel появится позже, домен — ещё позже.
+    cors_origins: tuple[str, ...]
+
     # М7.1 (PLAN_STAGE2.md): куда слать уведомление о завершившемся
     # инциденте живучести (core/incidents.py). Не задан — некому слать,
     # бот не падает из-за этого (тот же принцип, что webapp_url).
@@ -88,6 +93,26 @@ def _resolve_db_path(raw: str) -> Path:
 
 
 DEFAULT_LLM_PROVIDER_ORDER = ("deepseek", "gemini", "grok", "openai", "anthropic")
+
+# Кабинет в разработке живёт на localhost:3000 (next dev). Боевой адрес на
+# Vercel дописывается в CORS_ORIGINS через запятую, когда появится.
+DEFAULT_CORS_ORIGINS = ("http://localhost:3000",)
+
+
+def _parse_cors_origins(raw: str | None) -> tuple[str, ...]:
+    """Разбирает CORS_ORIGINS ("https://x.vercel.app,http://localhost:3000").
+
+    Пустая переменная — не ошибка: остаётся только адрес разработки.
+    Звёздочка запрещена намеренно: сервер публично доступен через
+    Cloudflare Tunnel, и «разрешить всем» здесь означало бы разрешить
+    любому сайту дёргать API из браузера вошедшего человека.
+    """
+    if not raw:
+        return DEFAULT_CORS_ORIGINS
+    origins = tuple(part.strip() for part in raw.split(",") if part.strip())
+    if "*" in origins:
+        _fail("CORS_ORIGINS не может содержать '*' — перечислите адреса явно")
+    return origins or DEFAULT_CORS_ORIGINS
 
 
 def _parse_provider_order(raw: str | None) -> tuple[str, ...]:
@@ -181,6 +206,7 @@ def _build_settings() -> Settings:
         llm_providers=_build_provider_settings(llm_provider_order),
         webapp_url=_env("WEBAPP_URL"),
         webapp_port=webapp_port,
+        cors_origins=_parse_cors_origins(_env("CORS_ORIGINS")),
         admin_telegram_chat_id=admin_telegram_chat_id,
         admin_password=_env("ADMIN_PASSWORD"),
         stt_backend=stt_backend,

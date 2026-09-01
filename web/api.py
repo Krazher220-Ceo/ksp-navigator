@@ -15,6 +15,12 @@ Depends(verify_init_data) стоит на КАЖДОМ эндпоинте без
 только встроенные шаблоны, это не отдельная ошибка, а естественное
 следствие отсутствия personal templates.
 
+Блок Ф2 (FRONTEND_PLAN.md) добавил сюда три вещи и ни одной не убрал:
+роутер /api/v1/* для собственного фронтенда (web/api_v1.py), единый
+формат ошибки для него (web/errors.py) и CORS на список адресов из
+core/config.py. Старые /api/* остались как были — на них работает
+Mini App в проде.
+
 На что опирается: core.db, core.templates. Владение generated_ksp
 проверяется здесь же: чужой ksp_id -> 404, не 403 — не подтверждаем
 даже факт существования чужой записи (Б9.2).
@@ -25,18 +31,39 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import Body, Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from core.config import settings
 from core.dashboard import collect as collect_dashboard
 from core.db import execute, query
 from core.templates import list_templates
+from web.api_v1 import router as api_v1_router
 from web.auth import AuthenticatedUser, verify_init_data
+from web.errors import install_error_handlers
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
-app = FastAPI(title="Учебный навигатор — API")
+app = FastAPI(title="Mazmun — API")
+
+# Ф2: браузеру кабинета разрешены только перечисленные адреса. Звёздочки
+# здесь нет и быть не может — сервер публично доступен через Cloudflare
+# Tunnel, и «разрешить всем» означало бы разрешить любому сайту дёргать
+# API из браузера вошедшего человека. Куки не используются: кабинет
+# ходит с заголовком, поэтому allow_credentials выключен.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(settings.cors_origins),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Telegram-Init-Data"],
+)
+
+# Ф2: единый формат ошибки для /api/v1/*. Старые /api/* обработчики
+# пропускают дальше, к обработчику FastAPI по умолчанию.
+install_error_handlers(app)
 
 
 def _resolve_teacher_id(telegram_user_id: int, db_path=None) -> int:
@@ -117,6 +144,12 @@ async def api_download(ksp_id: str, auth: AuthenticatedUser = Depends(verify_ini
         raise HTTPException(status_code=404, detail="файл не найден на диске")
 
     return FileResponse(docx_path, filename=docx_path.name, media_type=DOCX_MEDIA_TYPE)
+
+
+# Ф2: версионированный API для собственного фронтенда. Включается ДО
+# монтирования статики — Starlette проверяет маршруты в порядке
+# регистрации, и роутер после mount никогда бы не сработал.
+app.include_router(api_v1_router)
 
 
 # Статика Mini App (блок Б10) — регистрируется ПОСЛЕДНЕЙ: раньше
