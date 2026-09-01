@@ -69,7 +69,32 @@ export type Я = {
   profile: { name: string | null; subject: string | null; school: string | null; city: string | null } | null;
 };
 
+/** Ответ /api/v1/dashboard — ровно то, что посчитал core.dashboard. */
+export type Дэшборд = {
+  has_profile: boolean;
+  queue: { pending: number; processing: number; failed_7d: number };
+  generated_ksp: { total: number; last_7d: number; last_30d: number };
+  ktp_coverage: { covered: number; not_covered: number };
+  upcoming_lessons_without_ksp: { topic: string; planned_date: string }[];
+  unparsed_planned_dates: number;
+  style_profile: { exists: boolean; samples_count: number | null };
+  usage_today: {
+    generate_ksp: number; generate_ktp: number;
+    generate_ksp_limit: number; generate_ktp_limit: number;
+  };
+  uptime: {
+    days_tracked?: number;
+    incidents_7d?: number;
+    downtime_7d_minutes?: number;
+    last_incident?: { started_at: string; ended_at: string | null; reason: string } | null;
+    [ключ: string]: unknown;
+  };
+  generated_at: string;
+  generated_at_label: string;
+};
+
 export const апи = {
+  дэшборд: () => запрос<Дэшборд>('/api/v1/dashboard'),
   я: () => запрос<Я>('/api/v1/me'),
   согласие: () => запрос<{ consent_given: boolean }>('/api/v1/consent', {}),
   регистрацияПедагога: (данные: { name: string; subject: string; school?: string; city?: string }) =>

@@ -65,9 +65,9 @@ export default function KitPage() {
         <CardHead icon="card" iconColor="var(--blue-700)" title="Полоски расхода" />
         <CardBody>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
-            <Bar fill={0.6} label="Черновики КСП сегодня" value="3 / 5" />
-            <Bar fill={0.5} tone="голубой" label="Конспекты из записи" value="1 / 2" />
-            <Bar fill={0.52} label="Учеников в классах" value="47 / 90" />
+            <Bar расход={3} потолок={5} label="Черновики КСП сегодня" />
+            <Bar расход={1} потолок={2} tone="голубой" label="Конспекты из записи" />
+            <Bar расход={47} потолок={90} label="Учеников в классах" />
           </div>
         </CardBody>
       </Card>

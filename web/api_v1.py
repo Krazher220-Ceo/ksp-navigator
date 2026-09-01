@@ -9,9 +9,9 @@ web/api_v1.py — версионированный API для собственн
 обёртка: проверил доступ, вызвал функцию из core/, вернул JSON. Никакой
 арифметики: числа считает core, иначе бот и кабинет разойдутся.
 
-Чего здесь пока нет: дэшборд, конспект, КСП, история — они приезжают
-своими блоками (Ф5–Ф9). Сейчас здесь живут /health (блок Ф2) и вход с
-регистрацией (блок Ф4).
+Чего здесь пока нет: конспект, КСП, классы и история — они приезжают
+своими блоками (Ф6–Ф9). Сейчас здесь живут /health (Ф2), вход с
+регистрацией (Ф4) и дэшборд (Ф5).
 
 Правило, которое нельзя нарушать: каждый новый эндпоинт получает
 Depends(current_user) или Depends(verify_init_data). Сервер публично
@@ -20,12 +20,15 @@ Depends(current_user) или Depends(verify_init_data). Сервер публи�
 web/api_v1.PUBLIC_PATHS, чтобы про него знал и человек, и тест.
 """
 
+from datetime import datetime
+
 from fastapi import APIRouter, Body, Depends
 from fastapi.responses import JSONResponse
 
 from bot import texts
 from core import accounts
 from core.config import settings
+from core.dashboard import collect as collect_dashboard
 from core.db import query
 from web.auth import ROLE_STUDENT, ROLE_TEACHER, CurrentUser, current_user, require_consent
 from web.errors import CODE_NOT_FOUND, CODE_SERVER_UNAVAILABLE, ApiError, error_body
@@ -217,4 +220,48 @@ async def class_join(
         "class_name": класс["name"],
         "teacher_name": класс["teacher_name"],
         "message": сообщение,
+    }
+
+
+# =====================================================================
+# Ф5: дэшборд
+# =====================================================================
+
+
+def _teacher_id(человек: CurrentUser) -> int | None:
+    """Идентификатор профиля педагога, либо None — профиля ещё нет.
+
+    None здесь не ошибка, а нормальное состояние: человек вошёл, но
+    /teacher ещё не заполнил. core.dashboard.collect() это знает и
+    возвращает общее, а не пустоту — ранний выход «профиля нет, показать
+    нечего» уже был ошибкой в Mini App, повторять её нельзя.
+    """
+    профиль = (
+        accounts.find_teacher_by_auth_user(человек.auth_user_id)
+        if человек.auth_user_id
+        else accounts.find_teacher_by_telegram(человек.telegram_user_id)
+    )
+    return профиль["id"] if профиль else None
+
+
+@router.get("/dashboard")
+async def dashboard(человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Дэшборд педагога.
+
+    Отдаёт РОВНО то, что вернул core.dashboard.collect(), плюс время
+    сборки. Ни одного числа здесь не считается и не переформатируется:
+    бот и кабинет обязаны показывать одинаковое, а считает это один
+    модуль. Появится тут сложение — разойдутся при первой же правке.
+
+    Время сборки идёт двумя полями: машинным ISO и готовой подписью
+    «ЧЧ:ММ». Подпись собирает сервер, потому что показать надо время тех
+    данных, которые он отдал, а не момент, когда браузер это нарисовал.
+    """
+    собрано = datetime.now()
+    данные = collect_dashboard(_teacher_id(человек))
+    return {
+        **данные,
+        "generated_at": собрано.isoformat(timespec="seconds"),
+        "generated_at_label": собрано.strftime("%H:%M"),
     }
