@@ -2281,3 +2281,14 @@ Secret и кладётся в `.env` как `SUPABASE_JWT_SECRET`. **Во фро
 ```
 launchctl kickstart -k gui/$(id -u)/com.alikhan.kspbot
 ```
+
+### Решение автора по схеме (02.09.2026)
+
+Выбран **аддитивный вариант**: `add column auth_user_id` в `teachers` и
+`students`, снятие `NOT NULL` с `students.telegram_id`, отдельная
+таблица `consents_web`. SQL — выше в этом же разделе, дословно.
+
+Схемные файлы (`storage/schema.sql`, `storage/schema_supabase.sql`)
+поедут вместе с блоком Ф4, который первым начнёт этими колонками
+пользоваться: держать файлы впереди прода незачем, а вместе с кодом
+видно, ради чего правка. Следующим блоком автор назначил Ф13.
