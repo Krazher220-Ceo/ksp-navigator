@@ -1,0 +1,70 @@
+/* Точка входа стилей кабинета.
+ *
+ * Порядок важен: сначала Tailwind, потом наши токены и базовые стили —
+ * иначе preflight перекрывает вёрстку артбордов. Тема Tailwind обнулена
+ * целиком: палитра, шрифты, скругления и тени по умолчанию удалены и
+ * заменены нашими. Чужие цвета и Inter в проекте не появляются.
+ */
+@import "tailwindcss";
+@import "./tokens.css";
+@import "./base.css";
+
+@theme inline {
+  /* Палитра, шрифты, тени, скругления и кривые Tailwind — под нож целиком. */
+  --color-*: initial;
+  --font-*: initial;
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --radius-*: initial;
+  --ease-*: initial;
+
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-hair: var(--hair);
+  --color-hair-2: var(--hair-2);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-paper: var(--paper);
+  --color-card: var(--card);
+  --color-navy: var(--navy);
+  --color-navy-2: var(--navy-2);
+  --color-blue-800: var(--blue-800);
+  --color-blue-700: var(--blue-700);
+  --color-blue-600: var(--blue-600);
+  --color-blue-500: var(--blue-500);
+  --color-sky: var(--sky);
+  --color-sky-soft: var(--sky-soft);
+  --color-blue-soft: var(--blue-soft);
+  --color-gold: var(--gold);
+  --color-gold-soft: var(--gold-soft);
+  --color-green: var(--green);
+  --color-green-soft: var(--green-soft);
+  --color-red: var(--red);
+  --color-red-soft: var(--red-soft);
+  --color-white: #FFFFFF;
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --font-sans: var(--sans);
+  --font-serif: var(--serif);
+  --font-mono: var(--mono);
+  --default-font-family: var(--sans);
+  --default-mono-font-family: var(--mono);
+
+  --shadow-lift: var(--lift);
+  --shadow-lift-2: var(--lift-2);
+  --inset-shadow-gloss: var(--inset);
+
+  /* Скругления макетов кратности четырём не подчиняются — так и оставлено. */
+  --radius-panel: 18px;
+  --radius-card: 16px;
+  --radius-field: 12px;
+  --radius-avatar: 13px;
+  --radius-btn: 11px;
+  --radius-input: 10px;
+  --radius-sm: 9px;
+  --radius-pill: 999px;
+
+  --ease-brand: var(--ease);
+}

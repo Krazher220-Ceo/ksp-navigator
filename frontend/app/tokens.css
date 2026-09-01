@@ -1,0 +1,46 @@
+/* Токены дизайн-системы Mazmun.
+ *
+ * Перенесены из design/src/_head.html один в один: те же имена, те же
+ * значения. Значения не округлять и не «причёсывать» — border-radius в
+ * макетах намеренно не кратен четырём (16, 11, 9), а --lift несёт и
+ * волосяной контур, и рассеянную тень, поэтому рамок 1px в проекте нет
+ * нигде. Совпадение сторожит scripts/check-tokens.mjs и tests/test_frontend_tokens.py.
+ *
+ * Единственное отличие от макета — шрифты: next/font раздаёт их со своего
+ * домена под сгенерированными именами, поэтому в начало каждой стопки
+ * добавлена переменная от next/font. Хвост стопки — как в макете.
+ */
+:root {
+  --ink: #0B1A2B;
+  --ink-2: #35495F;
+  --ink-3: #6E8299;
+  --hair: rgba(11, 26, 43, .07);
+  --hair-2: rgba(11, 26, 43, .045);
+  --line: rgba(11, 26, 43, .09);
+  --line-2: #EBEFF4;
+  --paper: #F2F5F8;
+  --card: #FFFFFF;
+  --navy: #0C2B49;
+  --navy-2: #08203A;
+  --blue-800: #12406B;
+  --blue-700: #175A93;
+  --blue-600: #1C74BC;
+  --blue-500: #2F8FD6;
+  --sky: #00AFCA;
+  --sky-soft: #E2F4F8;
+  --blue-soft: #E9F1FA;
+  --gold: #B8892A;
+  --gold-soft: #F8F1DC;
+  --green: #14795A;
+  --green-soft: #E1F1EB;
+  --red: #A93A31;
+  --red-soft: #FAEAE7;
+  --sans: var(--font-golos), "Golos Text", system-ui, "Helvetica Neue", Arial, sans-serif;
+  --serif: var(--font-literata), "Literata", Georgia, "Times New Roman", serif;
+  --mono: var(--font-jetbrains), "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --ease: cubic-bezier(.32, .72, 0, 1);
+  /* Тень несёт и волосяной контур, и рассеянное свечение — рамки 1px нет нигде. */
+  --lift: 0 0 0 1px var(--hair), 0 1px 2px rgba(11, 26, 43, .04), 0 14px 30px -20px rgba(11, 26, 43, .28);
+  --lift-2: 0 0 0 1px var(--hair), 0 2px 4px rgba(11, 26, 43, .05), 0 26px 50px -28px rgba(11, 26, 43, .34);
+  --inset: inset 0 1px 0 rgba(255, 255, 255, .6);
+}

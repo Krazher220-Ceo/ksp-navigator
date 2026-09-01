@@ -1,0 +1,113 @@
+/* Базовые стили кабинета: сброс, оболочка, боковое меню, шапка и элементы.
+ *
+ * Перенесены из design/src/_head.html без переделки — это и есть артборды.
+ * Что здесь осознанно не делается: ни одной рамки 1px (волосяной контур
+ * живёт внутри --lift), активный пункт меню — залитая таблетка с бликом,
+ * а не полоска слева (полоску автор отверг). Анимации макетов сюда не
+ * переносятся: они нужны лендингу, а не кабинету, и приедут блоком Ф13.
+ */
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-wrap: pretty;
+  font-feature-settings: "ss01";
+}
+a { color: var(--blue-700); text-decoration: none; }
+a:hover { color: var(--blue-600); }
+h1, h2, h3, h4 { margin: 0; font-weight: 600; letter-spacing: -0.015em; }
+p { margin: 0; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+table { border-collapse: collapse; }
+svg { display: block; }
+
+/* --- фирменные фоны и знак --- */
+/* Затемняющая подложка поверх орнамента — текст должен читаться, а узор оставаться видимым. */
+.bg-kz { background-image: linear-gradient(100deg, rgba(7,28,52,.93) 0%, rgba(7,28,52,.72) 48%, rgba(7,28,52,.42) 100%), url(/mazmun-fon.jpg); background-size: cover, cover; background-position: center, right center; background-color: var(--navy); }
+.bg-kz-app { background-image: linear-gradient(180deg, rgba(7,28,52,.72) 0%, rgba(7,28,52,.82) 100%), url(/mazmun-fon-app.jpg); background-size: cover, cover; background-position: center, center; background-color: var(--navy); }
+.mark { display: block; flex: none; object-fit: contain; }
+
+/* --- каркас: внешняя оболочка и вложенное ядро --- */
+.app { display: grid; grid-template-columns: 250px minmax(0, 1fr); height: 100vh; background: var(--navy-2); padding: 10px; gap: 10px; }
+.side { color: #B7CDDF; display: flex; flex-direction: column; padding: 4px 0 6px; min-width: 0; }
+.brand { display: flex; align-items: center; gap: 11px; padding: 10px 14px 22px; }
+.brand-name { font-family: var(--serif); font-size: 15px; font-weight: 700; color: #fff; letter-spacing: -0.015em; line-height: 1.15; }
+.brand-sub { font-size: 9.5px; color: #6E90AC; letter-spacing: .16em; text-transform: uppercase; margin-top: 3px; }
+.nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
+.nav-cap { font-size: 9.5px; letter-spacing: .16em; text-transform: uppercase; color: #52738E; padding: 16px 10px 6px; }
+.nav-item { display: flex; align-items: center; gap: 11px; padding: 9px 10px; border-radius: 11px; color: #AFC6D9; font-size: 13.5px; transition: all .4s var(--ease); }
+.nav-item > svg { opacity: .72; }
+/* Активный пункт — залитая «таблетка» с внутренним бликом. Никакой полосы слева. */
+.nav-item.on { background: linear-gradient(180deg, rgba(255,255,255,.145), rgba(255,255,255,.055)); color: #fff; font-weight: 600; box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 2px 6px -2px rgba(0,0,0,.45); }
+.nav-item.on > svg { opacity: 1; color: var(--sky); }
+.nav-badge { margin-left: auto; background: rgba(255,255,255,.12); color: #DCEAF4; font-size: 10.5px; font-weight: 600; border-radius: 20px; padding: 2px 8px; }
+.side-foot { margin-top: auto; margin-inline: 8px; padding: 10px; border-radius: 13px; background: rgba(255,255,255,.05); box-shadow: inset 0 1px 0 rgba(255,255,255,.08); display: flex; align-items: center; gap: 10px; }
+.avatar { width: 32px; height: 32px; border-radius: 11px; background: linear-gradient(160deg, #2C86CE, #12456F); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 600; flex: none; box-shadow: inset 0 1px 0 rgba(255,255,255,.25); }
+
+/* Ядро: светлая панель, вложенная в тёмную оболочку. */
+.main { display: flex; flex-direction: column; min-width: 0; background: var(--paper); border-radius: 18px; overflow: hidden; box-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 24px 60px -30px rgba(0,0,0,.7); }
+.top { height: 62px; background: rgba(255,255,255,.72); backdrop-filter: blur(14px); box-shadow: 0 1px 0 var(--hair); display: flex; align-items: center; gap: 14px; padding: 0 26px; flex: none; }
+.top h1 { font-size: 17px; }
+.crumb { color: var(--ink-3); font-size: 12.5px; }
+.search { display: flex; align-items: center; gap: 9px; background: rgba(11,26,43,.035); border-radius: 10px; padding: 8px 12px; width: 264px; color: var(--ink-3); font-size: 13px; margin-left: auto; }
+.body { padding: 24px 26px 28px; overflow: hidden; }
+
+/* --- элементы --- */
+.card { background: var(--card); border-radius: 16px; box-shadow: var(--lift); }
+.card-h { display: flex; align-items: center; gap: 10px; padding: 15px 18px; box-shadow: 0 1px 0 var(--hair-2); }
+.card-h h3 { font-size: 14px; }
+.card-b { padding: 18px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 16px; border-radius: 11px; font-size: 13.5px; font-weight: 600; border: 0; background: linear-gradient(180deg, #1B6BAB, #14548C); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.22), 0 6px 14px -8px rgba(19,74,122,.9); transition: all .4s var(--ease); }
+.btn-lg { height: 48px; padding: 0 24px; font-size: 15px; border-radius: 999px; }
+.btn-sm { height: 32px; padding: 0 12px; font-size: 12.5px; border-radius: 9px; }
+.btn-2 { background: var(--card); color: var(--ink-2); box-shadow: 0 0 0 1px var(--hair), 0 1px 2px rgba(11,26,43,.05); }
+.btn-3 { background: transparent; color: var(--blue-700); box-shadow: none; }
+/* Кнопка в кнопке: стрелка живёт в своём круге, вплотную к правому краю. */
+.btn-ico { width: 30px; height: 30px; border-radius: 999px; background: rgba(255,255,255,.16); display: flex; align-items: center; justify-content: center; margin-right: -12px; margin-left: 4px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.14); }
+.chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; border-radius: 999px; padding: 4px 10px; background: var(--blue-soft); color: var(--blue-800); }
+.chip-gold { background: var(--gold-soft); color: #7A5A12; }
+.chip-green { background: var(--green-soft); color: var(--green); }
+.chip-red { background: var(--red-soft); color: var(--red); }
+.chip-grey { background: rgba(11,26,43,.05); color: var(--ink-3); }
+.mono { font-family: var(--mono); }
+.muted { color: var(--ink-3); }
+.lbl { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; }
+.row { display: flex; align-items: center; gap: 10px; }
+.grid { display: grid; gap: 14px; }
+.stat { background: var(--card); border-radius: 16px; box-shadow: var(--lift); padding: 16px 18px; display: flex; flex-direction: column; gap: 7px; }
+.stat-n { font-size: 29px; font-weight: 700; letter-spacing: -0.03em; line-height: 1; font-feature-settings: "tnum"; }
+.bar { height: 6px; border-radius: 999px; background: rgba(11,26,43,.07); overflow: hidden; display: flex; }
+.bar > i { display: block; height: 100%; background: linear-gradient(90deg, #2C86CE, #16558D); border-radius: 999px; }
+.sep { height: 1px; background: var(--hair-2); }
+.field { display: flex; flex-direction: column; gap: 7px; }
+.input { height: 46px; border-radius: 12px; background: rgba(11,26,43,.028); box-shadow: inset 0 0 0 1px var(--hair); display: flex; align-items: center; gap: 10px; padding: 0 14px; font-size: 14.5px; color: var(--ink); }
+.input.ph { color: var(--ink-3); }
+.sw { width: 40px; height: 23px; border-radius: 999px; background: rgba(11,26,43,.14); position: relative; flex: none; box-shadow: inset 0 1px 2px rgba(11,26,43,.12); }
+.sw > i { position: absolute; top: 2.5px; left: 2.5px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(11,26,43,.35); }
+.sw.on { background: linear-gradient(180deg, #2C86CE, #14548C); }
+.sw.on > i { left: auto; right: 2.5px; }
+
+/* --- телефон --- */
+.phone { height: 100vh; display: flex; flex-direction: column; background: var(--paper); }
+.ph-top { padding: 14px 20px 13px; background: rgba(255,255,255,.8); backdrop-filter: blur(14px); box-shadow: 0 1px 0 var(--hair); display: flex; align-items: center; gap: 12px; flex: none; }
+.ph-top h1 { font-size: 19px; }
+.ph-body { flex: 1; overflow: hidden; padding: 16px 18px 12px; display: flex; flex-direction: column; gap: 14px; }
+.tabbar { flex: none; background: rgba(255,255,255,.88); backdrop-filter: blur(18px); box-shadow: 0 -1px 0 var(--hair); display: grid; grid-template-columns: repeat(5, 1fr); padding: 9px 6px 22px; }
+.tab { display: flex; flex-direction: column; align-items: center; gap: 4px; color: var(--ink-3); font-size: 10px; font-weight: 500; padding: 5px 0; }
+.tab > svg { opacity: .8; }
+.tab.on { color: var(--blue-700); font-weight: 600; }
+.tab.on > svg { opacity: 1; }
+
+/* Поля ввода и кнопки в вебе — настоящие input и button, у них свои
+ * умолчания браузера, которых в макете нет. Гасим только их. */
+.input input, .input select { border: 0; outline: 0; background: transparent; font: inherit; color: inherit; width: 100%; padding: 0; }
+.input input::placeholder { color: var(--ink-3); }
+button { font: inherit; cursor: pointer; }
+button:disabled { cursor: default; opacity: .55; }
