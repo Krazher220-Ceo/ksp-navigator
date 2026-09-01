@@ -57,6 +57,10 @@ class Settings:
     db_backend: str
     supabase_url: str | None
     supabase_service_role_key: str | None
+    # Ф3: общий секрет, которым Supabase Auth подписывает JWT кабинета.
+    # Не задан — вход по почте просто не работает; «пропустить на всякий
+    # случай» здесь недопустимо (web/jwt.py).
+    supabase_jwt_secret: str | None
 
     telegram_bot_token: str
 
@@ -201,6 +205,7 @@ def _build_settings() -> Settings:
         db_backend=db_backend,
         supabase_url=supabase_url,
         supabase_service_role_key=supabase_service_role_key,
+        supabase_jwt_secret=_env("SUPABASE_JWT_SECRET"),
         telegram_bot_token=telegram_bot_token,
         llm_provider_order=llm_provider_order,
         llm_providers=_build_provider_settings(llm_provider_order),

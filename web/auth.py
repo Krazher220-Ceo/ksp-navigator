@@ -6,6 +6,16 @@ web/auth.py — валидация Telegram Mini App initData (блок Б9).
 адрес, смог бы дёргать /api/preview и /api/download чужими данными.
 Это единственное место, где решается, кому верить.
 
+Блок Ф3 (FRONTEND_PLAN.md) добавил сюда вторую дверь — JWT от Supabase
+Auth (web/jwt.py) — и одну зависимость current_user, которая принимает
+любую из двух и возвращает одну и ту же структуру. Проверка initData
+ниже не тронута ни на строку: она работает в проде.
+
+Две двери не должны стать дырой. Если не сработала ни одна — 401, а не
+«пропустим на всякий случай». База не ответила при определении роли —
+честный 503, а не тихий проход: ровно так уже сделано для согласия
+(CONSENT_CHECK_UNAVAILABLE в bot/texts.py).
+
 Что осознанно не делает: не проверяет права доступа к конкретному
 ресурсу (тот ли это учитель, чей generated_ksp) — только то, что
 initData подписан настоящим Telegram для настоящего пользователя.
@@ -34,12 +44,24 @@ Web Apps:
 import hashlib
 import hmac
 import json
+import logging
 import time
+from dataclasses import dataclass
 from urllib.parse import parse_qsl
 
 from fastapi import Header, HTTPException
 
+from bot import texts
 from core.config import settings
+from core.db import SupabaseDatabaseError, query
+from web.errors import (
+    CODE_NOT_AUTHORIZED,
+    CODE_SERVER_UNAVAILABLE,
+    ApiError,
+)
+from web.jwt import JwtError, issuer_for, verify_supabase_jwt
+
+logger = logging.getLogger(__name__)
 
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
 
@@ -152,3 +174,124 @@ async def verify_init_data(
         raise HTTPException(status_code=401, detail="не авторизован")
 
     return AuthenticatedUser(telegram_user_id=telegram_user_id, fields=fields)
+
+
+# =====================================================================
+# Ф3: одна дверь на два входа
+#
+# Кабинет входит по почте через Supabase Auth и приносит JWT, Telegram
+# приносит initData. Проверка у каждого своя, а результат — один и тот
+# же CurrentUser, чтобы эндпоинту было всё равно, откуда пришёл человек.
+# =====================================================================
+
+ROLE_TEACHER = "teacher"
+ROLE_STUDENT = "student"
+
+# Третьей роли нет и не заводится (FRONTEND_PLAN.md, блок Ф3).
+ROLES = (ROLE_TEACHER, ROLE_STUDENT)
+
+BEARER_PREFIX = "Bearer "
+
+
+@dataclass(frozen=True)
+class CurrentUser:
+    """Кто пришёл, одинаково для обеих дверей.
+
+    user_id — стабильная строка с пометкой двери: "tg:508…" для
+    Telegram, "auth:9c1e…" для входа по почте. Пометка нужна, чтобы два
+    разных пространства идентификаторов нельзя было спутать: числовой
+    telegram_user_id и uuid из Supabase Auth совпасть не могут, но
+    сравнивать их без пометки всё равно опасно.
+
+    role — "teacher", "student" или None. None значит «роль ещё не
+    определена», а не «никто»: так выглядит человек, который вошёл по
+    почте и пока не связан с профилем (см. ниже про недостающую колонку).
+    """
+
+    user_id: str
+    telegram_user_id: int | None
+    role: str | None
+
+    @property
+    def auth_user_id(self) -> str | None:
+        """Идентификатор в Supabase Auth, если человек вошёл по почте."""
+        return self.user_id[len("auth:") :] if self.user_id.startswith("auth:") else None
+
+
+def resolve_role(telegram_user_id: int, db_path=None) -> str | None:
+    """Роль по наличию строки в students или teachers.
+
+    Ученик проверяется первым — так же, как в боте (_student_gate,
+    bot/handlers.py): если человек почему-то оказался и там и там,
+    считаем его учеником, потому что цена ошибки в эту сторону меньше.
+    Ученик увидит меньше, чем мог бы; педагог, ошибочно принятый за
+    ученика, — заведёт класс на чужого ребёнка.
+    """
+    if query("SELECT 1 FROM students WHERE telegram_id = ?", (telegram_user_id,), db_path=db_path):
+        return ROLE_STUDENT
+    if query("SELECT 1 FROM teachers WHERE telegram_user_id = ?", (telegram_user_id,), db_path=db_path):
+        return ROLE_TEACHER
+    return None
+
+
+def _не_авторизован() -> ApiError:
+    return ApiError(401, CODE_NOT_AUTHORIZED, texts.API_NOT_AUTHORIZED)
+
+
+async def current_user(
+    authorization: str | None = Header(default=None),
+    init_data: str | None = Header(default=None, alias=INIT_DATA_HEADER),
+) -> CurrentUser:
+    """
+    FastAPI-зависимость для /api/v1/*: принимает ЛИБО JWT, ЛИБО initData.
+
+    Порядок разбора: сначала Authorization — он приходит от кабинета и
+    задан явно; initData Telegram подставляет сам, и если пришли оба,
+    выбор человека важнее. Не сработало ничего — 401. Промежуточного
+    состояния «пропустим на всякий случай» здесь нет.
+
+    Чего эта зависимость пока не умеет: связать вошедшего по почте с его
+    профилем педагога или ученика. Связывать не с чем — в teachers и
+    students нет колонки под идентификатор Supabase Auth, а завести её
+    может только автор (FRONTEND_PLAN.md, раздел 6, пункт 4). До этого
+    вход по почте даёт опознанного человека без роли, и ни один эндпоинт
+    роли у него не найдёт. Это честнее, чем выдать роль по совпадению
+    почты, которой в teachers тоже нет.
+    """
+    if authorization:
+        if not authorization.startswith(BEARER_PREFIX):
+            raise _не_авторизован()
+        try:
+            claims = verify_supabase_jwt(
+                authorization[len(BEARER_PREFIX) :].strip(),
+                secret=settings.supabase_jwt_secret or "",
+                issuer=issuer_for(settings.supabase_url or ""),
+            )
+        except JwtError as exc:
+            logger.info("current_user: токен отвергнут — %s", exc)
+            raise _не_авторизован() from None
+        return CurrentUser(user_id=f"auth:{claims['sub']}", telegram_user_id=None, role=None)
+
+    if init_data:
+        try:
+            authenticated = await verify_init_data(init_data)
+        except HTTPException:
+            raise _не_авторизован() from None
+        try:
+            роль = resolve_role(authenticated.telegram_user_id)
+        except SupabaseDatabaseError:
+            # База молчит — говорим об этом прямо. Пустить без роли
+            # значило бы отдать педагогические экраны кому попало.
+            logger.warning(
+                "current_user: роль не определена, база недоступна, telegram_user_id=%s",
+                authenticated.telegram_user_id,
+                exc_info=True,
+            )
+            raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE) from None
+        return CurrentUser(
+            user_id=f"tg:{authenticated.telegram_user_id}",
+            telegram_user_id=authenticated.telegram_user_id,
+            role=роль,
+        )
+
+    raise _не_авторизован()
