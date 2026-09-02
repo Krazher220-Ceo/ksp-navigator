@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import { Golos_Text, JetBrains_Mono, Literata } from 'next/font/google';
+import { РегистрацияSW } from '@/components/pwa/РегистрацияSW';
 import './globals.css';
 
 /**
@@ -21,6 +22,11 @@ const jetbrains = JetBrains_Mono({ subsets: ['cyrillic', 'latin'], weight: ['400
 export const metadata: Metadata = {
   title: 'Mazmun',
   description: 'Конспект урока из записи и черновик КСП по форме приказа МОН РК №130.',
+  manifest: '/manifest.webmanifest',
+  // Иконка на домашнем экране iPhone берётся отсюда: манифест Safari
+  // читает не полностью.
+  appleWebApp: { capable: true, title: 'Mazmun', statusBarStyle: 'black-translucent' },
+  icons: { icon: '/icon-192.png', apple: '/icon-192.png' },
 };
 
 export const viewport: Viewport = {
@@ -30,7 +36,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru" className={`${golos.variable} ${literata.variable} ${jetbrains.variable}`}>
-      <body>{children}</body>
+      <body>
+        <РегистрацияSW />
+        {children}
+      </body>
     </html>
   );
 }

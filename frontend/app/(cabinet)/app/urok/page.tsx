@@ -10,6 +10,7 @@ import { Диктофон } from '@/components/lesson/Диктофон';
 import { Результат } from '@/components/lesson/Результат';
 import { ТЕКСТЫ } from '@/content/texts.generated';
 import { ОшибкаApi, апи, отправитьЗапись, type Задача, type Конспект } from '@/lib/api';
+import { отложить } from '@/lib/offlineQueue';
 import { следитьЗаЗадачей } from '@/lib/pollTask';
 
 /**
@@ -25,7 +26,7 @@ import { следитьЗаЗадачей } from '@/lib/pollTask';
 const ПРЕДЕЛ_МБ = 100;
 const ПРЕДЕЛ_БАЙТ = ПРЕДЕЛ_МБ * 1024 * 1024;
 
-type Шаг = 'выбор' | 'ожидание' | 'готово' | 'ошибка';
+type Шаг = 'выбор' | 'ожидание' | 'готово' | 'ошибка' | 'отложено';
 
 export default function UrokPage() {
   const [шаг, setШаг] = useState<Шаг>('выбор');
@@ -33,6 +34,7 @@ export default function UrokPage() {
   const [задача, setЗадача] = useState<Задача | null>(null);
   const [конспект, setКонспект] = useState<Конспект | null>(null);
   const [ошибка, setОшибка] = useState<string | null>(null);
+  const [, setОтложено] = useState(false);
   const остановить = useRef<(() => void) | null>(null);
 
   useEffect(() => () => остановить.current?.(), []);
@@ -85,6 +87,20 @@ export default function UrokPage() {
       const { task_id } = await отправитьЗапись(файл, имя, режим);
       следить(task_id);
     } catch (e) {
+      // Сети нет — запись не теряем: урок уже прошёл, и второй раз его
+      // не записать. Ложится в очередь браузера и уйдёт сама, как только
+      // связь появится (lib/offlineQueue.ts).
+      if (e instanceof ОшибкаApi && e.код === 'NETWORK') {
+        try {
+          await отложить({ файл, имя, режим, когда: Date.now() });
+          setОтложено(true);
+          setШаг('отложено');
+          return;
+        } catch {
+          // IndexedDB недоступен (приватное окно, старый браузер) —
+          // тогда честно говорим, что запись не сохранилась.
+        }
+      }
       setОшибка(e instanceof ОшибкаApi ? e.message : ТЕКСТЫ.ERROR_UNEXPECTED);
       setШаг('ошибка');
     }
@@ -177,6 +193,21 @@ export default function UrokPage() {
                 </p>
               ) : null}
               {ошибка ? <p className="muted" style={{ fontSize: 12.5, marginTop: 10 }}>{ошибка}</p> : null}
+            </CardBody>
+          </Card>
+        ) : null}
+
+        {шаг === 'отложено' ? (
+          <Card style={{ maxWidth: 620 }}>
+            <CardHead icon="cloud" iconColor="var(--blue-700)" title="Запись сохранена и ждёт сети" />
+            <CardBody>
+              <p style={{ fontSize: 14, lineHeight: 1.65 }}>
+                Интернета сейчас нет, но запись никуда не делась: она лежит в браузере и уйдёт на
+                расшифровку сама, как только появится связь. Страницу можно закрыть.
+              </p>
+              <Button variant="тихая" style={{ marginTop: 14 }} onClick={() => setШаг('выбор')}>
+                Хорошо
+              </Button>
             </CardBody>
           </Card>
         ) : null}

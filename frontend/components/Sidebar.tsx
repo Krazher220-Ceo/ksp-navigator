@@ -52,6 +52,7 @@ export const NAV: Group[] = [
   ] },
   { cap: 'Аккаунт', items: [
     { key: 'tariff', icon: 'card', label: 'Тариф и оплата', href: '/app/tarif' },
+    { key: 'install', icon: 'phone', label: 'Установить на телефон', href: '/app/ustanovka' },
   ] },
 ];
 
