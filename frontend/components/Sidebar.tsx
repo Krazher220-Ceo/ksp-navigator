@@ -30,7 +30,7 @@ export const NAV: Group[] = [
     { key: 'ktp', icon: 'cal', label: 'Собрать КТП' },
   ] },
   { cap: 'Класс', items: [
-    { key: 'classes', icon: 'users', label: 'Мои классы' },
+    { key: 'classes', icon: 'users', label: 'Мои классы', href: '/app/klassy' },
   ] },
   { cap: 'Материалы', items: [
     { key: 'templates', icon: 'layers', label: 'Шаблоны' },

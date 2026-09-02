@@ -9,9 +9,9 @@ web/api_v1.py — версионированный API для собственн
 обёртка: проверил доступ, вызвал функцию из core/, вернул JSON. Никакой
 арифметики: числа считает core, иначе бот и кабинет разойдутся.
 
-Чего здесь пока нет: классы и история — они приезжают блоками Ф8 и Ф9.
+Чего здесь пока нет: истории документов — она приезжает блоком Ф9.
 Сейчас здесь живут /health (Ф2), вход с регистрацией (Ф4), дэшборд (Ф5),
-конспект урока (Ф6) и сборка КСП (Ф7).
+конспект урока (Ф6), сборка КСП (Ф7) и классы (Ф8).
 
 Правило, которое нельзя нарушать: каждый новый эндпоинт получает
 Depends(current_user) или Depends(verify_init_data). Сервер публично
@@ -26,6 +26,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Body, Depends, Header, Request
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -702,3 +703,187 @@ async def ksp_generate(
         chat_id=chat_id,
     )
     return {"task_id": task_id, "status": "queued"}
+
+
+# =====================================================================
+# Ф8: классы и ученики
+#
+# Массовой рассылки конспекта классу здесь нет и не появится. Это прямое
+# решение автора: продукт, раздающий детям полные конспекты, отвечает на
+# вопрос «зачем тогда ходить в школу» неправильным образом. Отправка —
+# всегда одному ученику и всегда рукой педагога.
+# =====================================================================
+
+
+def _класс_или_404(class_id: int, teacher_id: int | None) -> dict:
+    класс = accounts.get_class(class_id, teacher_id) if teacher_id is not None else None
+    if класс is None:
+        # Чужой класс — 404, а не 403: не подтверждаем даже факт его
+        # существования (то же правило, что у generated_ksp, Б9.2).
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+    return класс
+
+
+@router.get("/classes")
+async def classes(человек: CurrentUser = Depends(current_user)) -> dict:
+    """Классы педагога с числом учеников в каждом."""
+    teacher_id = _teacher_id(человек)
+    if teacher_id is None:
+        return {"classes": []}
+    return {"classes": accounts.list_classes(teacher_id)}
+
+
+@router.post("/classes")
+async def create_class(
+    name: str = Body(...),
+    subject: str | None = Body(default=None),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """Заводит класс и сразу выдаёт код приглашения."""
+    await require_consent(человек)
+    teacher_id = _teacher_id(человек)
+    if teacher_id is None:
+        raise ApiError(403, CODE_CONSENT_REQUIRED, texts.API_PROFILE_REQUIRED)
+    имя = name.strip()
+    if not имя:
+        raise ApiError(422, CODE_BAD_REQUEST, texts.API_BAD_REQUEST.format(reason="не заполнено «название класса»"))
+    класс = accounts.create_class(teacher_id, имя, (subject or "").strip() or None)
+    return {"class": {**класс, "students_count": 0}}
+
+
+@router.post("/classes/{class_id}/code")
+async def reissue_code(class_id: int, человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Перевыпуск кода приглашения.
+
+    Старый код перестаёт действовать сразу — ради этого перевыпуск и
+    существует: код продиктовали не тому классу или он ушёл дальше, чем
+    хотелось.
+    """
+    await require_consent(человек)
+    teacher_id = _teacher_id(человек)
+    _класс_или_404(class_id, teacher_id)
+    новый = accounts.regenerate_invite_code(class_id, teacher_id)
+    return {"invite_code": новый}
+
+
+@router.delete("/classes/{class_id}")
+async def delete_class(class_id: int, человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Удаляет класс. Учеников не трогает — только их связь с этим классом.
+
+    Тот же ребёнок может состоять у другого педагога, и стереть его
+    вместе с классом значило бы выкинуть чужие данные.
+    """
+    await require_consent(человек)
+    teacher_id = _teacher_id(человек)
+    класс = _класс_или_404(class_id, teacher_id)
+    accounts.delete_class(class_id, teacher_id)
+    return {"deleted": True, "name": класс["name"]}
+
+
+@router.get("/classes/{class_id}/students")
+async def class_students(class_id: int, человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Ученики класса: имя, когда вступил, сколько сверок и когда последняя
+    активность.
+
+    Больше об ученике не хранится ничего. Ни ИИН, ни фамилии в
+    документах, ни даты рождения, ни оценок — их незачем хранить, и
+    отдавать отсюда нечего.
+    """
+    teacher_id = _teacher_id(человек)
+    _класс_или_404(class_id, teacher_id)
+    ученики = accounts.list_class_students(class_id)
+    return {
+        "students": [
+            {
+                "id": ученик["id"],
+                "name": ученик["name"],
+                "joined_at": ученик["joined_at"],
+                "sverki": ученик["sverki"],
+                "last_activity": ученик["last_activity"],
+                # Отправить конспект можно только тому, у кого есть
+                # Telegram: доставляет его бот.
+                "can_receive": ученик["telegram_id"] is not None,
+            }
+            for ученик in ученики
+        ]
+    }
+
+
+@router.post("/classes/{class_id}/send-konspekt")
+async def send_konspekt(
+    class_id: int,
+    student_id: int = Body(...),
+    konspekt_id: str = Body(...),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """
+    Отправляет конспект ОДНОМУ ученику — тому, кто пропустил урок.
+
+    Массовой рассылки классу нет и не будет: это решение автора, а не
+    недоделка. Целиком конспект уходит только рукой педагога и только
+    адресно.
+
+    Доставляет бот, поэтому ученику нужен Telegram. Файл отправляется
+    тот же, что собрал обработчик очереди, — пересобирать по запросу
+    нельзя, разойдётся с тем, что педагог уже видел.
+    """
+    await require_consent(человек)
+    teacher_id = _teacher_id(человек)
+    _класс_или_404(class_id, teacher_id)
+
+    ученик = accounts.student_in_class(class_id, student_id)
+    if ученик is None:
+        raise ApiError(404, CODE_NOT_FOUND, texts.SEND_KONSPEKT_STUDENT_NOT_FOUND)
+    if not ученик.get("telegram_id"):
+        raise ApiError(422, CODE_BAD_REQUEST, texts.SEND_KONSPEKT_STUDENT_NO_TELEGRAM)
+
+    строки = query("SELECT * FROM konspekty WHERE id = ?", (konspekt_id,))
+    if not строки or строки[0]["teacher_id"] != teacher_id:
+        raise ApiError(404, CODE_NOT_FOUND, texts.SEND_KONSPEKT_NOT_FOUND)
+    конспект = dict(строки[0])
+
+    путь = Path(конспект.get("docx_path") or "")
+    if not путь.name or not путь.exists():
+        raise ApiError(404, CODE_NOT_FOUND, texts.SEND_KONSPEKT_FILE_MISSING)
+
+    профиль = (
+        accounts.find_teacher_by_auth_user(человек.auth_user_id)
+        if человек.auth_user_id
+        else accounts.find_teacher_by_telegram(человек.telegram_user_id)
+    )
+    подпись = texts.SEND_KONSPEKT_CAPTION.format(
+        teacher_name=(профиль or {}).get("name") or "", tema=конспект.get("tema") or ""
+    )
+
+    await _отправить_документ_в_telegram(ученик["telegram_id"], путь, подпись)
+
+    имя = ученик.get("name") or texts.SEND_KONSPEKT_STUDENT_NO_NAME.format(id=student_id)
+    return {"sent": True, "message": texts.SEND_KONSPEKT_SENT.format(student_name=имя)}
+
+
+async def _отправить_документ_в_telegram(chat_id: int, путь: Path, подпись: str) -> None:
+    """
+    Отправка файла ученику через Bot API.
+
+    Напрямую по HTTP, а не через aiogram: у веб-процесса экземпляра бота
+    нет, а поднимать его ради одной отправки — значит завести второго
+    бота на тот же токен. httpx в проекте уже есть, новой зависимости не
+    появилось.
+    """
+    адрес = f"https://api.telegram.org/bot{settings.telegram_bot_token}/sendDocument"
+    try:
+        with путь.open("rb") as файл:
+            async with httpx.AsyncClient(timeout=60) as клиент:
+                ответ = await клиент.post(
+                    адрес,
+                    data={"chat_id": str(chat_id), "caption": подпись},
+                    files={"document": (путь.name, файл, DOCX_MEDIA_TYPE)},
+                )
+        ответ.raise_for_status()
+    except httpx.HTTPError:
+        # Причину наружу не отдаём: ответ Telegram — не то, что должен
+        # читать педагог. В лог она попадёт сама, исключением.
+        raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE) from None

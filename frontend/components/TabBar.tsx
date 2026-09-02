@@ -14,7 +14,7 @@ type Tab = { key: string; icon: IconName; label: string; href?: string };
 export const TABS: Tab[] = [
   { key: 'dash', icon: 'home', label: 'Дэшборд', href: '/app' },
   { key: 'lesson', icon: 'mic', label: 'Урок', href: '/app/urok' },
-  { key: 'classes', icon: 'users', label: 'Классы' },
+  { key: 'classes', icon: 'users', label: 'Классы', href: '/app/klassy' },
   { key: 'history', icon: 'file', label: 'История' },
   { key: 'more', icon: 'grid', label: 'Ещё' },
 ];

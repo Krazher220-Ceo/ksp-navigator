@@ -64,6 +64,7 @@ from bot.states import (
     UploadTemplate,
 )
 from core.config import settings
+from core.accounts import generate_invite_code as accounts_generate_invite_code
 from core.dashboard import collect as collect_dashboard
 from core.db import SupabaseDatabaseError, execute, query
 from core.generation_defaults import collect as collect_generation_defaults
@@ -2781,23 +2782,10 @@ async def cmd_history(message: Message) -> None:
 # (ловушка блока У1, дословно "без похожих символов (0/O, 1/l)"; I и L
 # исключены той же логикой — код всегда отображается заглавными буквами,
 # а заглавная L от цифры 1 отличается не больше, чем строчная l).
-_INVITE_CODE_ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"
-_INVITE_CODE_LENGTH = 6
-_INVITE_CODE_MAX_ATTEMPTS = 10
-
-
-def _generate_invite_code(db_path=None) -> str:
-    """Короткий код, читаемый вслух; уникальность проверяется у самой
-    базы, а не предполагается по размеру алфавита (2.7: не подставлять
-    правдоподобное вместо проверенного) — при 32 символах и длине 6
-    (32**6 ≈ 1.07 млрд комбинаций) коллизия на масштабе пилота
-    практически невозможна, но убедиться дешевле, чем гадать."""
-    for _ in range(_INVITE_CODE_MAX_ATTEMPTS):
-        code = "".join(secrets.choice(_INVITE_CODE_ALPHABET) for _ in range(_INVITE_CODE_LENGTH))
-        existing = query("SELECT 1 FROM classes WHERE invite_code = ?", (code,), db_path=db_path)
-        if not existing:
-            return code
-    raise RuntimeError("не удалось подобрать уникальный код приглашения за отведённое число попыток")
+# Ф8: генератор кода переехал в core/accounts.py — коды теперь заводят
+# обе двери, бот и кабинет, и алфавит у них обязан быть один. Здесь
+# оставлено имя, которым пользуется остальной файл.
+_generate_invite_code = accounts_generate_invite_code
 
 
 def _count_class_members(class_id: int, db_path=None) -> int:

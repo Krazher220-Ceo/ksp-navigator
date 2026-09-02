@@ -35,11 +35,11 @@ async function заголовки(): Promise<Record<string, string>> {
   return токен ? { ...общие, Authorization: `Bearer ${токен}` } : общие;
 }
 
-export async function запрос<T>(путь: string, тело?: unknown): Promise<T> {
+export async function запрос<T>(путь: string, тело?: unknown, метод?: 'GET' | 'POST' | 'DELETE'): Promise<T> {
   let ответ: Response;
   try {
     ответ = await fetch(`${БАЗА}${путь}`, {
-      method: тело === undefined ? 'GET' : 'POST',
+      method: метод ?? (тело === undefined ? 'GET' : 'POST'),
       headers: await заголовки(),
       body: тело === undefined ? undefined : JSON.stringify(тело),
     });
@@ -200,8 +200,42 @@ export type ОпцииУрока = {
   page_orientation?: 'book' | 'album';
 };
 
+/** Класс педагога. */
+export type Класс = {
+  id: number;
+  name: string;
+  subject: string | null;
+  invite_code: string;
+  created_at: string | null;
+  students_count: number;
+};
+
+/** Ученик класса. Больше о нём не хранится ничего. */
+export type Ученик = {
+  id: number;
+  name: string | null;
+  joined_at: string | null;
+  sverki: number;
+  last_activity: string | null;
+  /** Можно ли отправить конспект: доставляет его бот. */
+  can_receive: boolean;
+};
+
 export const апи = {
   дэшборд: () => запрос<Дэшборд>('/api/v1/dashboard'),
+  классы: () => запрос<{ classes: Класс[] }>('/api/v1/classes'),
+  создатьКласс: (name: string, subject?: string) =>
+    запрос<{ class: Класс }>('/api/v1/classes', { name, subject }),
+  перевыпуститьКод: (class_id: number) =>
+    запрос<{ invite_code: string }>(`/api/v1/classes/${class_id}/code`, {}),
+  ученики: (class_id: number) =>
+    запрос<{ students: Ученик[] }>(`/api/v1/classes/${class_id}/students`),
+  удалитьКласс: (class_id: number) =>
+    запрос<{ deleted: boolean; name: string }>(`/api/v1/classes/${class_id}`, undefined, 'DELETE'),
+  отправитьКонспект: (class_id: number, student_id: number, konspekt_id: string) =>
+    запрос<{ sent: boolean; message: string }>(
+      `/api/v1/classes/${class_id}/send-konspekt`, { student_id, konspekt_id },
+    ),
   настройкиКсп: () => запрос<НастройкиКсп>('/api/v1/ksp/options'),
   темыКтп: () => запрос<{ entries: ТемаКтп[] }>('/api/v1/ktp/entries'),
   кодЦели: (topic: string) =>
