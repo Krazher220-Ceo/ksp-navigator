@@ -69,6 +69,7 @@ app.add_middleware(
         "X-Filename",
         "X-Konspekt-Mode",
         "X-Transcript-Id",
+        "X-Telegram-Login",
     ],
 )
 

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { AuthShell } from '@/components/auth/AuthShell';
+import { ВходTelegram } from '@/components/auth/ВходTelegram';
 import { RoleSwitch, type Роль } from '@/components/auth/RoleSwitch';
 import { Button } from '@/components/Button';
 import { Icon } from '@/components/Icon';
@@ -123,24 +124,19 @@ export default function VhodPage() {
         </>
       ) : (
         <>
+          {/* Настоящий вход через Telegram: виджет отдаёт подписанные
+              данные, сервер сверяет подпись. Кнопка-ссылка на бота
+              осталась ниже — она никуда не пускала, но остаётся
+              запасным путём, если у бота не задан домен. */}
+          <ВходTelegram onВошёл={() => router.push('/app')} />
+
           {телеграм ? (
             <a href={телеграм} target="_blank" rel="noreferrer">
-              <Button size="крупная" icon="send" style={{ width: '100%', justifyContent: 'center', marginTop: 20, background: 'var(--blue-600)' }}>
-                Войти через Telegram
+              <Button size="крупная" icon="send" variant="тихая" style={{ width: '100%', justifyContent: 'center', marginTop: 12 }}>
+                Открыть бота в Telegram
               </Button>
             </a>
-          ) : (
-            <Button
-              size="крупная" icon="send" disabled
-              title="Ссылка на бота ещё не настроена"
-              style={{ width: '100%', justifyContent: 'center', marginTop: 20, background: 'var(--blue-600)' }}
-            >
-              Войти через Telegram
-            </Button>
-          )}
-          <p className="muted" style={{ fontSize: 12, marginTop: 8, textAlign: 'center' }}>
-            Откроется подтверждение в Telegram — пароль вводить не нужно.
-          </p>
+          ) : null}
 
           <div className="row" style={{ margin: '22px 0', gap: 12 }}>
             <div style={{ flex: 1, height: 1, background: 'var(--hair)' }} />

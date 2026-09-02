@@ -37,6 +37,7 @@ export default function RegistraciyaPage() {
   const [поля, setПоля] = useState({ name: '', subject: '', school: '', city: '', email: '', password: '' });
   const [ошибка, setОшибка] = useState<string | null>(null);
   const [занято, setЗанято] = useState(false);
+  const [подтвердитеПочту, setПодтвердитеПочту] = useState(false);
 
   const менять = (ключ: keyof typeof поля) => (е: React.ChangeEvent<HTMLInputElement>) =>
     setПоля((прежние) => ({ ...прежние, [ключ]: е.target.value }));
@@ -50,11 +51,51 @@ export default function RegistraciyaPage() {
     }
     setЗанято(true);
     try {
-      const { error } = await supabase().auth.signUp({ email: поля.email, password: поля.password });
-      if (error) {
-        setОшибка('Не удалось создать аккаунт: проверьте почту и пароль.');
+      const клиент = supabase();
+
+      // Человек мог уже войти — например, подтвердил почту по ссылке из
+      // письма и вернулся. Тогда аккаунт есть, а профиля нет, и заводить
+      // второй аккаунт не нужно: достаточно дозаполнить профиль.
+      const { data: текущая } = await клиент.auth.getSession();
+      if (текущая.session) {
+        await апи.согласие();
+        await апи.регистрацияПедагога({
+          name: поля.name, subject: поля.subject, school: поля.school, city: поля.city,
+        });
+        router.push('/app');
         return;
       }
+
+      const { data, error } = await клиент.auth.signUp({ email: поля.email, password: поля.password });
+      if (error) {
+        // Текст Supabase английский; человеку показываем свой, но
+        // разводим два разных случая — иначе «проверьте почту и пароль»
+        // говорится и тому, кто уже зарегистрирован.
+        const уже = /already|registered|exists/i.test(error.message);
+        setОшибка(уже
+          ? 'Такая почта уже зарегистрирована. Войдите — ссылка «Войти» выше.'
+          : 'Не удалось создать аккаунт: проверьте почту и пароль (не короче восьми знаков).');
+        return;
+      }
+
+      // Ключевое место. Если в проекте Supabase включено подтверждение
+      // почты, signUp НЕ выдаёт сессию: data.session === null. Дальше
+      // некому предъявить токен, и /consent с /teacher честно отвечают
+      // 401 — со стороны это выглядит как «регистрация не работает».
+      // Поэтому: сессии нет — пробуем войти сразу, а если и вход не
+      // прошёл, объясняем человеку, что письмо ждёт подтверждения.
+      let сессия = data.session;
+      if (!сессия) {
+        const вход = await клиент.auth.signInWithPassword({
+          email: поля.email, password: поля.password,
+        });
+        сессия = вход.data.session;
+      }
+      if (!сессия) {
+        setПодтвердитеПочту(true);
+        return;
+      }
+
       // Согласие записывается сразу, как только появился аккаунт, и
       // строго до профиля: в профиле уже персональные данные педагога.
       await апи.согласие();
@@ -94,7 +135,19 @@ export default function RegistraciyaPage() {
         </span>
       )}
     >
-      {!условияПриняты ? (
+      {подтвердитеПочту ? (
+        <div>
+          <h1 style={{ fontSize: 25, letterSpacing: '-0.02em' }}>Подтвердите почту</h1>
+          <p style={{ fontSize: 14.5, lineHeight: 1.65, marginTop: 14 }}>
+            Аккаунт создан, но в вашем проекте Supabase включено подтверждение почты: мы отправили
+            письмо на {поля.email}. Откройте ссылку из письма и вернитесь сюда — профиль педагога
+            создастся при первом входе.
+          </p>
+          <Link href="/vhod">
+            <Button size="крупная" arrow style={{ marginTop: 18 }}>Перейти ко входу</Button>
+          </Link>
+        </div>
+      ) : !условияПриняты ? (
         <Соглашение роль={роль} сохранять={false} onПринято={() => setУсловияПриняты(true)} />
       ) : (
         <>

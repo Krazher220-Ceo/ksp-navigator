@@ -218,7 +218,7 @@ def test_cors_список_берётся_из_config_а_не_прошит_в_к
 
 @pytest.mark.parametrize("заголовок", [
     "Authorization", "Content-Type", "X-Telegram-Init-Data", "X-Filename", "X-Konspekt-Mode",
-    "X-Transcript-Id",
+    "X-Transcript-Id", "X-Telegram-Login",
 ])
 def test_cors_пропускает_каждый_заголовок_который_шлёт_кабинет(заголовок):
     """

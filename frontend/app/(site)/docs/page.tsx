@@ -4,8 +4,9 @@ import { Card } from '@/components/Card';
 import { Chip } from '@/components/Chip';
 import { Icon } from '@/components/Icon';
 import { DocsNav } from '@/components/landing/DocsNav';
+import { Оглавление } from '@/components/landing/Оглавление';
 import {
-  НА_ЭТОЙ_СТРАНИЦЕ, ПОКАЗАТЕЛИ_АНАЛИТИКИ, РАЗДЕЛЫ_ДОКУМЕНТАЦИИ, ЧЕГО_НЕ_СЧИТАЕМ,
+  ПОКАЗАТЕЛИ_АНАЛИТИКИ, РАЗДЕЛЫ_ДОКУМЕНТАЦИИ, ЧЕГО_НЕ_СЧИТАЕМ,
 } from '@/content/docs';
 
 export const metadata: Metadata = {
@@ -187,14 +188,7 @@ export default function DocsPage() {
 
       <aside style={{ fontSize: 13 }}>
         <div className="lbl" style={{ marginBottom: 10 }}>На этой странице</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, borderLeft: '2px solid var(--line-2)', paddingLeft: 14 }}>
-          {НА_ЭТОЙ_СТРАНИЦЕ.map((п) => (
-            <a key={п.якорь} href={`#${п.якорь}`} className="muted"
-               style={{ paddingLeft: п.вложенный ? 12 : 0, color: 'var(--ink-3)' }}>
-              {п.текст}
-            </a>
-          ))}
-        </div>
+        <Оглавление />
       </aside>
       </div>
     </>

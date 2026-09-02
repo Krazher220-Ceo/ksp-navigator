@@ -2,6 +2,7 @@
 
 import { ТЕКСТЫ } from '@/content/texts.generated';
 import { supabase, входПоПочтеНастроен } from './supabase';
+import { входTelegram } from './telegramLogin';
 
 /**
  * Обращения к FastAPI из кабинета.
@@ -29,10 +30,17 @@ export class ОшибкаApi extends Error {
 
 async function заголовки(): Promise<Record<string, string>> {
   const общие: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (!входПоПочтеНастроен()) return общие;
-  const { data } = await supabase().auth.getSession();
-  const токен = data.session?.access_token;
-  return токен ? { ...общие, Authorization: `Bearer ${токен}` } : общие;
+
+  if (входПоПочтеНастроен()) {
+    const { data } = await supabase().auth.getSession();
+    const токен = data.session?.access_token;
+    if (токен) return { ...общие, Authorization: `Bearer ${токен}` };
+  }
+
+  // Вторая дверь браузера: вход через Telegram Login Widget. Подпись
+  // проверяет сервер — здесь мы её только передаём.
+  const телеграм = входTelegram();
+  return телеграм ? { ...общие, 'X-Telegram-Login': телеграм } : общие;
 }
 
 export async function запрос<T>(путь: string, тело?: unknown, метод?: 'GET' | 'POST' | 'DELETE'): Promise<T> {
@@ -156,6 +164,14 @@ export async function отправитьЗапись(
   if (входПоПочтеНастроен()) {
     const { data } = await supabase().auth.getSession();
     if (data.session?.access_token) шапка.Authorization = `Bearer ${data.session.access_token}`;
+  }
+  if (!шапка.Authorization) {
+    const телеграм = входTelegram();
+    if (телеграм) шапка['X-Telegram-Login'] = телеграм;
+  }
+  if (!шапка.Authorization) {
+    const телеграм = входTelegram();
+    if (телеграм) шапка['X-Telegram-Login'] = телеграм;
   }
 
   let ответ: Response;

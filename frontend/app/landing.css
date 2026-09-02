@@ -23,7 +23,13 @@
 @keyframes growW { from { width: 0; } }
 @keyframes pulse { 0%, 100% { transform: scale(1); opacity: .5; } 50% { transform: scale(1.5); opacity: 1; } }
 @keyframes waveY { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
-@keyframes drift { 0% { transform: translateY(-12px); opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { transform: translateY(112px); opacity: 0; } }
+/* Единственная анимация, переписанная против макета. В артборде точка
+ * пролетает 112px, а пунктирное звено между карточками — 26px высотой
+ * (design/src/Lending.body.html), поэтому точка вылетала за звено и
+ * ползла поверх соседней карточки: именно это видно на скриншоте
+ * автора. Здесь ход укорочен до высоты звена, и точка гаснет, не
+ * доходя до края. Ниже в тестах это закреплено: tests/test_frontend_landing.py. */
+@keyframes drift { 0% { transform: translateY(-4px); opacity: 0; } 20% { opacity: 1; } 80% { opacity: 1; } 100% { transform: translateY(24px); opacity: 0; } }
 @keyframes caret { 0%, 45% { opacity: 1; } 50%, 100% { opacity: 0; } }
 .an { animation: riseIn .9s var(--ease) both; }
 .an-f { animation: fadeIn 1s var(--ease) both; }
@@ -93,4 +99,23 @@
  * base.css, чтобы сверка с артбордом осталась дословной. */
 @supports (height: 100dvh) {
   .app, .phone { height: 100dvh; }
+}
+
+/* --- Оглавление документации (components/landing/Оглавление.tsx) --- */
+
+/* Плавный переход по якорям вместо рывка. Тем, кто выключил анимации в
+ * системе, страница по-прежнему прыгает сразу — это их настройка. */
+@media (prefers-reduced-motion: no-preference) {
+  html { scroll-behavior: smooth; }
+}
+
+.toc { display: flex; flex-direction: column; gap: 8px; border-left: 2px solid var(--line-2); padding-left: 14px; }
+.toc-link { color: var(--ink-3); transition: color .18s var(--ease); position: relative; }
+.toc-link:hover { color: var(--ink-2); }
+/* Активный пункт помечен полоской поверх общей линейки слева — той же,
+ * что отделяет оглавление от текста. Своей рамки у пункта нет. */
+.toc-link.on { color: var(--blue-700); font-weight: 600; }
+.toc-link.on::before {
+  content: ''; position: absolute; left: -16px; top: 2px; bottom: 2px;
+  width: 2px; background: var(--blue-700); border-radius: 2px;
 }

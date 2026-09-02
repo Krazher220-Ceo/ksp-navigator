@@ -66,6 +66,10 @@ from web.jwt import JwtError, issuer_for, verify_supabase_jwt
 logger = logging.getLogger(__name__)
 
 INIT_DATA_HEADER = "X-Telegram-Init-Data"
+# Ф16: вход в кабинет через Telegram Login Widget — третья дверь. Это НЕ
+# initData: у виджета другая схема подписи (secret = SHA256(токен), а не
+# HMAC с ключом "WebAppData"), и путать их нельзя.
+LOGIN_WIDGET_HEADER = "X-Telegram-Login"
 
 MAX_AUTH_AGE_SECONDS = 3600
 _MAX_CLOCK_SKEW_SECONDS = 60  # небольшой допуск на рассинхронизацию часов
@@ -133,6 +137,65 @@ def verify_init_data_string(
         raise InitDataError("auth_date в будущем — подозрительно")
 
     return fields
+
+
+# Данные Telegram Login Widget живут сутки: дольше держать подпись,
+# по которой пускают в кабинет, незачем.
+MAX_LOGIN_AGE_SECONDS = 86400
+
+
+def verify_login_widget_string(
+    login_data: str,
+    bot_token: str | None = None,
+    max_age_seconds: int = MAX_LOGIN_AGE_SECONDS,
+) -> dict[str, str]:
+    """
+    Проверяет данные Telegram Login Widget.
+
+    Схема похожа на initData, но НЕ совпадает с ней, и это главная
+    ловушка места:
+      initData: secret = HMAC_SHA256(key="WebAppData", msg=bot_token)
+      виджет:   secret = SHA256(bot_token)
+    Перепутать легко, код при этом не падает — просто ни одна подпись не
+    сходится, и вход «молча не работает». Поэтому проверки разные, и на
+    каждую написан свой тест с подделанной подписью.
+
+    Сравнение — только hmac.compare_digest: обычное == выходит на первом
+    различии и выдаёт временем, сколько байт подписи уже угадано.
+    """
+    bot_token = bot_token if bot_token is not None else settings.telegram_bot_token
+
+    if not login_data:
+        raise InitDataError("данные входа пустые")
+    поля = _parse_init_data(login_data)
+
+    полученный = поля.get("hash")
+    if not полученный:
+        raise InitDataError("в данных входа отсутствует hash")
+
+    строка = _build_data_check_string(поля)
+    секрет = hashlib.sha256(bot_token.encode("utf-8")).digest()
+    ожидаемый = hmac.new(секрет, строка.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(ожидаемый, полученный):
+        raise InitDataError("подпись данных входа не совпадает")
+
+    сырая_дата = поля.get("auth_date")
+    if not сырая_дата:
+        raise InitDataError("в данных входа отсутствует auth_date")
+    try:
+        дата = int(сырая_дата)
+    except ValueError:
+        raise InitDataError("auth_date не является числом") from None
+
+    возраст = time.time() - дата
+    if возраст > max_age_seconds:
+        raise InitDataError(f"данные входа просрочены: {возраст:.0f} с назад")
+    if возраст < -_MAX_CLOCK_SKEW_SECONDS:
+        raise InitDataError("auth_date в будущем — подозрительно")
+
+    if not поля.get("id"):
+        raise InitDataError("в данных входа нет id — некого опознавать")
+    return поля
 
 
 class AuthenticatedUser:
@@ -263,6 +326,7 @@ def _не_авторизован() -> ApiError:
 async def current_user(
     authorization: str | None = Header(default=None),
     init_data: str | None = Header(default=None, alias=INIT_DATA_HEADER),
+    login_data: str | None = Header(default=None, alias=LOGIN_WIDGET_HEADER),
 ) -> CurrentUser:
     """
     FastAPI-зависимость для /api/v1/*: принимает ЛИБО JWT, ЛИБО initData.
@@ -272,7 +336,11 @@ async def current_user(
     выбор человека важнее. Не сработало ничего — 401. Промежуточного
     состояния «пропустим на всякий случай» здесь нет.
 
-    Роль ищется по той двери, через которую человек вошёл: по
+    Дверей три: JWT кабинета, initData из Mini App и данные Telegram
+    Login Widget — вход из обычного браузера. Все три дают одну и ту же
+    структуру, и эндпоинту всё равно, откуда пришёл человек.
+
+    Роль ищется по той двери, через которую он вошёл: по
     telegram_user_id или по auth_user_id (блок Ф4 завёл эту колонку).
     База не ответила — 503, а не «пропустим без роли».
     """
@@ -295,6 +363,23 @@ async def current_user(
             logger.warning("current_user: роль не определена, база недоступна, sub=%s", auth_user_id, exc_info=True)
             raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE) from None
         return CurrentUser(user_id=f"auth:{auth_user_id}", telegram_user_id=None, role=роль)
+
+    if login_data:
+        # Вход из обычного браузера через Telegram Login Widget.
+        try:
+            поля = verify_login_widget_string(login_data)
+        except InitDataError as ошибка:
+            logger.info("current_user: данные входа Telegram отвергнуты — %s", ошибка)
+            raise _не_авторизован() from None
+        telegram_user_id = int(поля["id"])
+        try:
+            роль = resolve_role(telegram_user_id)
+        except SupabaseDatabaseError:
+            logger.warning("current_user: роль не определена, база недоступна, id=%s", telegram_user_id, exc_info=True)
+            raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE) from None
+        return CurrentUser(
+            user_id=f"tg:{telegram_user_id}", telegram_user_id=telegram_user_id, role=роль
+        )
 
     if init_data:
         try:
