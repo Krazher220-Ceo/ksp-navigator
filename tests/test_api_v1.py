@@ -242,6 +242,30 @@ def test_звёздочка_в_cors_origins_запрещена():
         _parse_cors_origins("https://x.example,*")
 
 
+def test_завершающий_слэш_в_cors_origins_срезается():
+    """
+    Адрес со слэшем на конце не совпадает с Origin никогда.
+
+    Браузер присылает в Origin голый адрес — "https://x.vercel.app", без
+    пути и без слэша. Запись "https://x.vercel.app/" молча не совпадает
+    ни с чем, и выглядит это не как отказ в доступе, а как «сайт
+    открылся, но ни одна кнопка не работает». Именно так и было в проде
+    02.09.2026.
+    """
+    from core.config import _parse_cors_origins
+
+    assert _parse_cors_origins("https://ksp-navigator.vercel.app/") == (
+        "https://ksp-navigator.vercel.app",
+    )
+    assert _parse_cors_origins("https://a.example/, https://b.example") == (
+        "https://a.example", "https://b.example",
+    )
+    # Адрес из одного слэша — это не адрес, а мусор от лишней запятой.
+    from core.config import DEFAULT_CORS_ORIGINS
+
+    assert _parse_cors_origins("/") == DEFAULT_CORS_ORIGINS
+
+
 def test_пустой_cors_origins_оставляет_адрес_разработки():
     from core.config import DEFAULT_CORS_ORIGINS, _parse_cors_origins
 

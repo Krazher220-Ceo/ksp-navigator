@@ -11,7 +11,7 @@ import { Icon } from '@/components/Icon';
 import { Input } from '@/components/Input';
 import { ТЕКСТЫ } from '@/content/texts.generated';
 import { ОшибкаApi, апи } from '@/lib/api';
-import { supabase, входПоПочтеНастроен } from '@/lib/supabase';
+import { supabase, адресВозврата, входПоПочтеНастроен } from '@/lib/supabase';
 
 /**
  * Регистрация педагога по макету Registraciya.
@@ -66,7 +66,13 @@ export default function RegistraciyaPage() {
         return;
       }
 
-      const { data, error } = await клиент.auth.signUp({ email: поля.email, password: поля.password });
+      const { data, error } = await клиент.auth.signUp({
+        email: поля.email,
+        password: поля.password,
+        // Без этого письмо приводит на Site URL, то есть на лендинг,
+        // где токены из адреса разбирать некому.
+        options: { emailRedirectTo: адресВозврата() },
+      });
       if (error) {
         // Текст Supabase английский; человеку показываем свой, но
         // разводим два разных случая — иначе «проверьте почту и пароль»

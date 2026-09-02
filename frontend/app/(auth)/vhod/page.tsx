@@ -10,7 +10,7 @@ import { Button } from '@/components/Button';
 import { Icon } from '@/components/Icon';
 import { Input } from '@/components/Input';
 import { ТЕКСТЫ } from '@/content/texts.generated';
-import { supabase, входПоПочтеНастроен } from '@/lib/supabase';
+import { supabase, адресВозврата, входПоПочтеНастроен } from '@/lib/supabase';
 
 /**
  * Экран входа по макету Vhod.
@@ -72,7 +72,11 @@ export default function VhodPage() {
       setОшибка('Вход по почте ещё не настроен на этом сервере.');
       return;
     }
-    await supabase().auth.resetPasswordForEmail(почта);
+    await supabase().auth.resetPasswordForEmail(почта, {
+      // Ссылка ведёт на служебную страницу возврата, а та уже
+      // отправит человека вписывать новый пароль.
+      redirectTo: адресВозврата(),
+    });
     // Ответ одинаковый и для существующей почты, и для чужой: иначе форма
     // превращается в способ узнать, кто зарегистрирован.
     setПисьмоОтправлено(true);

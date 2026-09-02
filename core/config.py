@@ -115,10 +115,16 @@ def _parse_cors_origins(raw: str | None) -> tuple[str, ...]:
     Звёздочка запрещена намеренно: сервер публично доступен через
     Cloudflare Tunnel, и «разрешить всем» здесь означало бы разрешить
     любому сайту дёргать API из браузера вошедшего человека.
+
+    Завершающий слэш срезается. Браузер присылает в Origin голый адрес
+    без пути ("https://x.vercel.app"), поэтому запись со слэшем на конце
+    не совпадает НИКОГДА — и выглядит это не как отказ, а как «сайт
+    открылся, но ни одна кнопка не работает». Ровно на это ушёл день
+    02.09.2026: в CORS_ORIGINS стоял адрес со слэшем.
     """
     if not raw:
         return DEFAULT_CORS_ORIGINS
-    origins = tuple(part.strip() for part in raw.split(",") if part.strip())
+    origins = tuple(part.strip().rstrip("/") for part in raw.split(",") if part.strip().rstrip("/"))
     if "*" in origins:
         _fail("CORS_ORIGINS не может содержать '*' — перечислите адреса явно")
     return origins or DEFAULT_CORS_ORIGINS

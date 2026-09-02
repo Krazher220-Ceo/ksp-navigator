@@ -29,6 +29,20 @@ export function supabase(): SupabaseClient {
   return клиент;
 }
 
+/**
+ * Куда Supabase вернёт человека из письма.
+ *
+ * Считается от адреса, на котором человек сейчас стоит, а не берётся из
+ * переменной окружения: тогда одна и та же сборка одинаково работает и
+ * на localhost, и на превью-адресе, и на боевом. Ровно этот адрес
+ * должен быть перечислен в Supabase → Authentication → URL
+ * Configuration → Redirect URLs, иначе Supabase молча подставит Site
+ * URL и человек окажется на лендинге.
+ */
+export function адресВозврата(путь = '/auth/callback'): string {
+  return `${window.location.origin}${путь}`;
+}
+
 /** Настроен ли вход по почте — чтобы форма не притворялась рабочей. */
 export function входПоПочтеНастроен(): boolean {
   return Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
