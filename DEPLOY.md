@@ -132,7 +132,18 @@ cd /Users/kr220/Documents/Projects/ksp-navigator && git push origin main
 CORS_ORIGINS=http://localhost:3000,https://<адрес>.vercel.app
 ```
 
-Через запятую, без пробелов, с протоколом. Затем перезапустить API:
+Через запятую, без пробелов, с протоколом — и **без завершающего
+слэша**. Браузер присылает в `Origin` голый адрес, поэтому запись
+`https://x.vercel.app/` не совпадает ни с чем; сайт при этом
+открывается, а каждая кнопка отвечает «сервер недоступен». Ровно на
+это ушёл день 02.09.2026. Второй раз так не выйдет — разбор теперь
+слэш срезает, — но писать сразу правильно дешевле.
+
+Адрес нужен **боевой** (`ksp-navigator.vercel.app`), а не адрес ветки:
+человек заходит на боевой. Служебные адреса Vercel можно дописать
+рядом, лишними они не будут.
+
+Затем перезапустить API:
 
 ```bash
 launchctl kickstart -k gui/$(id -u)/com.alikhan.webapi
@@ -221,6 +232,17 @@ Service worker намеренно не регистрируется в режи�
 | Письмо возвращает на `localhost` | шаг 6, Redirect URLs |
 | Сборка падает на Vercel | Root Directory ≠ `frontend` (шаг 2) или забытая переменная (шаг 3) |
 | Кабинет пустой, сразу выкидывает на `/vhod` | API не отвечает: `launchctl print gui/$(id -u)/com.alikhan.webapi` |
+| Ссылка из письма приводит на лендинг | Redirect URLs в Supabase (шаг 6): без боевого адреса в списке Supabase игнорирует `emailRedirectTo` и подставляет Site URL |
+| Страница с английским «404 — This page could not be found» | адрес, которого нет. Своя русская страница 404 показывается на всех остальных промахах |
+
+Быстрая проверка CORS, не открывая браузер — подставьте свой адрес:
+
+```bash
+curl -s -X OPTIONS https://ksp.alikhandev.com/api/v1/me -H 'Origin: https://ksp-navigator.vercel.app' -H 'Access-Control-Request-Method: GET' -i | head -3
+```
+
+`200` и строка `access-control-allow-origin` — всё в порядке.
+`400 Disallowed CORS origin` — адрес не в списке.
 
 ---
 
