@@ -237,8 +237,56 @@ export type ЗаписьИстории = {
   has_pdf: boolean;
 };
 
+/** Класс, в котором состоит ученик. */
+export type КлассУченика = { id: number; name: string; subject: string | null; teacher_name: string };
+
+/** Урок для сверки. Расшифровки здесь нет и быть не может. */
+export type УрокУченика = {
+  transcript_id: string;
+  created_at: string | null;
+  topic: string;
+  homework: string | null;
+};
+
+/** Результат сверки: только разница. Оценки нет. */
+export type РезультатСверки = {
+  missing_items: string[];
+  too_much_missing?: boolean;
+  notebook_unreadable?: boolean;
+};
+
+/** Отправка фото тетради — тем же способом, что запись урока. */
+export async function отправитьФотоТетради(
+  фото: Blob, имя: string, transcript_id: string,
+): Promise<{ task_id: string; status: string }> {
+  const шапка: Record<string, string> = {
+    'Content-Type': фото.type || 'image/jpeg',
+    'X-Filename': имя,
+    'X-Transcript-Id': transcript_id,
+  };
+  if (входПоПочтеНастроен()) {
+    const { data } = await supabase().auth.getSession();
+    if (data.session?.access_token) шапка.Authorization = `Bearer ${data.session.access_token}`;
+  }
+  let ответ: Response;
+  try {
+    ответ = await fetch(`${БАЗА}/api/v1/student/sverka`, { method: 'POST', headers: шапка, body: фото });
+  } catch {
+    throw new ОшибкаApi('NETWORK', ТЕКСТЫ.API_SERVER_UNAVAILABLE, 0);
+  }
+  const разобрано = await ответ.json().catch(() => null);
+  if (!ответ.ok) {
+    const ошибка = (разобрано as { error?: { code?: string; message?: string } } | null)?.error;
+    throw new ОшибкаApi(ошибка?.code ?? 'INTERNAL', ошибка?.message ?? ТЕКСТЫ.ERROR_UNEXPECTED, ответ.status);
+  }
+  return разобрано as { task_id: string; status: string };
+}
+
 export const апи = {
   дэшборд: () => запрос<Дэшборд>('/api/v1/dashboard'),
+  классыУченика: () => запрос<{ classes: КлассУченика[] }>('/api/v1/student/classes'),
+  урокиУченика: (class_id: number) =>
+    запрос<{ lessons: УрокУченика[] }>(`/api/v1/student/lessons?class_id=${class_id}`),
   история: (фильтр?: { kind?: string; since?: string; until?: string }) => {
     const параметры = new URLSearchParams();
     if (фильтр?.kind) параметры.set('kind', фильтр.kind);

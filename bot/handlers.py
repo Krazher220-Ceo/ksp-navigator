@@ -1042,8 +1042,12 @@ def make_sverka_handler(bot: Bot):
                 # ловушка), и он уже состоялся. Не записать его значило бы
                 # и потерять расход, и дать способ обойти будущий лимит
                 # ученика, присылая чистые листы.
-                record_student_usage(chat_id)
-                await bot.send_message(chat_id, texts.SVERKA_NOTEBOOK_UNREADABLE)
+                # Расход ключуется аккаунтом Telegram; у ученика,
+                # пришедшего с сайта, его может не быть — тогда считать
+                # нечего, и это не ошибка.
+                if chat_id is not None:
+                    record_student_usage(chat_id)
+                await _tell_telegram(bot, chat_id, texts.SVERKA_NOTEBOOK_UNREADABLE)
                 return {"missing_items": [], "notebook_unreadable": True}
 
             llm_client = LLMClient()
@@ -1052,7 +1056,8 @@ def make_sverka_handler(bot: Bot):
                     transcript_text, notebook_text, llm_client=llm_client
                 )
             finally:
-                record_student_usage(chat_id)
+                if chat_id is not None:
+                    record_student_usage(chat_id)
                 await llm_client.aclose()
         finally:
             # У4, ловушка (та же, что у аудио, грабля 2.8): фото хранится
@@ -1060,20 +1065,26 @@ def make_sverka_handler(bot: Bot):
             # при провале.
             photo_path.unlink(missing_ok=True)
 
-        if exceeds_output_ceiling(missing_items, transcript_text):
+        too_much = exceeds_output_ceiling(missing_items, transcript_text)
+        if too_much:
             # Находка 7 AUDIT.md: кодовый потолок рядом с отправкой.
             # Гарантия «ученик не получает полную расшифровку» — условие
             # допуска в школу (MASTER.md 0.9 п.3), и держаться на одной
             # фразе в промпте она не может. Не режем молча: честно
             # говорим, почему списка нет, и отправляем к учителю.
             text = texts.SVERKA_TOO_MUCH_MISSING
+            # Ф10: список вычищается и из РЕЗУЛЬТАТА задачи, а не только
+            # из сообщения. Кабинет читает result через /api/v1/task/{id},
+            # и оставить там весь урок значило бы отдать ученику ровно то,
+            # что потолок и запрещает, — просто другим каналом.
+            missing_items = []
         elif missing_items:
             lines = "\n".join(texts.SVERKA_RESULT_ITEM.format(item=item) for item in missing_items)
             text = f"{texts.SVERKA_RESULT_HEADER}\n{lines}"
         else:
             text = texts.SVERKA_NOTHING_MISSING
-        await bot.send_message(chat_id, text)
-        return {"missing_items": missing_items}
+        await _tell_telegram(bot, chat_id, text)
+        return {"missing_items": missing_items, "too_much_missing": too_much}
 
     return handler
 

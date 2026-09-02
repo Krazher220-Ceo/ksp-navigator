@@ -15,12 +15,22 @@ import { Icon, type IconName } from './Icon';
  * Так пункты ведут себя ровно до того блока, который добавит их страницу;
  * ссылок в никуда в кабинете не будет.
  *
- * Осознанно не делает: не решает, что человеку показывать. Скрытие
- * пунктов по роли — это блок Ф3, и делаться оно будет отсутствием пункта,
- * а не его отключением.
+ * Пункты педагога ученику не показываются — именно не показываются, а не
+ * отключаются: требование блока У3 дословно. Отключённый пункт всё равно
+ * рассказывает ребёнку, что в продукте есть команды учителя, и предлагает
+ * их попробовать.
  */
 type Item = { key: string; icon: IconName; label: string; href?: string; locked?: boolean; badge?: string };
 type Group = { cap: string; items: Item[] };
+
+export type Роль = 'teacher' | 'student' | null;
+
+/** Меню ученика: только то, что он действительно может. */
+export const NAV_УЧЕНИКА: Group[] = [
+  { cap: 'Урок', items: [
+    { key: 'sverka', icon: 'cam', label: 'Сверка тетради', href: '/app/sverka' },
+  ] },
+];
 
 export const NAV: Group[] = [
   { cap: 'Работа', items: [
@@ -45,10 +55,11 @@ export const NAV: Group[] = [
   ] },
 ];
 
-type Props = { userName: string; userInitials: string; userTariff: string };
+type Props = { userName: string; userInitials: string; userTariff: string; роль?: Роль };
 
-export function Sidebar({ userName, userInitials, userTariff }: Props) {
+export function Sidebar({ userName, userInitials, userTariff, роль = 'teacher' }: Props) {
   const path = usePathname();
+  const меню = роль === 'student' ? NAV_УЧЕНИКА : NAV;
   return (
     <aside className="side">
       <div className="brand">
@@ -59,7 +70,7 @@ export function Sidebar({ userName, userInitials, userTariff }: Props) {
         </div>
       </div>
       <nav className="nav">
-        {NAV.map((group) => (
+        {меню.map((group) => (
           <div key={group.cap} style={{ display: 'contents' }}>
             <div className="nav-cap">{group.cap}</div>
             {group.items.map((item) => {

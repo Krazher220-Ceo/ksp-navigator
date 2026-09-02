@@ -68,6 +68,7 @@ app.add_middleware(
         "X-Telegram-Init-Data",
         "X-Filename",
         "X-Konspekt-Mode",
+        "X-Transcript-Id",
     ],
 )
 

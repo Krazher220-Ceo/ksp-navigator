@@ -322,18 +322,25 @@ def _расширение(имя: str | None) -> str:
     return Path(имя or "").suffix.lower()
 
 
-async def _сохранить_запись(request: Request, имя_файла: str | None) -> Path:
+async def _сохранить_запись(
+    request: Request, имя_файла: str | None, разрешённые: set[str] | None = None
+) -> Path:
     """Пишет тело запроса в storage/uploads и возвращает путь.
 
     Файл идёт потоком и обрывается на превышении предела: клиент, который
     решит прислать гигабайт, не должен ни занять память, ни забить диск.
     Недописанный файл при обрыве удаляется здесь же.
     """
+    допустимые = разрешённые if разрешённые is not None else РАСШИРЕНИЯ_АУДИО
+    по_умолчанию = ".jpg" if разрешённые is not None else ".m4a"
     расширение = _расширение(имя_файла)
-    if расширение and расширение not in РАСШИРЕНИЯ_АУДИО:
-        raise ApiError(415, CODE_BAD_REQUEST, texts.API_AUDIO_UNSUPPORTED)
+    if расширение and расширение not in допустимые:
+        raise ApiError(
+            415, CODE_BAD_REQUEST,
+            texts.API_PHOTO_UNSUPPORTED if разрешённые is not None else texts.API_AUDIO_UNSUPPORTED,
+        )
 
-    путь = settings.uploads_dir / f"web-{uuid.uuid4().hex}{расширение or '.m4a'}"
+    путь = settings.uploads_dir / f"web-{uuid.uuid4().hex}{расширение or по_умолчанию}"
     записано = 0
     try:
         with открыть_на_запись(путь) as файл:
@@ -419,12 +426,31 @@ async def lesson_upload(
 СТАТУС_НАРУЖУ = {"pending": "queued", "processing": "running", "done": "done", "failed": "failed"}
 
 
-def _задача_этого_педагога(task_id: str, teacher_id: int | None) -> dict:
-    """Задача, если она принадлежит этому педагогу. Иначе 404.
+def _student_id(человек: CurrentUser) -> int | None:
+    """Идентификатор ученика, если человек вошёл как ученик."""
+    ученик = (
+        accounts.find_student_by_auth_user(человек.auth_user_id)
+        if человек.auth_user_id
+        else accounts.find_student_by_telegram(человек.telegram_user_id)
+    )
+    return ученик["id"] if ученик else None
 
-    Чужая задача отдаёт 404, а не 403: мы не подтверждаем даже факт
-    существования чужой записи — решение блока Б9.2, оно же действует для
-    generated_ksp.
+
+def _задача_этого_педагога(task_id: str, teacher_id: int | None) -> dict:
+    """Задача, если она принадлежит этому педагогу. Иначе 404."""
+    return _своя_задача(task_id, teacher_id=teacher_id, student_id=None)
+
+
+def _своя_задача(task_id: str, teacher_id: int | None, student_id: int | None) -> dict:
+    """
+    Задача, если она принадлежит этому человеку. Иначе 404.
+
+    Владелец берётся из payload: колонки teacher_id в tasks нет. У задач
+    педагога это teacher_id, у сверки тетради — student_id: сверку
+    заводит ученик, и следить за ней должен он же.
+
+    Чужая задача отдаёт 404, а не 403: не подтверждаем даже факт
+    существования чужой записи (решение Б9.2).
     """
     строки = query("SELECT * FROM tasks WHERE id = ?", (task_id,))
     if not строки:
@@ -434,7 +460,12 @@ def _задача_этого_педагога(task_id: str, teacher_id: int | No
         payload = json.loads(задача["payload"]) if задача["payload"] else {}
     except (ValueError, TypeError):
         payload = {}
-    if teacher_id is None or payload.get("teacher_id") != teacher_id:
+
+    свой = (
+        (teacher_id is not None and payload.get("teacher_id") == teacher_id)
+        or (student_id is not None and payload.get("student_id") == student_id)
+    )
+    if not свой:
         raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
     задача["payload_разобран"] = payload
     return задача
@@ -450,7 +481,7 @@ async def task_status(task_id: str, человек: CurrentUser = Depends(curren
     core/queue.py это не подменяет и не обходит: она по-прежнему шлёт
     сообщение всем, у кого чат есть.
     """
-    задача = _задача_этого_педагога(task_id, _teacher_id(человек))
+    задача = _своя_задача(task_id, _teacher_id(человек), _student_id(человек))
     статус = СТАТУС_НАРУЖУ.get(задача["status"], задача["status"])
 
     ответ: dict = {
@@ -1091,4 +1122,149 @@ async def retry_task(task_id: str, человек: CurrentUser = Depends(current
     # Счётчик попыток обнуляется: это новая попытка по решению человека,
     # а не продолжение прежней серии автоматических ретраев.
     execute("UPDATE tasks SET status = 'pending', retries = 0, error = NULL WHERE id = ?", (task_id,))
+    return {"task_id": task_id, "status": "queued"}
+
+
+# =====================================================================
+# Ф10: экран ученика — сверка тетради
+#
+# Ученик получает РАЗНИЦУ: чего в его тетради нет против записи урока.
+# Полной расшифровки и полного конспекта он не получает ни при каком
+# действии — целиком конспект уходит только если его отправил учитель,
+# вручную. Это условие допуска в школу (MASTER.md 0.9 п.3), а не
+# пожелание, и держится оно на коде, а не на формулировке промпта.
+# =====================================================================
+
+# Тот же предел, что у записи урока: фото тетради весит куда меньше, но
+# отдельное число здесь означало бы второе место, где его правят.
+СНИМКОВ_ТЕТРАДИ_ЗА_РАЗ = 1
+
+РАСШИРЕНИЯ_ФОТО = {".jpg", ".jpeg", ".png", ".heic", ".webp"}
+
+
+@router.get("/student/classes")
+async def student_classes(человек: CurrentUser = Depends(current_user)) -> dict:
+    """Классы, в которых состоит ученик."""
+    student_id = _student_id(человек)
+    if student_id is None:
+        return {"classes": []}
+    строки = query(
+        "SELECT c.id, c.name, c.subject, t.name AS teacher_name, c.teacher_id "
+        "FROM class_members m JOIN classes c ON c.id = m.class_id "
+        "JOIN teachers t ON t.id = c.teacher_id "
+        "WHERE m.student_id = ? ORDER BY m.joined_at",
+        (student_id,),
+    )
+    return {"classes": [dict(строка) for строка in строки]}
+
+
+@router.get("/student/lessons")
+async def student_lessons(
+    class_id: int = Query(...),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """
+    Уроки, с которыми можно сверить тетрадь.
+
+    Отдаётся только то, что нужно для выбора: дата, тема и домашнее
+    задание. **Текста расшифровки здесь нет и быть не может** — ученик не
+    получает её ни при каком действии.
+
+    Домашнее задание — исключение, названное в макете отдельным блоком:
+    это одна строка из конспекта, а не конспект.
+    """
+    student_id = _student_id(человек)
+    if student_id is None:
+        return {"lessons": []}
+
+    # Класс обязан быть своим: идентификатор пришёл от клиента.
+    свой = query(
+        "SELECT c.teacher_id FROM class_members m JOIN classes c ON c.id = m.class_id "
+        "WHERE m.student_id = ? AND c.id = ?",
+        (student_id, class_id),
+    )
+    if not свой:
+        raise ApiError(404, CODE_NOT_FOUND, texts.SVERKA_LESSON_NOT_FOUND)
+    teacher_id = свой[0]["teacher_id"]
+
+    строки = query(
+        "SELECT t.id, t.created_at, k.tema, k.content_json "
+        "FROM transcripts t LEFT JOIN konspekty k ON k.transcript_id = t.id "
+        "WHERE t.teacher_id = ? ORDER BY t.created_at DESC LIMIT 12",
+        (teacher_id,),
+    )
+    уроки = []
+    for строка in строки:
+        домашнее = None
+        if строка["content_json"]:
+            try:
+                содержимое = json.loads(строка["content_json"])
+                домашнее = (содержимое.get("konspekt_uchenika") or {}).get("domashnee_zadanie") or None
+            except (ValueError, TypeError, AttributeError):
+                домашнее = None
+        уроки.append({
+            "transcript_id": строка["id"],
+            "created_at": строка["created_at"],
+            "topic": строка["tema"] or texts.SVERKA_LESSON_NO_TOPIC,
+            "homework": домашнее,
+        })
+    return {"lessons": уроки}
+
+
+@router.post("/student/sverka")
+async def student_sverka(
+    request: Request,
+    transcript_id: str = Header(..., alias="X-Transcript-Id"),
+    имя_файла: str | None = Header(default=None, alias="X-Filename"),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """
+    Принимает фото тетради и ставит сверку в очередь.
+
+    Фото удаляется сразу после сверки — и при успехе, и при провале, это
+    зашито в обработчик очереди. Веб идёт тем же путём, что Telegram:
+    второго пути, где фото сохраняется, в проекте нет.
+
+    Оценка по результату не ставится и ставиться не будет: рукописная
+    кириллица распознаётся на 30–70%, и этой точности хватает на
+    подсказку, но не на суждение о человеке.
+    """
+    await require_consent(человек)
+    student_id = _student_id(человек)
+    if student_id is None:
+        raise ApiError(403, CODE_CONSENT_REQUIRED, texts.SVERKA_NOT_A_STUDENT)
+
+    # Урок обязан принадлежать педагогу одного из классов ЭТОГО ученика:
+    # transcript_id пришёл от клиента, доверять ему нельзя.
+    свои_педагоги = {
+        строка["teacher_id"] for строка in query(
+            "SELECT c.teacher_id FROM class_members m JOIN classes c ON c.id = m.class_id "
+            "WHERE m.student_id = ?",
+            (student_id,),
+        )
+    }
+    урок = query("SELECT teacher_id FROM transcripts WHERE id = ?", (transcript_id,))
+    if not урок or урок[0]["teacher_id"] not in свои_педагоги:
+        raise ApiError(404, CODE_NOT_FOUND, texts.SVERKA_LESSON_NOT_FOUND)
+
+    расширение = _расширение(имя_файла)
+    if расширение and расширение not in РАСШИРЕНИЯ_ФОТО:
+        raise ApiError(415, CODE_BAD_REQUEST, texts.API_PHOTO_UNSUPPORTED)
+    # Имя без расширения дальше подставит .jpg — фото с телефона иначе и
+    # не приходит, а разрешать что угодно нельзя.
+    путь = await _сохранить_запись(request, имя_файла or "tetrad.jpg", разрешённые=РАСШИРЕНИЯ_ФОТО)
+
+    ученик = query("SELECT telegram_id FROM students WHERE id = ?", (student_id,))
+    chat_id = ученик[0]["telegram_id"] if ученик else None
+
+    task_id = enqueue(
+        "sverka_tetradi",
+        {
+            "student_id": student_id,
+            "transcript_id": transcript_id,
+            "photo_path": str(путь),
+            "source": SOURCE_WEB,
+        },
+        chat_id=chat_id,
+    )
     return {"task_id": task_id, "status": "queued"}
