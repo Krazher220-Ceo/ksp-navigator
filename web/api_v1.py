@@ -9,9 +9,9 @@ web/api_v1.py — версионированный API для собственн
 обёртка: проверил доступ, вызвал функцию из core/, вернул JSON. Никакой
 арифметики: числа считает core, иначе бот и кабинет разойдутся.
 
-Чего здесь пока нет: истории документов — она приезжает блоком Ф9.
-Сейчас здесь живут /health (Ф2), вход с регистрацией (Ф4), дэшборд (Ф5),
-конспект урока (Ф6), сборка КСП (Ф7) и классы (Ф8).
+Здесь живут /health (Ф2), вход с регистрацией (Ф4), дэшборд (Ф5),
+конспект урока (Ф6), сборка КСП (Ф7), классы (Ф8) и история
+документов (Ф9).
 
 Правило, которое нельзя нарушать: каждый новый эндпоинт получает
 Depends(current_user) или Depends(verify_init_data). Сервер публично
@@ -26,15 +26,17 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+import asyncio
+
 import httpx
-from fastapi import APIRouter, Body, Depends, Header, Request
+from fastapi import APIRouter, Body, Depends, Header, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from bot import texts
 from core import accounts
 from core.config import settings
 from core.dashboard import collect as collect_dashboard
-from core.db import query
+from core.db import execute, query
 from core.adal_azamat import PROJECTS as ADAL_AZAMAT_PROJECTS
 from core.docx_builder import CANONICAL_HOD_UROKA_COLUMNS, COLUMN_LABELS
 from core.ksp_generator import (
@@ -46,6 +48,7 @@ from core.ksp_generator import (
     guess_objective_code,
 )
 from core.limits import WEB_AUDIO_MAX_BYTES
+from core.pdf_export import convert_docx_to_pdf
 from core.queue import SOURCE_WEB, enqueue
 from core.templates import list_templates
 from core.values import VALUES
@@ -509,36 +512,6 @@ async def konspekt(konspekt_id: str, человек: CurrentUser = Depends(curre
     }
 
 
-DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-
-
-@router.get("/konspekt/{konspekt_id}/docx")
-async def konspekt_docx(konspekt_id: str, человек: CurrentUser = Depends(current_user)) -> FileResponse:
-    """
-    Отдаёт .docx конспекта — тот самый файл, который бот шлёт в чат.
-
-    Собран он был один раз, обработчиком очереди; здесь только отдаётся.
-    Пересобирать по запросу нельзя: два пути сборки одного документа
-    разойдутся, и педагог получит из веба не то, что уже видел в
-    Telegram.
-
-    PDF отсюда не отдаётся: его конвертирует LibreOffice, это десятки
-    секунд и внешний процесс — такому место в очереди, а не в обработчике
-    запроса. Скачивание PDF приезжает блоком Ф9 вместе с историей.
-    """
-    teacher_id = _teacher_id(человек)
-    строки = query("SELECT teacher_id, tema, docx_path FROM konspekty WHERE id = ?", (konspekt_id,))
-    if not строки or teacher_id is None or строки[0]["teacher_id"] != teacher_id:
-        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
-
-    путь = Path(строки[0]["docx_path"] or "")
-    if not путь.name or not путь.exists():
-        # Файл собран, но с диска исчез — честный 404 с тем же текстом:
-        # клиенту незачем различать «не ваш» и «потерялся».
-        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
-    return FileResponse(путь, filename=путь.name, media_type=DOCX_MEDIA_TYPE)
-
-
 # =====================================================================
 # Ф7: мастер сборки КСП
 #
@@ -887,3 +860,235 @@ async def _отправить_документ_в_telegram(chat_id: int, пут�
         # Причину наружу не отдаём: ответ Telegram — не то, что должен
         # читать педагог. В лог она попадёт сама, исключением.
         raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE) from None
+
+
+# =====================================================================
+# Ф9: история документов и скачивание
+#
+# История — это то, что уже собрано, и то, что собрать не вышло. Второе
+# не менее важно первого: провалившаяся задача должна быть видна и
+# повторяема, а не теряться молча.
+# =====================================================================
+
+DOCX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+# Виды документов, которые в системе действительно есть. КТП сюда не
+# входит: он собирается в файл и раскладывается по ktp_entries, но
+# отдельной строки документа для него в базе нет. Завести её — значит
+# менять схему, а это решение автора.
+ВИД_КОНСПЕКТ = "konspekt"
+ВИД_КСП = "ksp"
+
+# PDF есть только у конспекта. У КСП его нет и не возвращаем: КСП правят
+# перед утверждением и печатают из .docx.
+ВИДЫ_С_PDF = {ВИД_КОНСПЕКТ}
+
+# Повторить можно не всё. У расшифровки и сверки исходник — аудио и фото —
+# удаляется сразу после обработки, и при провале тоже: повторять нечего.
+# Тексты про это уже написаны в боте, здесь они переиспользуются.
+ПОВТОР_ЗАПРЕЩЁН = {
+    "transcribe": texts.KONSPEKT_TRANSCRIBE_RETRY_DISABLED,
+    "sverka_tetradi": texts.SVERKA_RETRY_DISABLED,
+}
+
+ЗАГОЛОВКИ_ЗАДАЧ = {
+    "generate_ksp": "Черновик КСП",
+    "generate_ktp": "КТП на учебный год",
+    "generate_konspekt": "Конспект урока",
+    "transcribe": "Расшифровка записи",
+    "sverka_tetradi": "Сверка тетради",
+    "parse_ksp": "Разбор ваших КСП",
+}
+
+
+def _документ(вид: str, doc_id: str, teacher_id: int | None) -> dict:
+    """Строка документа, если она принадлежит этому педагогу.
+
+    Чужой документ — 404, а не 403: не подтверждаем даже факт его
+    существования. Проверка владения на сервере и всегда: идентификатор
+    угадать несложно, и «его же никто не знает» защитой не является.
+    """
+    таблица = {ВИД_КОНСПЕКТ: "konspekty", ВИД_КСП: "generated_ksp"}.get(вид)
+    if таблица is None:
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+    строки = query(f"SELECT * FROM {таблица} WHERE id = ?", (doc_id,))
+    if not строки or teacher_id is None or строки[0]["teacher_id"] != teacher_id:
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+    return dict(строки[0])
+
+
+@router.get("/history")
+async def history(
+    kind: str | None = Query(default=None),
+    since: str | None = Query(default=None),
+    until: str | None = Query(default=None),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """
+    Всё, что педагог собрал, и всё, что собрать не вышло.
+
+    Конспекты и КСП идут из своих таблиц, провалившиеся задачи — из
+    очереди, и всё складывается в один список по времени: человек ищет
+    «что я делал в понедельник», а не «покажи таблицу konspekty».
+
+    Фильтры — по виду документа и по датам. Фильтра по классу нет: связи
+    «документ → класс» в базе не существует, и рисовать её из воздуха
+    значило бы приписать урок не тому классу.
+    """
+    teacher_id = _teacher_id(человек)
+    if teacher_id is None:
+        return {"items": [], "counts": {"konspekt": 0, "ksp": 0, "failed": 0}}
+
+    записи: list[dict] = []
+
+    конспекты = query(
+        "SELECT k.id, k.tema, k.mode, k.docx_path, k.created_at, t.duration_seconds, "
+        "       e.objective_code "
+        "FROM konspekty k "
+        "LEFT JOIN transcripts t ON t.id = k.transcript_id "
+        "LEFT JOIN ktp_entries e ON e.id = k.ktp_entry_id "
+        "WHERE k.teacher_id = ? ORDER BY k.created_at DESC",
+        (teacher_id,),
+    )
+    for строка in конспекты:
+        записи.append({
+            "kind": ВИД_КОНСПЕКТ,
+            "id": строка["id"],
+            "title": строка["tema"] or "Конспект урока",
+            "objective_code": строка["objective_code"],
+            "created_at": строка["created_at"],
+            "status": "ready",
+            "duration_seconds": строка["duration_seconds"],
+            "has_docx": bool(строка["docx_path"]),
+            "has_pdf": bool(строка["docx_path"]),
+        })
+
+    ксп = query(
+        "SELECT g.id, g.created_at, g.docx_path, e.topic, e.objective_code "
+        "FROM generated_ksp g LEFT JOIN ktp_entries e ON e.id = g.ktp_entry_id "
+        "WHERE g.teacher_id = ? ORDER BY g.created_at DESC",
+        (teacher_id,),
+    )
+    for строка in ксп:
+        записи.append({
+            "kind": ВИД_КСП,
+            "id": строка["id"],
+            "title": строка["topic"] or "Черновик КСП",
+            "objective_code": строка["objective_code"],
+            "created_at": строка["created_at"],
+            # Слово «черновик» обязательно везде, где речь о
+            # сгенерированном документе.
+            "status": "draft",
+            "duration_seconds": None,
+            "has_docx": bool(строка["docx_path"]),
+            "has_pdf": False,
+        })
+
+    провалы = query(
+        "SELECT id, type, error, created_at, payload FROM tasks "
+        "WHERE status = 'failed' ORDER BY created_at DESC"
+    )
+    for строка in провалы:
+        try:
+            payload = json.loads(строка["payload"]) if строка["payload"] else {}
+        except (ValueError, TypeError):
+            payload = {}
+        if payload.get("teacher_id") != teacher_id:
+            continue
+        записи.append({
+            "kind": "failed",
+            "id": строка["id"],
+            "title": payload.get("topic") or ЗАГОЛОВКИ_ЗАДАЧ.get(строка["type"], строка["type"]),
+            "objective_code": payload.get("objective_code"),
+            "created_at": строка["created_at"],
+            "status": "failed",
+            "task_type": строка["type"],
+            "error": строка["error"],
+            "can_retry": строка["type"] not in ПОВТОР_ЗАПРЕЩЁН,
+            "has_docx": False,
+            "has_pdf": False,
+        })
+
+    if kind in {ВИД_КОНСПЕКТ, ВИД_КСП, "failed"}:
+        записи = [з for з in записи if з["kind"] == kind]
+    if since:
+        записи = [з for з in записи if str(з["created_at"] or "")[:10] >= since]
+    if until:
+        записи = [з for з in записи if str(з["created_at"] or "")[:10] <= until]
+
+    записи.sort(key=lambda з: str(з["created_at"] or ""), reverse=True)
+    return {
+        "items": записи,
+        "counts": {
+            "konspekt": len(конспекты),
+            "ksp": len(ксп),
+            "failed": sum(1 for з in записи if з["kind"] == "failed"),
+        },
+    }
+
+
+@router.get("/download/{kind}/{doc_id}")
+async def download(
+    kind: str,
+    doc_id: str,
+    format: str = Query(default="docx"),
+    человек: CurrentUser = Depends(current_user),
+) -> FileResponse:
+    """
+    Отдаёт готовый файл документа.
+
+    Файл собран один раз обработчиком очереди — здесь он только
+    отдаётся. Пересобирать по запросу нельзя: два пути сборки одного
+    документа разойдутся, и педагог получит из веба не то, что уже видел
+    в Telegram.
+
+    PDF есть только у конспекта и делается из того же .docx силами
+    LibreOffice. У КСП PDF нет и не будет.
+    """
+    документ = _документ(kind, doc_id, _teacher_id(человек))
+    путь = Path(документ.get("docx_path") or "")
+    if not путь.name or not путь.exists():
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+
+    if format == "docx":
+        return FileResponse(путь, filename=путь.name, media_type=DOCX_MEDIA_TYPE)
+    if format != "pdf":
+        raise ApiError(422, CODE_BAD_REQUEST, texts.API_BAD_REQUEST.format(reason="неизвестный формат файла"))
+    if kind not in ВИДЫ_С_PDF:
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+
+    pdf = путь.with_suffix(".pdf")
+    if not pdf.exists():
+        # Конвертация — внешний процесс LibreOffice на несколько секунд.
+        # В отдельном потоке: сервер однопоточный и на это время перестал
+        # бы отвечать всем остальным.
+        try:
+            pdf = await asyncio.to_thread(convert_docx_to_pdf, путь)
+        except Exception:
+            # LibreOffice может быть не установлен — это не повод падать.
+            raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE) from None
+    return FileResponse(pdf, filename=pdf.name, media_type="application/pdf")
+
+
+@router.post("/task/{task_id}/retry")
+async def retry_task(task_id: str, человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Повторяет провалившуюся задачу — той же очередью.
+
+    Повторить можно не всё: у расшифровки и сверки исходник удаляется
+    сразу после обработки. В таком случае возвращается тот же текст, что
+    говорит бот, — с объяснением и следующим шагом, а не сухим отказом.
+    """
+    await require_consent(человек)
+    задача = _задача_этого_педагога(task_id, _teacher_id(человек))
+    if задача["status"] != "failed":
+        raise ApiError(422, CODE_BAD_REQUEST, texts.API_BAD_REQUEST.format(reason="эта задача не провалена"))
+
+    запрет = ПОВТОР_ЗАПРЕЩЁН.get(задача["type"])
+    if запрет:
+        raise ApiError(422, CODE_BAD_REQUEST, запрет)
+
+    # Счётчик попыток обнуляется: это новая попытка по решению человека,
+    # а не продолжение прежней серии автоматических ретраев.
+    execute("UPDATE tasks SET status = 'pending', retries = 0, error = NULL WHERE id = ?", (task_id,))
+    return {"task_id": task_id, "status": "queued"}

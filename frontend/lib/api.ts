@@ -159,9 +159,9 @@ export async function отправитьЗапись(
   return разобрано as { task_id: string; status: string; size_bytes: number };
 }
 
-/** Ссылка на .docx конспекта — открывается обычным переходом. */
-export function ссылкаНаDocx(konspekt_id: string): string {
-  return `${БАЗА}/api/v1/konspekt/${konspekt_id}/docx`;
+/** Ссылка на файл документа — открывается обычным переходом. */
+export function ссылкаНаФайл(вид: 'konspekt' | 'ksp', id: string, формат: 'docx' | 'pdf' = 'docx'): string {
+  return `${БАЗА}/api/v1/download/${вид}/${id}?format=${формат}`;
 }
 
 /** Ответ /api/v1/ksp/options — справочники мастера сборки КСП. */
@@ -221,8 +221,35 @@ export type Ученик = {
   can_receive: boolean;
 };
 
+/** Строка истории: собранный документ либо провалившаяся задача. */
+export type ЗаписьИстории = {
+  kind: 'konspekt' | 'ksp' | 'failed';
+  id: string;
+  title: string;
+  objective_code: string | null;
+  created_at: string | null;
+  status: 'ready' | 'draft' | 'failed';
+  duration_seconds?: number | null;
+  task_type?: string;
+  error?: string | null;
+  can_retry?: boolean;
+  has_docx: boolean;
+  has_pdf: boolean;
+};
+
 export const апи = {
   дэшборд: () => запрос<Дэшборд>('/api/v1/dashboard'),
+  история: (фильтр?: { kind?: string; since?: string; until?: string }) => {
+    const параметры = new URLSearchParams();
+    if (фильтр?.kind) параметры.set('kind', фильтр.kind);
+    if (фильтр?.since) параметры.set('since', фильтр.since);
+    if (фильтр?.until) параметры.set('until', фильтр.until);
+    const хвост = параметры.toString();
+    return запрос<{ items: ЗаписьИстории[]; counts: { konspekt: number; ksp: number; failed: number } }>(
+      `/api/v1/history${хвост ? `?${хвост}` : ''}`,
+    );
+  },
+  повторить: (task_id: string) => запрос<{ task_id: string; status: string }>(`/api/v1/task/${task_id}/retry`, {}),
   классы: () => запрос<{ classes: Класс[] }>('/api/v1/classes'),
   создатьКласс: (name: string, subject?: string) =>
     запрос<{ class: Класс }>('/api/v1/classes', { name, subject }),

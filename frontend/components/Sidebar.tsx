@@ -34,7 +34,7 @@ export const NAV: Group[] = [
   ] },
   { cap: 'Материалы', items: [
     { key: 'templates', icon: 'layers', label: 'Шаблоны' },
-    { key: 'history', icon: 'file', label: 'История' },
+    { key: 'history', icon: 'file', label: 'История', href: '/app/istoriya' },
   ] },
   { cap: 'Аналитика', items: [
     // Покрытие программы — этап 3, отложен автором до сентября 2026.

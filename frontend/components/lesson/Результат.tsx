@@ -5,7 +5,7 @@ import { Button } from '@/components/Button';
 import { Card, CardBody, CardHead } from '@/components/Card';
 import { Chip } from '@/components/Chip';
 import { Icon } from '@/components/Icon';
-import { ссылкаНаDocx, type Конспект } from '@/lib/api';
+import { ссылкаНаФайл, type Конспект } from '@/lib/api';
 
 /**
  * Экран результата: слева расшифровка, справа конспект.
@@ -133,9 +133,14 @@ export function Результат({ конспект }: { конспект: К�
 
           <div className="row" style={{ gap: 10, marginTop: 18 }}>
             {конспект.has_docx ? (
-              <a href={ссылкаНаDocx(конспект.konspekt_id)}>
-                <Button icon="dl">Скачать .docx</Button>
-              </a>
+              <>
+                <a href={ссылкаНаФайл('konspekt', конспект.konspekt_id)}>
+                  <Button icon="dl">Скачать .docx</Button>
+                </a>
+                <a href={ссылкаНаФайл('konspekt', конспект.konspekt_id, 'pdf')}>
+                  <Button variant="тихая" icon="dl">PDF</Button>
+                </a>
+              </>
             ) : null}
             <Button variant="тихая" icon="doc">Собрать КСП по конспекту</Button>
           </div>

@@ -15,7 +15,7 @@ export const TABS: Tab[] = [
   { key: 'dash', icon: 'home', label: 'Дэшборд', href: '/app' },
   { key: 'lesson', icon: 'mic', label: 'Урок', href: '/app/urok' },
   { key: 'classes', icon: 'users', label: 'Классы', href: '/app/klassy' },
-  { key: 'history', icon: 'file', label: 'История' },
+  { key: 'history', icon: 'file', label: 'История', href: '/app/istoriya' },
   { key: 'more', icon: 'grid', label: 'Ещё' },
 ];
 
