@@ -164,8 +164,53 @@ export function ссылкаНаDocx(konspekt_id: string): string {
   return `${БАЗА}/api/v1/konspekt/${konspekt_id}/docx`;
 }
 
+/** Ответ /api/v1/ksp/options — справочники мастера сборки КСП. */
+export type НастройкиКсп = {
+  templates: { id: number; name: string; description: string | null; category: string; is_official: number }[];
+  tip_uroka: string[];
+  cennosti: { key: string; name: string; goal: string }[];
+  adal_azamat_projects: { key: string; name: string; direction: string }[];
+  work_forms: string[];
+  functional_literacy: string[];
+  max_vidy_deyatelnosti: number;
+  /** Порядок колонок «Хода урока» задаёт приказ; приходит с сервера. */
+  hod_uroka_columns: { key: string; label: string }[];
+};
+
+/** Строка КТП — быстрый путь мастера. */
+export type ТемаКтп = {
+  id: number;
+  lesson_number: number | null;
+  section: string | null;
+  topic: string | null;
+  objective_code: string | null;
+  hours: number | null;
+  planned_date: string | null;
+  quarter: number | null;
+};
+
+export type ОпцииУрока = {
+  tip_uroka?: string | null;
+  cennost_key?: string | null;
+  adal_azamat_project_key?: string | null;
+  vidy_deyatelnosti?: string[];
+  ima_oop?: boolean;
+  sor_instead_of_reflection?: boolean;
+  fizkultminutka?: boolean;
+  page_orientation?: 'book' | 'album';
+};
+
 export const апи = {
   дэшборд: () => запрос<Дэшборд>('/api/v1/dashboard'),
+  настройкиКсп: () => запрос<НастройкиКсп>('/api/v1/ksp/options'),
+  темыКтп: () => запрос<{ entries: ТемаКтп[] }>('/api/v1/ktp/entries'),
+  кодЦели: (topic: string) =>
+    запрос<{ objective_code: string | null }>(`/api/v1/ktp/objective?topic=${encodeURIComponent(topic)}`),
+  собратьКсп: (данные: {
+    topic: string; razdel: string; subject: string; klass: string; duration_minutes: number;
+    template_id: number; objective_code?: string | null; ktp_entry_id?: number | null;
+    options?: ОпцииУрока; konspekt_id?: string | null;
+  }) => запрос<{ task_id: string; status: string }>('/api/v1/ksp/generate', данные),
   задача: (task_id: string) => запрос<Задача>(`/api/v1/task/${task_id}`),
   конспект: (konspekt_id: string) => запрос<Конспект>(`/api/v1/konspekt/${konspekt_id}`),
   я: () => запрос<Я>('/api/v1/me'),

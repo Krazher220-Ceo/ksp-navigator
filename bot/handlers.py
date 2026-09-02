@@ -3631,9 +3631,14 @@ def make_generate_ksp_handler(bot: Bot):
             # в core/limits.py, record_usage). Ключ — telegram_chat_id
             # задачи: для приватного чата с ботом это то же число, что
             # telegram_user_id учителя (см. core/dashboard.py, тот же приём).
-            record_usage(chat_id, "generate_ksp", tokens_delta=llm_client.total_tokens_used)
+            # Ф6/Ф7: у задачи из кабинета телеграм-чата может не быть —
+            # расход в core/limits.py ключуется им, и записать его тогда
+            # некуда. Дэшборд про это честно говорит вместо «0 из 0».
+            if chat_id is not None:
+                record_usage(chat_id, "generate_ksp", tokens_delta=llm_client.total_tokens_used)
             await llm_client.aclose()
-        record_usage(chat_id, "generate_ksp", count_delta=1)
+        if chat_id is not None:
+            record_usage(chat_id, "generate_ksp", count_delta=1)
 
         docx_path = Path(result["docx_path"])
         caption = texts.GENERATE_RESULT_CAPTION.format(topic=payload["topic"])
@@ -3652,7 +3657,9 @@ def make_generate_ksp_handler(bot: Bot):
                 inline_keyboard=[[InlineKeyboardButton(text=texts.GENERATE_PREVIEW_BUTTON, web_app=WebAppInfo(url=preview_url))]]
             )
 
-        await bot.send_document(chat_id, FSInputFile(docx_path), caption=caption, reply_markup=keyboard)
+        await _send_document_to_telegram(
+            bot, chat_id, FSInputFile(docx_path), caption=caption, reply_markup=keyboard
+        )
 
         return {
             "generated_ksp_id": result["id"],

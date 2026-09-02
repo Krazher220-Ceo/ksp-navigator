@@ -9,9 +9,9 @@ web/api_v1.py — версионированный API для собственн
 обёртка: проверил доступ, вызвал функцию из core/, вернул JSON. Никакой
 арифметики: числа считает core, иначе бот и кабинет разойдутся.
 
-Чего здесь пока нет: КСП, классы и история — они приезжают своими
-блоками (Ф7–Ф9). Сейчас здесь живут /health (Ф2), вход с регистрацией
-(Ф4), дэшборд (Ф5) и конспект урока (Ф6).
+Чего здесь пока нет: классы и история — они приезжают блоками Ф8 и Ф9.
+Сейчас здесь живут /health (Ф2), вход с регистрацией (Ф4), дэшборд (Ф5),
+конспект урока (Ф6) и сборка КСП (Ф7).
 
 Правило, которое нельзя нарушать: каждый новый эндпоинт получает
 Depends(current_user) или Depends(verify_init_data). Сервер публично
@@ -22,6 +22,7 @@ web/api_v1.PUBLIC_PATHS, чтобы про него знал и человек, 
 
 import json
 import uuid
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -33,8 +34,20 @@ from core import accounts
 from core.config import settings
 from core.dashboard import collect as collect_dashboard
 from core.db import query
+from core.adal_azamat import PROJECTS as ADAL_AZAMAT_PROJECTS
+from core.docx_builder import CANONICAL_HOD_UROKA_COLUMNS, COLUMN_LABELS
+from core.ksp_generator import (
+    FUNCTIONAL_LITERACY_TYPES,
+    MAX_VIDY_DEYATELNOSTI,
+    TIP_UROKA_OPTIONS,
+    WORK_FORMS,
+    LessonOptions,
+    guess_objective_code,
+)
 from core.limits import WEB_AUDIO_MAX_BYTES
 from core.queue import SOURCE_WEB, enqueue
+from core.templates import list_templates
+from core.values import VALUES
 from web.auth import ROLE_STUDENT, ROLE_TEACHER, CurrentUser, current_user, require_consent
 from web.errors import (
     CODE_BAD_REQUEST,
@@ -523,3 +536,169 @@ async def konspekt_docx(konspekt_id: str, человек: CurrentUser = Depends(
         # клиенту незачем различать «не ваш» и «потерялся».
         raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
     return FileResponse(путь, filename=путь.name, media_type=DOCX_MEDIA_TYPE)
+
+
+# =====================================================================
+# Ф7: мастер сборки КСП
+#
+# Мастер спрашивает то же, что спрашивает бот, и теми же словами. Списки
+# вариантов приходят из core/ — придумывать их во фронтенде нельзя: тип
+# урока, ценности «Адал азамат» и виды деятельности заданы приказом и
+# методичками, а не вкусом верстальщика.
+# =====================================================================
+
+
+@router.get("/ksp/options")
+async def ksp_options(человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Всё, из чего мастер строит форму: шаблоны, справочники и порядок
+    колонок «Хода урока».
+
+    Порядок колонок отдаётся сервером, а не зашивается в вёрстку.
+    Он закреплён приложением 4 приказа МОН РК №130 в редакции от
+    30.04.2025 № 98 — оценивание идёт ПЕРЕД ресурсами, — и один раз в
+    проекте его уже путали. Единственное место, где он записан, —
+    core/docx_builder.py; кабинет обязан показывать тот же.
+    """
+    teacher_id = _teacher_id(человек)
+    # teacher_id=-1 у списка шаблонов означает «профиля нет»: встроенные
+    # шаблоны при этом всё равно видны. Контракт старый, менять его тут
+    # нельзя — он держит ту же логику в Mini App.
+    шаблоны = list_templates(teacher_id if teacher_id is not None else -1)
+
+    return {
+        "templates": шаблоны,
+        "tip_uroka": TIP_UROKA_OPTIONS,
+        "cennosti": [{"key": ключ, "name": знач["name"], "goal": знач["goal"]} for ключ, знач in VALUES.items()],
+        "adal_azamat_projects": [
+            {"key": ключ, "name": знач["name"], "direction": знач["direction"]}
+            for ключ, знач in ADAL_AZAMAT_PROJECTS.items()
+        ],
+        # Виды деятельности в core/ разложены на две группы — формы
+        # работы и виды функциональной грамотности. Кабинет показывает их
+        # так же двумя группами, а не одной кучей: это разные вопросы.
+        "work_forms": WORK_FORMS,
+        "functional_literacy": FUNCTIONAL_LITERACY_TYPES,
+        "max_vidy_deyatelnosti": MAX_VIDY_DEYATELNOSTI,
+        "hod_uroka_columns": [
+            {"key": колонка, "label": COLUMN_LABELS.get(колонка, колонка)}
+            for колонка in CANONICAL_HOD_UROKA_COLUMNS
+        ],
+    }
+
+
+@router.get("/ktp/entries")
+async def ktp_entries(человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Темы из КТП этого педагога — быстрый путь мастера.
+
+    Выбрал тему из своего календарного плана, и раздел с кодом цели
+    подставились сами. Ничего не додумываем: чего в КТП нет, того нет и
+    в ответе.
+    """
+    teacher_id = _teacher_id(человек)
+    if teacher_id is None:
+        return {"entries": []}
+    # Колонка раздела в базе называется section — «раздел» это её
+    # человеческое имя, и переименовывать её ради красоты незачем.
+    строки = query(
+        "SELECT id, lesson_number, section, topic, objective_code, hours, planned_date, quarter "
+        "FROM ktp_entries WHERE teacher_id = ? ORDER BY id",
+        (teacher_id,),
+    )
+    return {"entries": [dict(строка) for строка in строки]}
+
+
+@router.get("/ktp/objective")
+async def ktp_objective(topic: str, человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Код цели обучения по теме урока, если он есть в КТП.
+
+    Ищет тот же core.ksp_generator.guess_objective_code, что и бот:
+    сначала точное совпадение темы, потом вхождение подстрокой. Никаких
+    эмбеддингов — это этап 3, и он отложен.
+    """
+    teacher_id = _teacher_id(человек)
+    код = guess_objective_code(teacher_id, topic) if teacher_id is not None else None
+    return {"objective_code": код}
+
+
+@router.post("/ksp/generate")
+async def ksp_generate(
+    topic: str = Body(...),
+    razdel: str = Body(...),
+    subject: str = Body(...),
+    klass: str = Body(...),
+    duration_minutes: int = Body(...),
+    template_id: int = Body(...),
+    objective_code: str | None = Body(default=None),
+    ktp_entry_id: int | None = Body(default=None),
+    options: dict | None = Body(default=None),
+    konspekt_id: str | None = Body(default=None),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """
+    Ставит сборку черновика КСП в очередь — ту же, что у бота.
+
+    Здесь не генерируется ничего: генерация занимает от двадцати пяти до
+    тридцати четырёх секунд по замерам, плюс ретраи при отказе
+    провайдера. Место такому — в очереди.
+
+    Недостающие поля не дописываются заглушками: чего мастер не спросил,
+    то уходит пустым, и в документе останется пусто. Придуманный раздел
+    хуже пустого — его никто не заметит и не поправит.
+    """
+    await require_consent(человек)
+    teacher_id = _teacher_id(человек)
+    if teacher_id is None:
+        raise ApiError(403, CODE_CONSENT_REQUIRED, texts.API_PROFILE_REQUIRED)
+
+    # Опции проходят через сам LessonOptions: он же и обрезает список
+    # видов деятельности до трёх — «до трёх» это ограничение, а не
+    # пожелание, и проверять его во фронтенде значило бы завести вторую
+    # копию правила.
+    try:
+        разобранные = LessonOptions(**(options or {}))
+    except TypeError as ошибка:
+        raise ApiError(422, CODE_BAD_REQUEST, texts.API_BAD_REQUEST.format(reason=f"настройки урока: {ошибка}")) from None
+
+    konspekt_text = None
+    if konspekt_id:
+        строки = query(
+            "SELECT teacher_id, content_json FROM konspekty WHERE id = ?", (konspekt_id,)
+        )
+        if not строки or строки[0]["teacher_id"] != teacher_id:
+            raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+        try:
+            содержимое = json.loads(строки[0]["content_json"] or "{}")
+        except (ValueError, TypeError):
+            содержимое = {}
+        konspekt_text = содержимое.get("transcript_text") or json.dumps(содержимое, ensure_ascii=False)
+
+    профиль = (
+        accounts.find_teacher_by_auth_user(человек.auth_user_id)
+        if человек.auth_user_id
+        else accounts.find_teacher_by_telegram(человек.telegram_user_id)
+    )
+    chat_id = профиль.get("telegram_user_id") if профиль else None
+
+    task_id = enqueue(
+        "generate_ksp",
+        {
+            "teacher_id": teacher_id,
+            "template_id": template_id,
+            "topic": topic.strip(),
+            "razdel": razdel.strip(),
+            "subject": subject.strip(),
+            "klass": klass.strip(),
+            "duration_minutes": duration_minutes,
+            "objective_code": objective_code,
+            "ktp_entry_id": ktp_entry_id,
+            "options": asdict(разобранные),
+            "textbook_photo_paths": [],
+            "konspekt_text": konspekt_text,
+            "source": SOURCE_WEB,
+        },
+        chat_id=chat_id,
+    )
+    return {"task_id": task_id, "status": "queued"}

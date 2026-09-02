@@ -26,7 +26,7 @@ export const NAV: Group[] = [
   { cap: 'Работа', items: [
     { key: 'dash', icon: 'home', label: 'Дэшборд', href: '/app' },
     { key: 'konspekt', icon: 'mic', label: 'Конспект урока', href: '/app/urok' },
-    { key: 'ksp', icon: 'doc', label: 'Собрать КСП' },
+    { key: 'ksp', icon: 'doc', label: 'Собрать КСП', href: '/app/ksp' },
     { key: 'ktp', icon: 'cal', label: 'Собрать КТП' },
   ] },
   { cap: 'Класс', items: [
