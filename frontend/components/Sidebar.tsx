@@ -51,7 +51,7 @@ export const NAV: Group[] = [
     { key: 'coverage', icon: 'chart', label: 'Покрытие программы', locked: true },
   ] },
   { cap: 'Аккаунт', items: [
-    { key: 'tariff', icon: 'card', label: 'Тариф и оплата' },
+    { key: 'tariff', icon: 'card', label: 'Тариф и оплата', href: '/app/tarif' },
   ] },
 ];
 

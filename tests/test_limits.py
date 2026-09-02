@@ -228,7 +228,12 @@ def test_student_tariffs_are_disabled_by_default():
 
 
 def test_student_tariff_numbers_match_master_md_0_10():
-    assert STUDENT_DAILY_SVERKA_LIMITS == {"free": 1, "student": 5, "student_plus": 10}
+    """
+    Числа — из design/TARIFFS.md, редакция 01.09.2026 (блок Ф11).
+    Верхний уровень «10» убран решением автора от 01.09: восемь и больше
+    почти никто не выбирает, пять покрывают тяжёлые предметы.
+    """
+    assert STUDENT_DAILY_SVERKA_LIMITS == {"free": 1, "student": 1, "student_plus": 5}
 
 
 def test_check_student_sverka_limit_never_raises_while_disabled(db_path):
