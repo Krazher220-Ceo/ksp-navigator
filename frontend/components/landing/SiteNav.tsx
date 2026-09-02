@@ -43,8 +43,8 @@ export function SiteNav() {
             aria-disabled
           >ҚАЗ</span>
         </div>
-        <Button variant="строкой">Войти</Button>
-        <Button arrow>Записать первый урок</Button>
+        <Link href="/vhod"><Button variant="строкой">Войти</Button></Link>
+        <Link href="/registraciya"><Button arrow>Записать первый урок</Button></Link>
       </div>
     </nav>
   );

@@ -1,3 +1,5 @@
+import Link from 'next/link';
+import { КОНТАКТЫ } from '@/content/contacts';
 import { Button } from '@/components/Button';
 import { Chip } from '@/components/Chip';
 import { Icon, type IconName } from '@/components/Icon';
@@ -46,13 +48,20 @@ function Карточка({ ключ }: { ключ: string }) {
         ))}
       </ul>
       {главный ? (
-        <Button size="крупная" arrow style={{ marginTop: 24, width: '100%', justifyContent: 'center' }}>
-          Выбрать «Учитель»
-        </Button>
+        <Link href="/registraciya">
+          <Button size="крупная" arrow style={{ marginTop: 24, width: '100%', justifyContent: 'center' }}>
+            Выбрать «Учитель»
+          </Button>
+        </Link>
       ) : (
-        <Button size="крупная" variant="тихая" style={{ marginTop: 24, width: '100%', justifyContent: 'center', borderRadius: 12 }}>
-          {ключ === 'free' ? 'Зарегистрироваться' : 'Выбрать PRO'}
-        </Button>
+        // Все тарифы ведут в одно место — на регистрацию. Оплата в пилоте
+        // выключена (design/TARIFFS.md), выбрать тариф в кабинете пока
+        // нельзя, и кнопка, обещающая выбор, обещала бы лишнее.
+        <Link href="/registraciya">
+          <Button size="крупная" variant="тихая" style={{ marginTop: 24, width: '100%', justifyContent: 'center', borderRadius: 12 }}>
+            {ключ === 'free' ? 'Зарегистрироваться' : 'Выбрать PRO'}
+          </Button>
+        </Link>
       )}
     </div>
   );
@@ -97,9 +106,22 @@ export function Tariffs() {
               Цена считается по количеству педагогов, а не по количеству детей.
             </div>
           </div>
-          <Button style={{ marginLeft: 'auto', flex: 'none', background: 'rgba(255,255,255,.11)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.14)' }}>
-            Запросить смету
-          </Button>
+          {/* Почта для заявок школ ещё не заведена (content/contacts.ts) —
+              кнопка нарисована выключенной, а не ведёт в никуда. */}
+          {КОНТАКТЫ.почта ? (
+            <a href={`mailto:${КОНТАКТЫ.почта}?subject=${encodeURIComponent('Смета для школы')}`} style={{ marginLeft: 'auto', flex: 'none' }}>
+              <Button style={{ background: 'rgba(255,255,255,.11)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.14)' }}>
+                Запросить смету
+              </Button>
+            </a>
+          ) : (
+            <Button
+              disabled aria-disabled="true" title="Почта для заявок школ ещё не заведена"
+              style={{ marginLeft: 'auto', flex: 'none', background: 'rgba(255,255,255,.11)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.14)', opacity: 0.5 }}
+            >
+              Запросить смету
+            </Button>
+          )}
         </div>
 
         <div className="card an d6" style={{ padding: '24px 26px' }}>

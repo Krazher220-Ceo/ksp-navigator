@@ -121,7 +121,12 @@ export type Задача = {
   type: string;
   retries: number;
   error?: string;
-  result?: { transcript_id?: string; konspekt_id?: string; mode?: string } | null;
+  // konspekt_task_id — вторая задача ученического режима: расшифровка
+  // завершается раньше конспекта и своего konspekt_id не знает.
+  result?: {
+    transcript_id?: string; konspekt_id?: string | null;
+    konspekt_task_id?: string | null; mode?: string;
+  } | null;
 };
 
 /** Ответ /api/v1/konspekt/{id}. */

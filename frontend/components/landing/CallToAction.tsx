@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { Button } from '@/components/Button';
 import { КОНТАКТЫ } from '@/content/contacts';
 import { Reveal } from './Reveal';
@@ -24,15 +25,34 @@ export function CallToAction() {
           всегда успеете. Если школа подключит вас по договору, тариф снимется автоматически.
         </p>
         <div className="an d2 row" style={{ justifyContent: 'center', gap: 12, marginTop: 28 }}>
-          <Button size="крупная" arrow style={{
-            background: 'linear-gradient(180deg,#1ECBE4,#009FBB)', color: '#052A38',
-            boxShadow: 'inset 0 1px 0 rgba(255,255,255,.5),0 12px 26px -12px rgba(0,175,202,.9)',
-          }}>
-            Записать первый урок
-          </Button>
-          <Button size="крупная" style={{ background: 'rgba(255,255,255,.11)', color: '#fff', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.14)' }}>
-            Я из школы — нужна смета
-          </Button>
+          <Link href="/registraciya">
+            <Button size="крупная" arrow style={{
+              background: 'linear-gradient(180deg,#1ECBE4,#009FBB)', color: '#052A38',
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,.5),0 12px 26px -12px rgba(0,175,202,.9)',
+            }}>
+              Записать первый урок
+            </Button>
+          </Link>
+          {/* Школьная смета — разговор письмом. Пока почта для заявок не
+              заведена (content/contacts.ts), кнопка нарисована
+              выключенной: ссылка в никуда хуже отсутствующей ссылки, а
+              выдумать адрес нельзя. Тот же приём, что у переключателя
+              языка в шапке. */}
+          {КОНТАКТЫ.почта ? (
+            <a href={`mailto:${КОНТАКТЫ.почта}?subject=${encodeURIComponent('Смета для школы')}`}>
+              <Button size="крупная" style={{ background: 'rgba(255,255,255,.11)', color: '#fff', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.14)' }}>
+                Я из школы — нужна смета
+              </Button>
+            </a>
+          ) : (
+            <Button
+              size="крупная" disabled aria-disabled="true"
+              title="Почта для заявок школ ещё не заведена"
+              style={{ background: 'rgba(255,255,255,.11)', color: '#fff', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.14)', opacity: 0.5 }}
+            >
+              Я из школы — нужна смета
+            </Button>
+          )}
         </div>
         <div className="an d3 row" style={{ justifyContent: 'center', gap: 22, marginTop: 22, color: '#7FA6C4', fontSize: 13 }}>
           {контакты.map((к, i) => (

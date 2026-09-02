@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { Button } from '@/components/Button';
 import { Chip } from '@/components/Chip';
 import { Icon } from '@/components/Icon';
@@ -56,8 +57,10 @@ export function Hero() {
           Школа не нужна: регистрируетесь сами, заводите класс, диктуете код ученикам.
         </p>
         <div className="an d3 row" style={{ gap: 12, marginTop: 30 }}>
-          <Button size="крупная" arrow>Записать первый урок</Button>
-          <Button size="крупная" variant="тихая" icon="play">Посмотреть за 90 секунд</Button>
+          <Link href="/registraciya"><Button size="крупная" arrow>Записать первый урок</Button></Link>
+          {/* Ролика пока нет — кнопка ведёт туда, где то же самое показано
+              шагами. Ссылка в никуда хуже, чем ссылка на честное место. */}
+          <a href="#kak"><Button size="крупная" variant="тихая" icon="play">Посмотреть за 90 секунд</Button></a>
         </div>
         <div className="an d4 row" style={{ gap: 20, marginTop: 22, color: 'var(--ink-3)', fontSize: 13 }}>
           <span className="row" style={{ gap: 7 }}><Icon name="check" size={15} /> Карта не нужна</span>

@@ -3800,6 +3800,12 @@ def make_transcribe_handler(bot: Bot):
             (transcript_id, payload["teacher_id"], mode, full_text, total_duration, "ru"),
         )
 
+        # Обе ветки отдают наверх то, по чему кабинет найдёт конспект:
+        # учительская — готовую строку konspekty, ученическая — задачу,
+        # которая её создаст. Ровно одно из двух всегда заполнено.
+        konspekt_id = None
+        konspekt_task_id = None
+
         if mode == "student":
             preview = full_text[:300] + ("…" if len(full_text) > 300 else "")
             await _tell_telegram(
@@ -3807,7 +3813,11 @@ def make_transcribe_handler(bot: Bot):
                 chat_id,
                 texts.KONSPEKT_TRANSCRIPT_READY.format(duration=_format_duration(total_duration), preview=preview),
             )
-            enqueue(
+            # Идентификатор второй задачи возвращается наверх: в Telegram
+            # о готовности сообщает бот, а кабинету сообщать некому —
+            # он следит за задачей и без этого id упирается в тупик
+            # (расшифровка done, конспекта нет, ждать нечего).
+            konspekt_task_id = enqueue(
                 "generate_konspekt",
                 {"teacher_id": payload["teacher_id"], "transcript_id": transcript_id, "mode": mode},
                 chat_id=chat_id,
@@ -3855,7 +3865,13 @@ def make_transcribe_handler(bot: Bot):
                     reply_markup=ksp_button if index == len(chunks) - 1 else None,
                 )
 
-        return {"transcript_id": transcript_id, "duration_seconds": total_duration, "mode": mode}
+        return {
+            "transcript_id": transcript_id,
+            "duration_seconds": total_duration,
+            "mode": mode,
+            "konspekt_id": konspekt_id,
+            "konspekt_task_id": konspekt_task_id,
+        }
 
     return handler
 
