@@ -78,6 +78,11 @@ class Settings:
     # а не кода: адрес на Vercel появится позже, домен — ещё позже.
     cors_origins: tuple[str, ...]
 
+    # Ф14: экран аналитики продукта. Выключен по умолчанию — случайно
+    # открытый доступ к нему это инцидент, а не мелочь. Даже включённый,
+    # он открывается только аккаунтам из admin_access.
+    analytics_enabled: bool
+
     # М7.1 (PLAN_STAGE2.md): куда слать уведомление о завершившемся
     # инциденте живучести (core/incidents.py). Не задан — некому слать,
     # бот не падает из-за этого (тот же принцип, что webapp_url).
@@ -212,6 +217,7 @@ def _build_settings() -> Settings:
         webapp_url=_env("WEBAPP_URL"),
         webapp_port=webapp_port,
         cors_origins=_parse_cors_origins(_env("CORS_ORIGINS")),
+        analytics_enabled=(_env("ANALYTICS_ENABLED", "0") or "0").lower() in {"1", "true", "yes"},
         admin_telegram_chat_id=admin_telegram_chat_id,
         admin_password=_env("ADMIN_PASSWORD"),
         stt_backend=stt_backend,

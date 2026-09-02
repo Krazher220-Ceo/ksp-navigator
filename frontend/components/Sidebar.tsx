@@ -56,11 +56,22 @@ export const NAV: Group[] = [
   ] },
 ];
 
-type Props = { userName: string; userInitials: string; userTariff: string; роль?: Роль };
+type Props = {
+  userName: string; userInitials: string; userTariff: string; роль?: Роль;
+  /** Показывать ли пункт «Аналитика». Решает сервер (/api/v1/me). */
+  аналитика?: boolean;
+};
 
-export function Sidebar({ userName, userInitials, userTariff, роль = 'teacher' }: Props) {
+export function Sidebar({ userName, userInitials, userTariff, роль = 'teacher', аналитика = false }: Props) {
   const path = usePathname();
-  const меню = роль === 'student' ? NAV_УЧЕНИКА : NAV;
+  const базовое = роль === 'student' ? NAV_УЧЕНИКА : NAV;
+  // Пункт закрытой аналитики дорисовывается, а не отключается: экрана,
+  // к которому у человека нет доступа, для него не существует.
+  const меню = аналитика
+    ? [...базовое, { cap: 'Команда проекта', items: [
+        { key: 'analitika', icon: 'chart' as IconName, label: 'Аналитика продукта', href: '/app/analitika' },
+      ] }]
+    : базовое;
   return (
     <aside className="side">
       <div className="brand">

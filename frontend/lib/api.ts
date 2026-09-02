@@ -67,6 +67,19 @@ export type Я = {
   role: 'teacher' | 'student' | null;
   consent_given: boolean;
   profile: { name: string | null; subject: string | null; school: string | null; city: string | null } | null;
+  /** Показывать ли пункт «Аналитика»: решает сервер, не браузер. */
+  analytics_available?: boolean;
+};
+
+/** Аналитика продукта: только числа. */
+export type Аналитика = {
+  window_days: number;
+  active_teachers: number;
+  documents: { konspekt: number; ksp: number };
+  actions: Record<string, { done: number; failed: number; всего: number }>;
+  by_weekday: number[];
+  failures: Record<string, number>;
+  returned_teachers: number;
 };
 
 /** Ответ /api/v1/dashboard — ровно то, что посчитал core.dashboard. */
@@ -284,6 +297,7 @@ export async function отправитьФотоТетради(
 
 export const апи = {
   дэшборд: () => запрос<Дэшборд>('/api/v1/dashboard'),
+  аналитика: () => запрос<Аналитика>('/api/v1/analytics'),
   классыУченика: () => запрос<{ classes: КлассУченика[] }>('/api/v1/student/classes'),
   урокиУченика: (class_id: number) =>
     запрос<{ lessons: УрокУченика[] }>(`/api/v1/student/lessons?class_id=${class_id}`),

@@ -42,6 +42,7 @@ export default function CabinetLayout({ children }: { children: React.ReactNode 
     <div className="app">
       <Sidebar
         роль={роль}
+        аналитика={Boolean(я?.analytics_available)}
         userName={я?.profile?.name ?? 'Ваш профиль'}
         userInitials={инициалы(я?.profile?.name)}
         userTariff={я?.role === 'student' ? 'Ученик' : 'Тариф «Учитель»'}

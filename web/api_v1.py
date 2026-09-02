@@ -10,8 +10,8 @@ web/api_v1.py — версионированный API для собственн
 арифметики: числа считает core, иначе бот и кабинет разойдутся.
 
 Здесь живут /health (Ф2), вход с регистрацией (Ф4), дэшборд (Ф5),
-конспект урока (Ф6), сборка КСП (Ф7), классы (Ф8) и история
-документов (Ф9).
+конспект урока (Ф6), сборка КСП (Ф7), классы (Ф8), история документов
+(Ф9), экран ученика (Ф10) и закрытая аналитика (Ф14).
 
 Правило, которое нельзя нарушать: каждый новый эндпоинт получает
 Depends(current_user) или Depends(verify_init_data). Сервер публично
@@ -47,7 +47,8 @@ from core.ksp_generator import (
     LessonOptions,
     guess_objective_code,
 )
-from core.limits import WEB_AUDIO_MAX_BYTES
+from core.analytics import collect as collect_analytics
+from core.limits import WEB_AUDIO_MAX_BYTES, has_admin_access
 from core.pdf_export import convert_docx_to_pdf
 from core.queue import SOURCE_WEB, enqueue
 from core.templates import list_templates
@@ -148,6 +149,10 @@ async def me(человек: CurrentUser = Depends(current_user)) -> dict:
         "role": человек.role,
         "consent_given": согласие,
         "profile": профиль,
+        # Ф14: показывать ли пункт «Аналитика». Два замка сразу: флаг
+        # окружения и запись в admin_access. Доступ по одному из них —
+        # это уже случайно открытая аналитика, то есть инцидент.
+        "analytics_available": _аналитика_доступна(человек),
     }
 
 
@@ -1268,3 +1273,40 @@ async def student_sverka(
         chat_id=chat_id,
     )
     return {"task_id": task_id, "status": "queued"}
+
+
+# =====================================================================
+# Ф14: закрытая аналитика продукта
+#
+# Два замка: флаг окружения ANALYTICS_ENABLED и запись в admin_access.
+# Нет любого из них — эндпоинта как будто не существует: 404, а не 403.
+# Отказ «у вас нет прав» рассказывает о существовании закрытого экрана
+# тому, кому знать о нём незачем.
+#
+# Рейтинга педагогов здесь нет и не появится. Содержание уроков и
+# конспектов в аналитику не попадает вовсе — только числа.
+# =====================================================================
+
+
+def _аналитика_доступна(человек: CurrentUser) -> bool:
+    if not settings.analytics_enabled:
+        return False
+    if человек.telegram_user_id is None:
+        # admin_access ключуется telegram_user_id: у вошедшего только по
+        # почте доступа нет, и выдумывать ему другой путь мы не будем.
+        return False
+    return has_admin_access(человек.telegram_user_id)
+
+
+@router.get("/analytics")
+async def analytics(человек: CurrentUser = Depends(current_user)) -> dict:
+    """
+    Аналитика продукта: шесть показателей, все — числа.
+
+    Ни имён, ни тем уроков, ни текстов документов. Рейтинга педагогов
+    нет: как только аналитика учебного процесса превращается в оценку
+    человека, доступ в школы закрывается.
+    """
+    if not _аналитика_доступна(человек):
+        raise ApiError(404, CODE_NOT_FOUND, texts.API_NOT_FOUND)
+    return collect_analytics()
