@@ -1385,6 +1385,46 @@ async def test_generate_ktp_task_handler_sends_document_and_notes_entries(isolat
     assert "34" in bot.sent_documents[0]["caption"]
 
 
+async def test_generate_ktp_task_handler_from_cabinet_without_telegram_chat_does_not_crash(
+    isolated_env, monkeypatch
+):
+    """Прод-баг 2026-09-03: задача из кабинета (вход по почте) не имеет
+    telegram_chat_id. record_usage писала NULL в NOT NULL колонку и
+    роняла задачу — очередь ретраила её ещё дважды, каждый раз заново
+    прогоняя всю (дорогую и долгую) генерацию КТП через LLM. Дублирует
+    ту же защиту, что у make_generate_ksp_handler."""
+    from bot import handlers as handlers_module
+    from bot.handlers import make_generate_ktp_handler
+
+    async def fake_generate_and_save_ktp(**kwargs):
+        return {
+            "id": "ktp-xyz",
+            "docx_path": "/tmp/ktp_result.docx",
+            "content_json": {},
+            "ktp_entries_inserted": 34,
+            "ktp_entries_replaced": 0,
+        }
+
+    monkeypatch.setattr(handlers_module, "generate_and_save_ktp", fake_generate_and_save_ktp)
+
+    bot = FakeBot()
+    handler = make_generate_ktp_handler(bot)
+    task = {
+        "id": "t9b",
+        "type": "generate_ktp",
+        "telegram_chat_id": None,
+        "payload": {
+            "teacher_id": 1, "predmet": "физика", "klass": "10А",
+            "chasov_v_nedelu": 2, "chasov_v_god": 68, "topics": None,
+        },
+    }
+
+    result = await handler(task)  # не должен бросить исключение наружу
+
+    assert result == {"docx_path": "/tmp/ktp_result.docx", "ktp_entries_inserted": 34, "pdf_path": None}
+    assert bot.sent_documents == []  # некуда слать — телеграм-чата у задачи нет
+
+
 async def test_generate_duration_rejects_non_numeric_input(isolated_env):
     _create_teacher(1)
     state = _state()

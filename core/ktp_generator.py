@@ -40,7 +40,17 @@ from core.llm_client import LLMClient
 # сама модель отвечала штатно, просто дольше. Свой, увеличенный таймаут —
 # не общий дефолт LLMClient, чтобы не менять поведение KSP-генерации,
 # для которой 60с достаточно (core/ksp_generator.py).
-_KTP_REQUEST_TIMEOUT_SECONDS = 180.0
+#
+# Без leading underscore и экспортируется: bot/handlers.py строит свой
+# LLMClient заранее (чтобы прочитать total_tokens_used после генерации),
+# и до этой правки создавал его с дефолтным таймаутом 60с — константа
+# ниже существовала, но передавалась только тогда, когда вызывающий код
+# НЕ передаёт свой llm_client (generate_and_save_ktp: "llm_client or
+# LLMClient(request_timeout=...)"). Раз клиент из очереди подавался
+# готовым, это "or" никогда не срабатывало, и 180с не применялись ни разу
+# в проде — только в прямых вызовах generate_and_save_ktp без очереди
+# (например, в тестах).
+KTP_REQUEST_TIMEOUT_SECONDS = 180.0
 
 SYSTEM_PROMPT = (
     "Ты помогаешь педагогу Республики Казахстан составить черновик "
@@ -259,7 +269,7 @@ async def generate_ktp(
     запрос; если и он не проходит — KTPValidationError."""
     prompt = build_prompt(predmet, klass, chasov_v_nedelu, chasov_v_god, topics, db_path=db_path)
 
-    client = llm_client or LLMClient(request_timeout=_KTP_REQUEST_TIMEOUT_SECONDS)
+    client = llm_client or LLMClient(request_timeout=KTP_REQUEST_TIMEOUT_SECONDS)
     owns_client = llm_client is None
     try:
         content = await client.complete_json(

@@ -92,7 +92,7 @@ from core.ksp_parser import (
     parse_ksp,
     save_style_profile,
 )
-from core.ktp_generator import generate_and_save_ktp
+from core.ktp_generator import KTP_REQUEST_TIMEOUT_SECONDS, generate_and_save_ktp
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMClient, LLMError
 from core.konspekt_builder import build_konspekt_docx, build_konspekt_filename
@@ -3687,8 +3687,10 @@ def make_generate_ktp_handler(bot: Bot):
 
         # М6.2 — тот же приём, что и в make_generate_ksp_handler: свой
         # клиент, чтобы прочитать total_tokens_used и записать реальный
-        # расход, count_delta=1 только после успеха.
-        llm_client = LLMClient()
+        # расход, count_delta=1 только после успеха. Таймаут —
+        # KTP_REQUEST_TIMEOUT_SECONDS (core/ktp_generator.py), а не дефолт
+        # LLMClient: КТП — самый тяжёлый по объёму ответа запрос в проекте.
+        llm_client = LLMClient(request_timeout=KTP_REQUEST_TIMEOUT_SECONDS)
         try:
             result = await generate_and_save_ktp(
                 teacher_id=payload["teacher_id"],
@@ -3700,9 +3702,13 @@ def make_generate_ktp_handler(bot: Bot):
                 llm_client=llm_client,
             )
         finally:
-            record_usage(chat_id, "generate_ktp", tokens_delta=llm_client.total_tokens_used)
+            # Ф6/Ф7: у задачи из кабинета телеграм-чата может не быть —
+            # тот же приём, что и в make_generate_ksp_handler.
+            if chat_id is not None:
+                record_usage(chat_id, "generate_ktp", tokens_delta=llm_client.total_tokens_used)
             await llm_client.aclose()
-        record_usage(chat_id, "generate_ktp", count_delta=1)
+        if chat_id is not None:
+            record_usage(chat_id, "generate_ktp", count_delta=1)
 
         docx_path = Path(result["docx_path"])
         caption = texts.GENERATE_KTP_RESULT_CAPTION.format(
@@ -3711,7 +3717,10 @@ def make_generate_ktp_handler(bot: Bot):
         if result["ktp_entries_inserted"]:
             caption += texts.GENERATE_KTP_ENTRIES_NOTE.format(count=result["ktp_entries_inserted"])
 
-        await bot.send_document(chat_id, FSInputFile(docx_path), caption=caption)
+        # Ф6/Ф7: тот же приём, что и в make_generate_ksp_handler — у
+        # задачи из кабинета телеграм-чата может не быть, а
+        # bot.send_document с chat_id=None упадёт в реальном Bot API.
+        await _send_document_to_telegram(bot, chat_id, FSInputFile(docx_path), caption=caption)
 
         return {
             "docx_path": str(docx_path),

@@ -790,6 +790,59 @@ def test_save_generated_ksp_writes_file_and_matching_db_row(db_with_official_tem
     assert len(document.tables) == 1
 
 
+def test_save_generated_ksp_with_existing_ktp_entry_id_keeps_link(db_with_official_template, tmp_path):
+    db_path, template_id = db_with_official_template
+    template = get_template(template_id, db_path=db_path)
+    execute(
+        "INSERT INTO ktp_entries (id, teacher_id, topic) VALUES (7, 1, 'Тема из КТП')",
+        db_path=db_path,
+    )
+
+    result = save_generated_ksp(
+        teacher_id=1,
+        template_id=template_id,
+        content=VALID_CONTENT,
+        template=template,
+        subject="физика",
+        klass="10А",
+        ktp_entry_id=7,
+        db_path=db_path,
+        output_dir=tmp_path / "generated",
+    )
+
+    row = query("SELECT ktp_entry_id FROM generated_ksp WHERE id = ?", (result["id"],), db_path=db_path)[0]
+    assert row["ktp_entry_id"] == 7
+
+
+def test_save_generated_ksp_with_stale_ktp_entry_id_saves_without_link(db_with_official_template, tmp_path):
+    """Прод-баг 2026-09-03: кабинет открыл список тем КТП, педагог
+    пересобрал КТП (save_ktp_entries заменяет прежние строки новыми id),
+    затем нажал «Собрать КСП» по устаревшему id — INSERT падал внешним
+    ключом generated_ksp_ktp_entry_id_fkey уже ПОСЛЕ того, как LLM
+    отработал и .docx собран, и вся генерация терялась. Теперь устаревший
+    id тихо заменяется на NULL, а документ сохраняется."""
+    db_path, template_id = db_with_official_template
+    template = get_template(template_id, db_path=db_path)
+
+    result = save_generated_ksp(
+        teacher_id=1,
+        template_id=template_id,
+        content=VALID_CONTENT,
+        template=template,
+        subject="физика",
+        klass="10А",
+        ktp_entry_id=999,  # такой строки в ktp_entries нет
+        db_path=db_path,
+        output_dir=tmp_path / "generated",
+    )
+
+    docx_path = Path(result["docx_path"])
+    assert docx_path.exists()  # документ не потерян
+
+    row = query("SELECT ktp_entry_id FROM generated_ksp WHERE id = ?", (result["id"],), db_path=db_path)[0]
+    assert row["ktp_entry_id"] is None
+
+
 async def test_generated_document_has_no_empty_mandatory_header_cells(
     db_with_official_template, tmp_path
 ):

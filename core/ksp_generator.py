@@ -17,6 +17,7 @@ core/ksp_generator.py — генератор КСП: тема + код цели 
 """
 
 import json
+import logging
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -30,6 +31,8 @@ from core.llm_client import LLMClient
 from core.templates import get_template
 from core.adal_azamat import get_project
 from core.values import get_value
+
+logger = logging.getLogger(__name__)
 
 # =====================================================================
 # Р5.2/Р5.3 — необязательные опции урока сверх обязательного минимума
@@ -944,6 +947,25 @@ def save_generated_ksp(
     out_path = Path(output_dir or settings.generated_dir) / filename
 
     saved_path = build_docx(content, template, out_path)
+
+    # ktp_entry_id может устареть между тем, как кабинет открыл список тем
+    # КТП, и тем, как учитель нажал «Собрать»: save_ktp_entries
+    # (core/ktp_parser.py) при повторной генерации КТП заменяет прежние
+    # строки новыми id (docstring core/ktp_generator.py). Без этой
+    # проверки INSERT ниже падает внешним ключом generated_ksp_ktp_entry_id_fkey
+    # уже ПОСЛЕ того, как LLM отработал и .docx собран — и вся генерация
+    # теряется из-за одной устаревшей ссылки. Колонка nullable, поэтому
+    # честный выход — сохранить документ без привязки к КТП, а не терять
+    # его целиком.
+    if ktp_entry_id is not None:
+        found = query("SELECT id FROM ktp_entries WHERE id = ?", (ktp_entry_id,), db_path=db_path)
+        if not found:
+            logger.warning(
+                "ktp_entry_id=%s не найден в ktp_entries (устарел после повторной генерации КТП) "
+                "— КСП сохраняется без привязки к КТП",
+                ktp_entry_id,
+            )
+            ktp_entry_id = None
 
     new_id = str(uuid.uuid4())
     execute(

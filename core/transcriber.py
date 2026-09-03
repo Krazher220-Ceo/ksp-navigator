@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import re
 import subprocess
 from pathlib import Path
 
@@ -16,13 +17,36 @@ from core.config import settings
 
 XAI_STT_URL = "https://api.x.ai/v1/stt"
 
+# MediaRecorder браузера пишет webm потоково и не может задним числом
+# дописать длительность в заголовок (Segment Info) — это свойство самого
+# формата записи с вкладки, а не повреждённый файл. ffprobe в быстром
+# режиме тогда отвечает 'N/A' с returncode=0 (проверено воспроизведением:
+# `ffmpeg ... -f webm - > file` без seek на диск даёт тот же эффект, что
+# и запись из браузера). Резервный способ — полное декодирование через
+# ffmpeg с включённой статистикой: он читает файл до конца и печатает в
+# stderr последнюю метку time=ЧЧ:ММ:СС.СС, из которой и берётся
+# длительность. Вызываются как внешние бинарники — тем же приёмом
+# subprocess, каким в проекте уже вызывается LibreOffice/soffice
+# (core/ksp_parser.py) — без новых зависимостей.
+_DECODE_TIME_RE = re.compile(r"time=(\d+):(\d\d):(\d\d\.\d\d)")
+
 
 class TranscriptionError(Exception):
     """xAI или проверка длительности отказали для конкретного аудиофайла."""
 
 
 def _probe_duration_seconds(audio_path: Path) -> int:
-    """Длительность аудио в секундах через ffprobe для БД и сообщений."""
+    """Длительность аудио в секундах для БД и сообщений.
+
+    Сначала быстрый путь — заголовок контейнера (ffprobe). Не нашлось —
+    медленный, но надёжный: полное декодирование (ffmpeg)."""
+    duration = _probe_duration_from_header(audio_path)
+    if duration is not None:
+        return duration
+    return _probe_duration_by_decoding(audio_path)
+
+
+def _probe_duration_from_header(audio_path: Path) -> int | None:
     result = subprocess.run(
         ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(audio_path)],
         capture_output=True,
@@ -33,8 +57,25 @@ def _probe_duration_seconds(audio_path: Path) -> int:
         raise TranscriptionError(f"ffprobe не смог определить длительность {audio_path.name}: {stderr}")
     try:
         return int(float(result.stdout.decode("utf-8", errors="replace").strip()))
-    except ValueError as exc:
-        raise TranscriptionError(f"ffprobe вернул нечисловую длительность для {audio_path.name}") from exc
+    except ValueError:
+        return None
+
+
+def _probe_duration_by_decoding(audio_path: Path) -> int:
+    result = subprocess.run(
+        ["ffmpeg", "-v", "error", "-stats", "-i", str(audio_path), "-f", "null", "-"],
+        capture_output=True,
+        timeout=120,
+    )
+    stderr = result.stderr.decode("utf-8", errors="replace")
+    matches = _DECODE_TIME_RE.findall(stderr)
+    if not matches:
+        raise TranscriptionError(
+            f"не удалось определить длительность {audio_path.name} даже полным декодированием: "
+            f"{stderr.strip()}"
+        )
+    hours, minutes, seconds = matches[-1]
+    return round(int(hours) * 3600 + int(minutes) * 60 + float(seconds))
 
 
 async def transcribe(audio_path: Path | str, language: str | None = None, prompt: str | None = None) -> dict:

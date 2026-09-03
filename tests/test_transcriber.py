@@ -12,11 +12,24 @@ from core.transcriber import TranscriptionError, _probe_duration_seconds, transc
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 AUDIO_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "audio_lesson_snippet.m4a"
+# Воспроизводит запись MediaRecorder из браузера: webm без Duration в
+# Segment Info (собрана перенаправлением ffmpeg в непроходимый по seek
+# поток — тем же способом, каким пишет браузер, — command в REPORT.md).
+BROWSER_RECORDING_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "browser_recording_no_duration.webm"
 
 
 def test_probe_duration_seconds_matches_known_fixture_length():
     duration = _probe_duration_seconds(AUDIO_FIXTURE)
     assert 45 <= duration <= 50
+
+
+def test_probe_duration_seconds_falls_back_to_decoding_for_browser_webm():
+    """Баг из прод-лога 2026-09-03: ffprobe отвечает 'N/A' (returncode=0)
+    для записи из браузера, потому что MediaRecorder не может дописать
+    длительность в потоковый webm задним числом. Раньше это роняло всю
+    задачу transcribe с TranscriptionError "нечисловая длительность"."""
+    duration = _probe_duration_seconds(BROWSER_RECORDING_FIXTURE)
+    assert 1 <= duration <= 3
 
 
 async def test_transcribe_does_not_block_event_loop(monkeypatch, tmp_path):
