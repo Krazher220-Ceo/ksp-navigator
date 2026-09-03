@@ -6,14 +6,18 @@ import { Card, CardBody, CardHead } from '@/components/Card';
 import { Chip } from '@/components/Chip';
 import { Icon } from '@/components/Icon';
 import { ссылкаНаФайл, type Конспект } from '@/lib/api';
+import { Расшифровка } from './Расшифровка';
 
 /**
  * Экран результата: слева расшифровка, справа конспект.
  *
- * Чего в расшифровке нет и почему: таймкодов. В артборде они нарисованы,
- * а xAI STT отдаёт сплошной текст — в `transcripts` лежит он и общая
- * длительность. Расставить времена «примерно» значило бы показать
- * педагогу выдуманные метки в документе, по которому он потом отчитается.
+ * Время у реплик настоящее. xAI отдаёт отметку начала и конца каждого
+ * слова; реплики собираются из них арифметикой, без единого обращения к
+ * нейросети (core/transcript_blocks.py). До 02.09.2026 мы эти отметки
+ * выбрасывали и показывали сплошное полотно, а в артборде таймкоды
+ * нарисованы — теперь показывается измеренное время, а не «примерно».
+ * Записи, у которых отметок не осталось, показываются текстом целиком,
+ * и об этом говорится прямо.
  *
  * Переключатель «для ученика / для педагога» переключает не адресата
  * рассылки, а глубину: ученику — разобранный конспект, педагогу —
@@ -50,21 +54,17 @@ export function Результат({ конспект }: { конспект: К�
 
   return (
     <div className="split" style={{ display: 'grid', ['--split' as string]: 'minmax(0,1fr) minmax(0,1.15fr)', gap: 14, alignItems: 'start' }}>
-      <Card>
-        <CardHead
-          icon="wave" iconColor="var(--blue-700)" title="Расшифровка"
-          aside={<span className="muted" style={{ fontSize: 12.5 }}>{длительность(конспект.transcript?.duration_seconds ?? null)}</span>}
+      <div>
+        <Расшифровка
+          реплики={конспект.transcript?.blocks ?? []}
+          текст={конспект.transcript?.text || конспект.content.transcript_text || 'Расшифровка не сохранилась.'}
+          длительность={конспект.transcript?.duration_seconds ?? null}
         />
-        <CardBody>
-          <p style={{ fontSize: 14, lineHeight: 1.75, whiteSpace: 'pre-wrap', maxHeight: '58vh', overflowY: 'auto' }}>
-            {конспект.transcript?.text || конспект.content.transcript_text || 'Расшифровка не сохранилась.'}
-          </p>
-          <p className="muted" style={{ fontSize: 12, marginTop: 14, lineHeight: 1.55 }}>
-            Расшифровку видите только вы. Ни администрация, ни родители, ни другие учителя
-            доступа к ней не имеют.
-          </p>
-        </CardBody>
-      </Card>
+        <p className="muted" style={{ fontSize: 12, marginTop: 12, lineHeight: 1.55 }}>
+          Расшифровку видите только вы. Ни администрация, ни родители, ни другие учителя
+          доступа к ней не имеют.
+        </p>
+      </div>
 
       <Card>
         <CardHead

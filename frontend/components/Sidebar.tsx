@@ -37,7 +37,7 @@ export const NAV: Group[] = [
     { key: 'dash', icon: 'home', label: 'Дэшборд', href: '/app' },
     { key: 'konspekt', icon: 'mic', label: 'Конспект урока', href: '/app/urok' },
     { key: 'ksp', icon: 'doc', label: 'Собрать КСП', href: '/app/ksp' },
-    { key: 'ktp', icon: 'cal', label: 'Собрать КТП' },
+    { key: 'ktp', icon: 'cal', label: 'Собрать КТП', href: '/app/ktp' },
   ] },
   { cap: 'Класс', items: [
     { key: 'classes', icon: 'users', label: 'Мои классы', href: '/app/klassy' },

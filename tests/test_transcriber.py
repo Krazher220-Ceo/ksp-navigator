@@ -90,7 +90,13 @@ async def test_xai_transcriber_sends_expected_request(monkeypatch, tmp_path):
         monkeypatch.setattr(module.httpx, "AsyncClient", fake_client)
         monkeypatch.setattr(module, "_probe_duration_seconds", lambda _path: 13)
         result = await module._transcribe_xai(audio, "ru", "термин")
-        assert result == {"text": "Текст урока", "duration_seconds": 13, "language": "ru"}
+        # words добавились 02.09.2026: xAI отдаёт время каждого слова,
+        # и до этого дня мы его выбрасывали. В заглушке ответа слов
+        # нет — важно, что ключ есть всегда и вызывающему коду не
+        # приходится проверять его наличие.
+        assert result == {
+            "text": "Текст урока", "duration_seconds": 13, "language": "ru", "words": [],
+        }
         assert received["url"] == module.XAI_STT_URL
         assert received["authorization"] == "Bearer test-key"
         assert 'name="format"' in received["body"]

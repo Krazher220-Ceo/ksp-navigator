@@ -68,12 +68,27 @@ async def _transcribe_xai(audio_path: Path, language: str, prompt: str | None) -
         raise TranscriptionError(f"xAI не смог расшифровать запись: {exc}") from exc
 
     try:
-        text = str(response.json()["text"]).strip()
+        ответ = response.json()
+        text = str(ответ["text"]).strip()
     except (ValueError, TypeError, KeyError) as exc:
         raise TranscriptionError("xAI вернул ответ без текста расшифровки") from exc
     if not text:
         raise TranscriptionError("xAI вернул пустую расшифровку")
-    return {"text": text, "duration_seconds": duration_seconds, "language": language}
+
+    # xAI отдаёт время каждого слова (start/end в секундах). До 02.09.2026
+    # мы это выбрасывали и показывали расшифровку сплошным полотном.
+    # Время здесь настоящее, измеренное — не наша оценка по длине текста,
+    # и именно поэтому его можно показывать человеку.
+    слова = ответ.get("words")
+    if not isinstance(слова, list):
+        слова = []
+
+    return {
+        "text": text,
+        "duration_seconds": duration_seconds,
+        "language": language,
+        "words": слова,
+    }
 
 
 async def probe_duration_seconds(audio_path: Path | str) -> int:

@@ -130,6 +130,9 @@ export type Задача = {
 };
 
 /** Ответ /api/v1/konspekt/{id}. */
+/** Реплика урока: время в секундах от начала записи, измеренное xAI. */
+export type Реплика = { start: number; end: number; text: string };
+
 export type Конспект = {
   konspekt_id: string;
   tema: string | null;
@@ -149,7 +152,12 @@ export type Конспект = {
     transcript_text?: string;
     tema?: string;
   };
-  transcript: { text: string; duration_seconds: number | null } | null;
+  transcript: {
+    text: string;
+    duration_seconds: number | null;
+    /** Реплики урока с настоящим временем от начала записи. */
+    blocks?: Реплика[];
+  } | null;
   has_docx: boolean;
 };
 
@@ -289,6 +297,36 @@ export type РезультатСверки = {
   notebook_unreadable?: boolean;
 };
 
+/** Загрузка готового КТП файлом — тем же способом, что запись урока. */
+export async function отправитьКтп(
+  файл: Blob, имя: string,
+): Promise<{ inserted: number; replaced: number }> {
+  const шапка: Record<string, string> = {
+    'Content-Type': файл.type || 'application/octet-stream',
+    'X-Filename': имя,
+  };
+  if (входПоПочтеНастроен()) {
+    const { data } = await supabase().auth.getSession();
+    if (data.session?.access_token) шапка.Authorization = `Bearer ${data.session.access_token}`;
+  }
+  if (!шапка.Authorization) {
+    const телеграм = входTelegram();
+    if (телеграм) шапка['X-Telegram-Login'] = телеграм;
+  }
+  let ответ: Response;
+  try {
+    ответ = await fetch(`${БАЗА}/api/v1/ktp/upload`, { method: 'POST', headers: шапка, body: файл });
+  } catch {
+    throw new ОшибкаApi('NETWORK', ТЕКСТЫ.API_SERVER_UNAVAILABLE, 0);
+  }
+  const разобрано = await ответ.json().catch(() => null);
+  if (!ответ.ok) {
+    const ошибка = (разобрано as { error?: { code?: string; message?: string } } | null)?.error;
+    throw new ОшибкаApi(ошибка?.code ?? 'INTERNAL', ошибка?.message ?? ТЕКСТЫ.ERROR_UNEXPECTED, ответ.status);
+  }
+  return разобрано as { inserted: number; replaced: number };
+}
+
 /** Отправка фото тетради — тем же способом, что запись урока. */
 export async function отправитьФотоТетради(
   фото: Blob, имя: string, transcript_id: string,
@@ -348,6 +386,9 @@ export const апи = {
     ),
   настройкиКсп: () => запрос<НастройкиКсп>('/api/v1/ksp/options'),
   темыКтп: () => запрос<{ entries: ТемаКтп[] }>('/api/v1/ktp/entries'),
+  собратьКтп: (данные: {
+    predmet: string; klass: string; chasov_v_nedelu: number; chasov_v_god: number; topics?: string | null;
+  }) => запрос<{ task_id: string; status: string }>('/api/v1/ktp/generate', данные),
   кодЦели: (topic: string) =>
     запрос<{ objective_code: string | null }>(`/api/v1/ktp/objective?topic=${encodeURIComponent(topic)}`),
   собратьКсп: (данные: {
@@ -357,6 +398,9 @@ export const апи = {
   }) => запрос<{ task_id: string; status: string }>('/api/v1/ksp/generate', данные),
   задача: (task_id: string) => запрос<Задача>(`/api/v1/task/${task_id}`),
   конспект: (konspekt_id: string) => запрос<Конспект>(`/api/v1/konspekt/${konspekt_id}`),
+  /** Заводит аккаунт с уже подтверждённой почтой — без письма. */
+  зарегистрировать: (email: string, password: string) =>
+    запрос<{ created: boolean }>('/api/v1/auth/register', { email, password }),
   я: () => запрос<Я>('/api/v1/me'),
   согласие: () => запрос<{ consent_given: boolean }>('/api/v1/consent', {}),
   регистрацияПедагога: (данные: { name: string; subject: string; school?: string; city?: string }) =>

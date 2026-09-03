@@ -97,6 +97,7 @@ from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.llm_client import LLMClient, LLMError
 from core.konspekt_builder import build_konspekt_docx, build_konspekt_filename
 from core.konspekt_generator import CELI_NOT_STATED_NOTE, KonspektGenerationError, generate_konspekt
+from core.transcript_blocks import собрать_блоки
 from core.transcriber import TranscriptionError, probe_duration_seconds, transcribe
 from core.pdf_export import PdfExportError, convert_docx_to_pdf
 from core.queue import MAX_RETRIES, enqueue
@@ -3620,6 +3621,11 @@ def make_generate_ksp_handler(bot: Bot):
                 options=options,
                 textbook_text=textbook_text,
                 konspekt_text=payload.get("konspekt_text"),
+                # Кабинет присылает полную расшифровку урока, а не
+                # собранный конспект: обобщает её ровно этот вызов,
+                # отдельным промптом (core/ksp_generator.py,
+                # TASK_TRANSCRIPT_HEADER).
+                konspekt_is_transcript=bool(payload.get("konspekt_is_transcript")),
                 llm_client=llm_client,
             )
         finally:
@@ -3775,11 +3781,24 @@ def make_transcribe_handler(bot: Bot):
         )
 
         text_parts: list[str] = []
+        # Слова с временем от начала ВСЕЙ записи, а не каждой части: урок
+        # присылают двумя-тремя кусками, и отметки второй части начинаются
+        # заново с нуля. Без сдвига «08:14» второй половины урока указывало
+        # бы в первую.
+        все_слова: list[dict] = []
         total_duration = 0
         try:
             for path_str in audio_paths:
                 result = await transcribe(path_str)
                 text_parts.append(result["text"])
+                сдвиг = total_duration
+                for слово in result.get("words") or []:
+                    if isinstance(слово, dict) and isinstance(слово.get("start"), (int, float)):
+                        все_слова.append({
+                            "text": слово.get("text"),
+                            "start": слово["start"] + сдвиг,
+                            "end": (слово.get("end") or слово["start"]) + сдвиг,
+                        })
                 total_duration += result["duration_seconds"]
         finally:
             # К2.4: удаление ИСХОДНИКОВ в finally — и при успехе, и при
@@ -3800,13 +3819,22 @@ def make_transcribe_handler(bot: Bot):
             (transcript_id, payload["teacher_id"], mode, full_text, total_duration, "ru"),
         )
 
+        блоки = собрать_блоки(все_слова)
+
         # Обе ветки отдают наверх то, по чему кабинет найдёт конспект:
         # учительская — готовую строку konspekty, ученическая — задачу,
         # которая её создаст. Ровно одно из двух всегда заполнено.
         konspekt_id = None
         konspekt_task_id = None
 
-        if mode == "student":
+        # Решение автора от 02.09.2026: после расшифровки нейросеть не
+        # используется. Кабинет показывает сам транскрипт с настоящими
+        # отметками времени, а обобщает его позже сборка КСП — отдельным
+        # промптом по всему уроку. Флаг приходит из web/api_v1.py; у бота
+        # его нет, и его ученический режим работает как работал.
+        конспект_нейросетью = mode == "student" and payload.get("konspekt_llm", True)
+
+        if конспект_нейросетью:
             preview = full_text[:300] + ("…" if len(full_text) > 300 else "")
             await _tell_telegram(
                 bot,
@@ -3830,14 +3858,23 @@ def make_transcribe_handler(bot: Bot):
             content = {
                 "tema": "Расшифровка урока",
                 "transcript_text": full_text,
+                # Реплики с настоящим временем — из отметок xAI, без
+                # единого обращения к нейросети. Лежат в content_json,
+                # своей колонки под них не заводится.
+                "blocks": блоки,
+                "duration_seconds": total_duration,
             }
             execute(
                 "INSERT INTO konspekty (id, teacher_id, transcript_id, mode, tema, content_json) "
-                "VALUES (?, ?, ?, 'teacher', ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     konspekt_id,
                     payload["teacher_id"],
                     transcript_id,
+                    # Режим сохраняется тот, что просил человек: от него
+                    # зависит промпт сборки КСП. Расшифровка при этом в
+                    # обоих режимах одна и та же.
+                    mode,
                     content["tema"],
                     json.dumps(content, ensure_ascii=False),
                 ),

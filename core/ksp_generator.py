@@ -205,6 +205,21 @@ TASK_TEXTBOOK_HEADER = (
 
 # К5/К2: конспект или дословная расшифровка настоящего урока. КСП строится
 # вокруг того, что реально было на записи, а не только вокруг темы.
+# Отдельная строка для случая, когда материал — не собранный конспект, а
+# ПОЛНАЯ расшифровка урока целиком. Решение автора от 02.09.2026: после
+# расшифровки нейросеть не трогает текст вовсе, и обобщение случается
+# ровно один раз — здесь, при сборке КСП. Модель должна понимать, что
+# перед ней сырая речь на сорок пять минут, а не выжимка.
+TASK_TRANSCRIPT_HEADER = (
+    "Исходный материал — полная расшифровка настоящего урока целиком, "
+    "дословно, со всеми отступлениями и повторами. Из неё самостоятельно "
+    "возьми основные реплики педагога и разложи их по этапам хода урока. "
+    "Бери именно те слова, которые в расшифровке есть; для этапа, реплик "
+    "к которому в записи не нашлось, оставь действия педагога пустыми. "
+    "Не сочиняй речь и не пересказывай своими словами то, чего в записи "
+    "нет:"
+)
+
 TASK_KONSPEKT_HEADER = (
     "Исходный материал настоящего урока — ход урока должен раскладывать "
     "по этапам именно то, что в нём есть, а не придумывать заново. Для "
@@ -502,6 +517,7 @@ def build_prompt(
     options: "LessonOptions | None" = None,
     textbook_text: str | None = None,
     konspekt_text: str | None = None,
+    konspekt_is_transcript: bool = False,
 ) -> str:
     """КОНТЕКСТ (если есть профиль стиля) + ЗАДАЧА — ровно те два блока
     промпта из MASTER.md, раздел 1.6. Схема ответа сюда не встраивается
@@ -565,7 +581,8 @@ def build_prompt(
     if textbook_text and textbook_text.strip():
         parts.append(f"{TASK_TEXTBOOK_HEADER}\n{textbook_text.strip()}")
     if konspekt_text and konspekt_text.strip():
-        parts.append(f"{TASK_KONSPEKT_HEADER}\n{konspekt_text.strip()}")
+        шапка = TASK_TRANSCRIPT_HEADER if konspekt_is_transcript else TASK_KONSPEKT_HEADER
+        parts.append(f"{шапка}\n{konspekt_text.strip()}")
 
     return "\n\n".join(parts)
 
@@ -763,6 +780,7 @@ async def generate_ksp(
     options: "LessonOptions | None" = None,
     textbook_text: str | None = None,
     konspekt_text: str | None = None,
+    konspekt_is_transcript: bool = False,
 ) -> dict:
     """Генерирует и валидирует JSON-содержимое КСП (без сборки .docx —
     это отдельно, save_generated_ksp). Профиль стиля учителя (если
@@ -789,6 +807,7 @@ async def generate_ksp(
         options=options,
         textbook_text=textbook_text,
         konspekt_text=konspekt_text,
+        konspekt_is_transcript=konspekt_is_transcript,
     )
     schema = _build_response_schema(include_razdatochnye_materialy)
 
@@ -969,6 +988,7 @@ async def generate_and_save_ksp(
     options: "LessonOptions | None" = None,
     textbook_text: str | None = None,
     konspekt_text: str | None = None,
+    konspekt_is_transcript: bool = False,
 ) -> dict:
     """Полный конвейер: промпт -> LLM -> валидация -> .docx -> запись в
     generated_ksp. Удобный вызов для bot/handlers.py (блок Б8); тесты
@@ -996,6 +1016,7 @@ async def generate_and_save_ksp(
         options=options,
         textbook_text=textbook_text,
         konspekt_text=konspekt_text,
+        konspekt_is_transcript=konspekt_is_transcript,
     )
 
     return save_generated_ksp(

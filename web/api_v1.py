@@ -51,9 +51,11 @@ from core.analytics import collect as collect_analytics
 from core.limits import WEB_AUDIO_MAX_BYTES, has_admin_access
 from core.pdf_export import convert_docx_to_pdf
 from core.queue import SOURCE_WEB, enqueue
+from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.templates import list_templates
 from core.values import VALUES
 from web.auth import ROLE_STUDENT, ROLE_TEACHER, CurrentUser, current_user, require_consent
+from web.supabase_users import UserCreateError, создать_подтверждённого
 from web.errors import (
     CODE_BAD_REQUEST,
     CODE_CONSENT_REQUIRED,
@@ -69,7 +71,15 @@ router = APIRouter(prefix="/api/v1")
 
 # Единственный путь без авторизации. Список закрытый: он же — белый
 # список для теста, который следит, что остальные эндпоинты защищены.
-PUBLIC_PATHS = frozenset({"/api/v1/health"})
+# Два и только два эндпоинта без авторизации. Список короткий
+# намеренно: сервер публично доступен через Cloudflare Tunnel, и каждая
+# строка здесь — сознательно открытая дверь.
+#
+# /health — проверка живости, ничего о людях не отдаёт.
+# /auth/register — заводит аккаунт, то есть авторизацию и создаёт;
+#   требовать её от него значило бы «зарегистрируйтесь, чтобы
+#   зарегистрироваться». Пароль проверяет Supabase, не мы.
+PUBLIC_PATHS = frozenset({"/api/v1/health", "/api/v1/auth/register"})
 
 
 def _database_state() -> tuple[bool, str]:
@@ -154,6 +164,35 @@ async def me(человек: CurrentUser = Depends(current_user)) -> dict:
         # это уже случайно открытая аналитика, то есть инцидент.
         "analytics_available": _аналитика_доступна(человек),
     }
+
+
+@router.post("/auth/register")
+async def auth_register(
+    email: str = Body(...),
+    password: str = Body(...),
+) -> dict:
+    """
+    Заводит аккаунт с уже подтверждённой почтой — без письма.
+
+    Единственный эндпоинт /api/v1/*, который НЕ требует авторизации: он
+    её и создаёт. Проверка входа остаётся за Supabase — сюда пароль
+    приходит один раз, чтобы аккаунт вообще появился, и нигде не
+    сохраняется.
+
+    Почему письма нет: решение автора от 02.09.2026. Встроенная почта
+    Supabase на пилоте ограничена несколькими письмами в час, ссылка
+    одноразовая, а второй клик по ней отвечает «Email link is invalid or
+    has expired» — педагог упирался в это трижды подряд. Разбор — в
+    web/supabase_users.py.
+
+    Ответ одинаковый и для новой почты, и для занятой: занятость чужой
+    почты не наше дело сообщать. Браузер после этого просто входит.
+    """
+    try:
+        создан = создать_подтверждённого(email, password)
+    except UserCreateError as ошибка:
+        raise ApiError(422, CODE_BAD_REQUEST, str(ошибка)) from None
+    return {"created": создан is not None}
 
 
 @router.post("/consent")
@@ -418,6 +457,12 @@ async def lesson_upload(
             "teacher_id": teacher_id,
             "audio_paths": [str(путь)],
             "mode": режим,
+            # Кабинету конспект нейросетью не нужен: он показывает сам
+            # транскрипт с настоящими отметками времени, а обобщает его
+            # сборка КСП — отдельным промптом по всему уроку. Решение
+            # автора от 02.09.2026. У бота этого флага нет, и его путь
+            # не меняется.
+            "konspekt_llm": False,
             "source": SOURCE_WEB,
         },
         chat_id=chat_id,
@@ -536,6 +581,11 @@ async def konspekt(konspekt_id: str, человек: CurrentUser = Depends(curre
             транскрипт = {
                 "text": строки_т[0]["text"],
                 "duration_seconds": строки_т[0]["duration_seconds"],
+                # Реплики с настоящим временем от начала записи — из
+                # отметок xAI по каждому слову, посчитаны арифметикой в
+                # core/transcript_blocks.py. Придуманного времени здесь
+                # нет: слово без отметки в блок не попадает.
+                "blocks": содержимое.get("blocks") or [],
             }
 
     return {
@@ -595,6 +645,94 @@ async def ksp_options(человек: CurrentUser = Depends(current_user)) -> di
             for колонка in CANONICAL_HOD_UROKA_COLUMNS
         ],
     }
+
+
+# Ровно то, что умеет читать core/ktp_parser.py, и ни расширением
+# больше. Список сверяется тестом с самим разборщиком: лишнее
+# расширение здесь означало бы «файл принят» и пустой КТП следом,
+# а человек не понял бы, почему у него ничего не появилось.
+РАСШИРЕНИЯ_КТП = {".docx", ".xlsx"}
+
+
+@router.post("/ktp/upload")
+async def ktp_upload(
+    request: Request,
+    человек: CurrentUser = Depends(current_user),
+    имя_файла: str | None = Header(default=None, alias="X-Filename"),
+) -> dict:
+    """
+    Принимает готовый КТП файлом и разбирает его на строки.
+
+    Разбор идёт здесь же, а не в очереди: он не зовёт нейросеть вовсе —
+    это чтение таблицы, доли секунды. Ставить такое в очередь значило бы
+    заставить человека ждать опроса статуса ради операции быстрее, чем
+    загрузка самого файла.
+
+    Загрузка ЗАМЕНЯЕТ прежний КТП, а не дописывает: КТП — один документ
+    на учебный год, и повторная загрузка означает «я прислал
+    исправленный файл» (core/ktp_parser.py, save_ktp_entries).
+    """
+    await require_consent(человек)
+    teacher_id = _teacher_id(человек)
+    if teacher_id is None:
+        raise ApiError(403, CODE_CONSENT_REQUIRED, texts.API_PROFILE_REQUIRED)
+
+    путь = await _сохранить_запись(request, имя_файла, разрешённые=РАСШИРЕНИЯ_КТП)
+    try:
+        записи = parse_ktp_file(путь)
+        итог = save_ktp_entries(teacher_id, записи)
+    except KTPParseError as ошибка:
+        raise ApiError(422, CODE_BAD_REQUEST, str(ошибка)) from None
+    finally:
+        # Исходник не хранится: из него уже взяли всё, что нужно, а на
+        # диске он только копится. То же правило, что у аудиозаписи.
+        путь.unlink(missing_ok=True)
+
+    return {"inserted": итог.get("inserted", len(записи)), "replaced": итог.get("deleted", 0)}
+
+
+@router.post("/ktp/generate")
+async def ktp_generate(
+    predmet: str = Body(...),
+    klass: str = Body(...),
+    chasov_v_nedelu: int = Body(...),
+    chasov_v_god: int = Body(...),
+    topics: str | None = Body(default=None),
+    человек: CurrentUser = Depends(current_user),
+) -> dict:
+    """
+    Ставит сборку КТП на учебный год в очередь — ту же, что у бота.
+
+    Здесь не генерируется ничего: это десятки секунд работы нейросети
+    плюс повторы при отказе провайдера. Кабинет спрашивает статус задачи,
+    как и у КСП.
+    """
+    await require_consent(человек)
+    teacher_id = _teacher_id(человек)
+    if teacher_id is None:
+        raise ApiError(403, CODE_CONSENT_REQUIRED, texts.API_PROFILE_REQUIRED)
+    if chasov_v_nedelu < 1 or chasov_v_god < 1:
+        raise ApiError(422, CODE_BAD_REQUEST, texts.API_BAD_REQUEST.format(reason="часы должны быть больше нуля"))
+
+    профиль = (
+        accounts.find_teacher_by_auth_user(человек.auth_user_id)
+        if человек.auth_user_id
+        else accounts.find_teacher_by_telegram(человек.telegram_user_id)
+    )
+    task_id = enqueue(
+        "generate_ktp",
+        {
+            "teacher_id": teacher_id,
+            "predmet": predmet.strip(),
+            "klass": klass.strip(),
+            "chasov_v_nedelu": chasov_v_nedelu,
+            "chasov_v_god": chasov_v_god,
+            "topics": (topics or "").strip() or None,
+            "source": SOURCE_WEB,
+        },
+        chat_id=профиль.get("telegram_user_id") if профиль else None,
+    )
+    return {"task_id": task_id, "status": "queued"}
 
 
 @router.get("/ktp/entries")
@@ -707,6 +845,10 @@ async def ksp_generate(
             "options": asdict(разобранные),
             "textbook_photo_paths": [],
             "konspekt_text": konspekt_text,
+            # Из кабинета это всегда полная расшифровка урока:
+            # своего шага «собрать конспект нейросетью» у веба нет
+            # с 02.09.2026, обобщение случается здесь и один раз.
+            "konspekt_is_transcript": bool(konspekt_text),
             "source": SOURCE_WEB,
         },
         chat_id=chat_id,
