@@ -13,12 +13,12 @@ export function Stats() {
   return (
     <Reveal style={{
       background: 'var(--paper)', borderTop: '1px solid var(--line)',
-      borderBottom: '1px solid var(--line)', padding: '34px 56px',
+      borderBottom: '1px solid var(--line)', padding: 'clamp(22px, 3.2vw, 34px) var(--pad-x)',
     }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: 34 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 150px), 1fr))', gap: 'clamp(16px, 3.4vw, 34px)' }}>
         {ПОКАЗАТЕЛИ.map((п, i) => (
           <div key={п.число} className={i ? `an d${i}` : 'an'}>
-            <div style={{ fontSize: 34, fontWeight: 700, letterSpacing: '-0.03em' }}>{п.число}</div>
+            <div style={{ fontSize: 'clamp(24px, 4.2vw, 34px)', fontWeight: 700, letterSpacing: '-0.03em' }}>{п.число}</div>
             <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>{п.пояснение}</div>
           </div>
         ))}

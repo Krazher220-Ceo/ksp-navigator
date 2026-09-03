@@ -9,7 +9,7 @@
 @import "./tokens.css";
 @import "./base.css";
 @import "./landing.css";
-@import "./mobile.css";
+@import "./adaptive.css";
 
 @theme inline {
   /* Палитра, шрифты, тени, скругления и кривые Tailwind — под нож целиком. */

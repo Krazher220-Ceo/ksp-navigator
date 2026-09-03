@@ -55,7 +55,7 @@ export default function KitPage() {
         </CardBody>
       </Card>
 
-      <div className="grid" style={{ gridTemplateColumns: 'repeat(3, minmax(0,1fr))' }}>
+      <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))' }}>
         <StatTile label="Черновиков КСП" value="3" hint="сегодня" icon="doc" iconColor="var(--blue-700)" />
         <StatTile label="Конспектов" value="1" hint="сегодня" icon="mic" iconColor="var(--sky)" />
         <StatTile label="Учеников" value="47" hint="в трёх классах" icon="users" iconColor="var(--green)" />

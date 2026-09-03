@@ -49,7 +49,7 @@ export function Результат({ конспект }: { конспект: К�
   const реплики = конспект.content.opornye_repliki;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.15fr)', gap: 14, alignItems: 'start' }}>
+    <div className="split" style={{ display: 'grid', ['--split' as string]: 'minmax(0,1fr) minmax(0,1.15fr)', gap: 14, alignItems: 'start' }}>
       <Card>
         <CardHead
           icon="wave" iconColor="var(--blue-700)" title="Расшифровка"

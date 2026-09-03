@@ -167,13 +167,13 @@ export default function RegistraciyaPage() {
           </div>
 
           <form onSubmit={создать} style={{ display: 'flex', flexDirection: 'column', gap: 13, marginTop: 20 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 13 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 13 }}>
               <Input id="reg-name" label="Имя и фамилия" required autoComplete="name"
                      placeholder="Айгүл Тлеубаева" value={поля.name} onChange={менять('name')} />
               <Input id="reg-subject" label="Предмет" required
                      placeholder="Физика" value={поля.subject} onChange={менять('subject')} />
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 13 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 190px), 1fr))', gap: 13 }}>
               <Input id="reg-school" label="Школа" placeholder="Школа №12"
                      value={поля.school} onChange={менять('school')} />
               <Input id="reg-city" label="Город" placeholder="Костанай"

@@ -21,7 +21,7 @@ export function SiteNav() {
   return (
     <nav style={{
       height: 70, borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center',
-      gap: 12, padding: '0 56px', background: 'rgba(255,255,255,.9)',
+      gap: 12, padding: '0 var(--pad-x)', background: 'rgba(255,255,255,.9)',
       position: 'sticky', top: 0, zIndex: 20, backdropFilter: 'blur(14px)',
     }}>
       <Link className="row" style={{ gap: 10 }} href="/">
@@ -31,11 +31,11 @@ export function SiteNav() {
           <div className="brand-sub" style={{ color: 'var(--ink-3)' }}>Костанай · Қазақстан</div>
         </div>
       </Link>
-      <div className="row" style={{ gap: 26, marginLeft: 44, fontSize: 14, color: 'var(--ink-2)' }}>
+      <div className="row nav-sections" style={{ gap: 26, marginLeft: 44, fontSize: 14, color: 'var(--ink-2)' }}>
         {РАЗДЕЛЫ.map((р) => <a key={р.href} href={р.href} style={{ color: 'inherit' }}>{р.текст}</a>)}
       </div>
       <div className="row" style={{ marginLeft: 'auto', gap: 12 }}>
-        <div className="row" style={{ gap: 3, background: 'rgba(11,26,43,.05)', borderRadius: 9, padding: 3 }}>
+        <div className="row nav-lang" style={{ gap: 3, background: 'rgba(11,26,43,.05)', borderRadius: 9, padding: 3 }}>
           <span style={{ fontSize: 12, fontWeight: 600, padding: '4px 9px', borderRadius: 6, background: '#fff', boxShadow: 'var(--lift)' }}>RU</span>
           <span
             style={{ fontSize: 12, padding: '4px 9px', color: 'var(--ink-3)', opacity: 0.5 }}
@@ -44,7 +44,7 @@ export function SiteNav() {
           >ҚАЗ</span>
         </div>
         <Link href="/vhod"><Button variant="строкой">Войти</Button></Link>
-        <Link href="/registraciya"><Button arrow>Записать первый урок</Button></Link>
+        <Link href="/registraciya" className="nav-cta"><Button arrow>Записать первый урок</Button></Link>
       </div>
     </nav>
   );

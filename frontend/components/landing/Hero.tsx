@@ -40,23 +40,23 @@ function Звено({ задержка }: { задержка: number }) {
 
 export function Hero() {
   return (
-    <Reveal style={{
-      padding: '72px 56px 64px', display: 'grid',
-      gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.02fr)', gap: 56, alignItems: 'center',
+    <Reveal className="split" style={{
+      padding: 'clamp(40px, 6vw, 72px) var(--pad-x) clamp(36px, 5.5vw, 64px)', display: 'grid',
+      ['--split' as string]: 'minmax(0,1fr) minmax(0,1.02fr)', gap: 'clamp(24px, 3.4vw, 56px)', alignItems: 'center',
     }}>
       <div>
         <Chip className="an" icon="spark" style={{ background: 'var(--sky-soft)', color: '#0A5D6C', fontSize: 12.5, padding: '7px 14px' }}>
           Для учителей Казахстана · первая запись урока бесплатно
         </Chip>
-        <h1 className="an d1" style={{ fontFamily: 'var(--serif)', fontSize: 56, lineHeight: 1.08, letterSpacing: '-0.03em', fontWeight: 700, marginTop: 20 }}>
+        <h1 className="an d1" style={{ fontFamily: 'var(--serif)', fontSize: 'clamp(32px, 6.4vw, 56px)', lineHeight: 1.08, letterSpacing: '-0.03em', fontWeight: 700, marginTop: 20 }}>
           Урок прошёл.<br />Документы уже<br />собраны.
         </h1>
-        <p className="an d2" style={{ fontSize: 18, lineHeight: 1.6, color: 'var(--ink-2)', marginTop: 20, maxWidth: 520 }}>
+        <p className="an d2" style={{ fontSize: 'clamp(15.5px, 2vw, 18px)', lineHeight: 1.6, color: 'var(--ink-2)', marginTop: 20, maxWidth: 520 }}>
           Телефон в кармане записывает 45 минут урока. Через минуту после звонка у педагога есть
           конспект и черновик КСП по форме приказа МОН РК №130 — с его собственными формулировками.
           Школа не нужна: регистрируетесь сами, заводите класс, диктуете код ученикам.
         </p>
-        <div className="an d3 row" style={{ gap: 12, marginTop: 30 }}>
+        <div className="an d3 row actions" style={{ gap: 12, marginTop: 30 }}>
           <Link href="/registraciya"><Button size="крупная" arrow>Записать первый урок</Button></Link>
           {/* Ролика пока нет — кнопка ведёт туда, где то же самое показано
               шагами. Ссылка в никуда хуже, чем ссылка на честное место. */}

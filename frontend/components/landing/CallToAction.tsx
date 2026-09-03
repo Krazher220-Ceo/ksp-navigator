@@ -15,16 +15,16 @@ import { Reveal } from './Reveal';
 export function CallToAction() {
   const контакты = [КОНТАКТЫ.почта, КОНТАКТЫ.телеграм, КОНТАКТЫ.город].filter(Boolean) as string[];
   return (
-    <Reveal className="bg-kz" style={{ color: '#fff', padding: '80px 56px', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
+    <Reveal className="bg-kz" style={{ color: '#fff', padding: 'clamp(48px, 7vw, 80px) var(--pad-x)', textAlign: 'center', position: 'relative', overflow: 'hidden' }}>
       <div style={{ position: 'relative', maxWidth: 620, margin: '0 auto' }}>
-        <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 40, lineHeight: 1.18, letterSpacing: '-0.025em', color: '#fff' }}>
+        <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 'clamp(27px, 5vw, 40px)', lineHeight: 1.18, letterSpacing: '-0.025em', color: '#fff' }}>
           Запишите свой первый урок сегодня
         </h2>
-        <p className="an d1" style={{ color: '#A9C6DE', fontSize: 16.5, lineHeight: 1.6, marginTop: 14 }}>
+        <p className="an d1" style={{ color: '#A9C6DE', fontSize: 'clamp(15px, 1.8vw, 16.5px)', lineHeight: 1.6, marginTop: 14 }}>
           Регистрация занимает минуту, карта не нужна. Начать можно с одного класса — расширить
           всегда успеете. Если школа подключит вас по договору, тариф снимется автоматически.
         </p>
-        <div className="an d2 row" style={{ justifyContent: 'center', gap: 12, marginTop: 28 }}>
+        <div className="an d2 row actions" style={{ justifyContent: 'center', gap: 12, marginTop: 28 }}>
           <Link href="/registraciya">
             <Button size="крупная" arrow style={{
               background: 'linear-gradient(180deg,#1ECBE4,#009FBB)', color: '#052A38',

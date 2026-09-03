@@ -64,7 +64,7 @@ export default function DashboardPage() {
         action={<Link href="/app/urok"><Button icon="mic" arrow>Записать урок</Button></Link>}
       />
 
-      <div className="body" style={{ display: 'grid', gridTemplateColumns: 'repeat(12,minmax(0,1fr))', gridTemplateRows: 'auto 1fr', gap: 14, minHeight: 0 }}>
+      <div className="body dash-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(12,minmax(0,1fr))', gridTemplateRows: 'auto 1fr', gap: 14, minHeight: 0 }}>
         {ошибка ? (
           <Cell колонок={12}>
             <Card style={{ padding: '16px 18px', display: 'flex', gap: 13 }}>

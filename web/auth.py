@@ -62,6 +62,11 @@ from web.errors import (
     ApiError,
 )
 from web.jwt import JwtError, issuer_for, verify_supabase_jwt
+from web.supabase_token import (
+    SupabaseTokenError,
+    алгоритм_токена,
+    подтвердить_у_supabase,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -347,15 +352,27 @@ async def current_user(
     if authorization:
         if not authorization.startswith(BEARER_PREFIX):
             raise _не_авторизован()
+        токен = authorization[len(BEARER_PREFIX) :].strip()
         try:
             claims = verify_supabase_jwt(
-                authorization[len(BEARER_PREFIX) :].strip(),
+                токен,
                 secret=settings.supabase_jwt_secret or "",
                 issuer=issuer_for(settings.supabase_url or ""),
             )
         except JwtError as exc:
-            logger.info("current_user: токен отвергнут — %s", exc)
-            raise _не_авторизован() from None
+            # Токен, подписанный ключом Supabase (ES256), локально
+            # проверить нечем: общего секрета у таких проектов нет.
+            # Спрашиваем сам Supabase. Токены с alg: HS256 сюда не
+            # попадают намеренно — иначе подделка получала бы вторую
+            # попытку и сетевой вызов на каждую (web/supabase_token.py).
+            if алгоритм_токена(токен) == "HS256":
+                logger.info("current_user: токен отвергнут — %s", exc)
+                raise _не_авторизован() from None
+            try:
+                claims = подтвердить_у_supabase(токен)
+            except SupabaseTokenError as сбой:
+                logger.info("current_user: Supabase не подтвердил токен — %s", сбой)
+                raise _не_авторизован() from None
         auth_user_id = claims["sub"]
         try:
             роль = accounts.resolve_role_by_auth_user(auth_user_id)

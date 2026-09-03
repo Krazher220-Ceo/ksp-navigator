@@ -146,7 +146,7 @@ export default function KspPage() {
         )}
       />
 
-      <div className="body" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.15fr)', gap: 18, minHeight: 0, overflow: 'hidden' }}>
+      <div className="body split" style={{ display: 'grid', ['--split' as string]: 'minmax(0,1fr) minmax(0,1.15fr)', gap: 18, minHeight: 0, overflow: 'hidden' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14, overflowY: 'auto' }}>
           {ошибка ? (
             <Card style={{ padding: '13px 16px', display: 'flex', gap: 12, background: 'var(--red-soft)' }}>
@@ -202,7 +202,7 @@ export default function KspPage() {
                          placeholder="Импульс тела. Закон сохранения импульса" />
                   <Input id="ksp-razdel" label="Раздел программы" required value={поля.razdel}
                          onChange={менять('razdel')} placeholder="10.1В Законы сохранения" />
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 13 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 165px), 1fr))', gap: 13 }}>
                     <Input id="ksp-klass" label="Класс" required value={поля.klass}
                            onChange={менять('klass')} placeholder="10" />
                     <Input id="ksp-duration" label="Минут" type="number" value={поля.duration_minutes}

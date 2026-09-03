@@ -22,10 +22,10 @@ const КАРТОЧКИ: { иконка: IconName; заголовок: string; т
 
 export function Problem() {
   return (
-    <Reveal style={{ padding: '76px 56px' }}>
+    <Reveal style={{ padding: 'clamp(46px, 6.5vw, 76px) var(--pad-x)' }}>
       <div style={{ maxWidth: 640 }}>
         <div className="lbl">Проблема</div>
-        <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 38, lineHeight: 1.2, letterSpacing: '-0.02em', marginTop: 12 }}>
+        <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 'clamp(26px, 4.6vw, 38px)', lineHeight: 1.2, letterSpacing: '-0.02em', marginTop: 12 }}>
           Воскресенье, 21:40. Педагог пишет планы на неделю.
         </h2>
         <p className="an d1" style={{ fontSize: 16.5, color: 'var(--ink-2)', lineHeight: 1.65, marginTop: 16 }}>
@@ -35,7 +35,7 @@ export function Problem() {
         </p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 18, marginTop: 38 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 18, marginTop: 38 }}>
         {КАРТОЧКИ.map((к, i) => (
           <div key={к.заголовок} className={`card an d${i + 1}`} style={{ padding: 22 }}>
             <span style={{ color: 'var(--blue-700)' }}><Icon name={к.иконка} size={24} /></span>

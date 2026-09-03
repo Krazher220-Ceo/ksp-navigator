@@ -134,7 +134,7 @@ export default function UrokPage() {
 
       <div className="body" style={{ overflowY: 'auto' }}>
         {шаг === 'выбор' ? (
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 14, alignItems: 'start' }}>
+          <div className="split" style={{ display: 'grid', ['--split' as string]: 'minmax(0,1fr) minmax(0,1fr)', gap: 14, alignItems: 'start' }}>
             <Card>
               <CardHead icon="mic" iconColor="var(--blue-700)" title="Записать урок" />
               <CardBody>

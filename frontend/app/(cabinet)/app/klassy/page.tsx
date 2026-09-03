@@ -123,7 +123,7 @@ export default function KlassyPage() {
         action={<Button size="малая" icon="plus" onClick={() => setСоздаём(true)}>Новый класс</Button>}
       />
 
-      <div className="body" style={{ display: 'grid', gridTemplateColumns: '300px minmax(0,1fr)', gap: 18, minHeight: 0, overflow: 'hidden' }}>
+      <div className="body split" style={{ display: 'grid', ['--split' as string]: '300px minmax(0,1fr)', gap: 18, minHeight: 0, overflow: 'hidden' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, overflowY: 'auto' }}>
           <div className="muted" style={{ fontSize: 12 }}>
             {классы.length} класс(а) · {всегоУчеников} учеников

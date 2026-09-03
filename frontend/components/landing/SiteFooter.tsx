@@ -12,14 +12,14 @@ import Link from 'next/link';
 export function SiteFooter() {
   return (
     <footer style={{
-      background: '#081C2E', color: '#7FA6C4', padding: '34px 56px',
+      background: '#081C2E', color: '#7FA6C4', padding: 'clamp(22px, 3.2vw, 34px) var(--pad-x)',
       display: 'flex', alignItems: 'center', gap: 16, fontSize: 13, flexWrap: 'wrap',
     }}>
       <div className="row" style={{ gap: 10 }}>
         <Image className="mark" src="/mazmun-logo.png" width={28} height={28} alt="" />
         <span style={{ color: '#CDE2F0' }}>Mazmun</span>
       </div>
-      <div className="row" style={{ gap: 22, marginLeft: 34 }}>
+      <div className="row foot-links" style={{ gap: 22, marginLeft: 34 }}>
         <a href="/#tarify" style={{ color: 'inherit' }}>Тарифы</a>
         <Link href="/docs" style={{ color: 'inherit' }}>Документация</Link>
         <a href="/#dannye" style={{ color: 'inherit' }}>Данные и приватность</a>

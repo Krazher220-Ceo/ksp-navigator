@@ -25,17 +25,17 @@ export function TopBar({ date, title, searchPlaceholder, hasAlerts, action }: Pr
         <div className="muted" style={{ fontSize: 11.5, lineHeight: 1.2 }}>{date}</div>
         <h1 style={{ fontSize: 16, lineHeight: 1.25 }}>{title}</h1>
       </div>
-      <div className="search">
+      <div className="search top-search">
         <Icon name="search" size={16} />
         <span>{searchPlaceholder}</span>
       </div>
-      <div style={{ color: 'var(--ink-3)', position: 'relative' }}>
+      <div className="top-bell" style={{ color: 'var(--ink-3)', position: 'relative' }}>
         <Icon name="bell" size={20} />
         {hasAlerts ? (
           <i style={{ position: 'absolute', top: 1, right: 1, width: 7, height: 7, borderRadius: '50%', background: 'var(--red)', boxShadow: '0 0 0 2px #fff' }} />
         ) : null}
       </div>
-      {action}
+      <span className="top-action">{action}</span>
     </header>
   );
 }

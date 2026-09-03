@@ -33,9 +33,9 @@ export default function DocsPage() {
   return (
     <>
       <DocsNav />
-      <div style={{
-        display: 'grid', gridTemplateColumns: '250px minmax(0,1fr) 210px',
-        gap: 40, padding: '38px 44px 70px',
+      <div className="docs-grid" style={{
+        display: 'grid',
+        gap: 'clamp(17px, 3.4vw, 40px)', padding: 'clamp(24px, 4vw, 38px) var(--pad-x) clamp(40px, 6vw, 70px)',
       }}>
       <aside style={{ fontSize: 13.5 }}>
         <div className="lbl" style={{ marginBottom: 10 }}>Разделы</div>
@@ -69,7 +69,7 @@ export default function DocsPage() {
           <Chip tone="золотой" icon="lock">закрытый доступ</Chip>
           <span className="muted" style={{ fontSize: 12.5 }}>обновлено {ОБНОВЛЕНО}</span>
         </div>
-        <h1 style={{ fontFamily: 'var(--serif)', fontSize: 40, lineHeight: 1.15, letterSpacing: '-0.025em', marginTop: 14 }}>
+        <h1 style={{ fontFamily: 'var(--serif)', fontSize: 'clamp(28px, 5vw, 40px)', lineHeight: 1.15, letterSpacing: '-0.025em', marginTop: 14 }}>
           Аналитика продукта
         </h1>
         <p style={{ fontSize: 17, color: 'var(--ink-2)', lineHeight: 1.65, marginTop: 14 }}>
@@ -94,7 +94,7 @@ export default function DocsPage() {
           Из этого нельзя сделать вывод о том, как прошёл урок, и мы такой вывод не делаем.
         </p>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 20 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 14, marginTop: 20 }}>
           <Card style={{ padding: 16, background: 'var(--red-soft)' }}>
             <div className="row" style={{ gap: 8 }}>
               <span style={{ color: 'var(--red)' }}><Icon name="warn" size={15} /></span>
@@ -156,7 +156,7 @@ export default function DocsPage() {
         <h2 id="istochnik" style={{ fontFamily: 'var(--serif)', fontSize: 26, marginTop: 44, letterSpacing: '-0.015em', scrollMarginTop: 84 }}>
           Откуда берутся числа и кто их видит
         </h2>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14, marginTop: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 14, marginTop: 16 }}>
           <Card style={{ padding: 18 }}>
             <span className="lbl">Источник</span>
             <p style={{ fontSize: 14.5, lineHeight: 1.6, marginTop: 8 }}>

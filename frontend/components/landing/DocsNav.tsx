@@ -15,7 +15,7 @@ export function DocsNav() {
   return (
     <nav style={{
       height: 64, borderBottom: '1px solid var(--line)', display: 'flex',
-      alignItems: 'center', gap: 12, padding: '0 44px',
+      alignItems: 'center', gap: 12, padding: '0 var(--pad-x)',
       position: 'sticky', top: 0, zIndex: 20, background: 'rgba(255,255,255,.9)', backdropFilter: 'blur(14px)',
     }}>
       <div className="row" style={{ gap: 10 }}>
@@ -26,11 +26,11 @@ export function DocsNav() {
         <span style={{ color: 'var(--line)', fontSize: 18 }}>/</span>
         <span style={{ fontSize: 14.5, color: 'var(--ink-2)' }}>Документация</span>
       </div>
-      <div className="search" style={{ marginLeft: 'auto', width: 260 }}>
+      <div className="search docs-search" style={{ marginLeft: 'auto', width: 260 }}>
         <Icon name="search" size={15} />
         <span>Поиск по документации</span>
       </div>
-      <Link href="/"><Button variant="тихая" size="малая">Вернуться на сайт</Button></Link>
+      <Link href="/" className="docs-back"><Button variant="тихая" size="малая">Вернуться на сайт</Button></Link>
     </nav>
   );
 }

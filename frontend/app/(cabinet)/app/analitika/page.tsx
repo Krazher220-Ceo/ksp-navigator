@@ -72,7 +72,7 @@ export default function AnalitikaPage() {
               </CardBody>
             </Card>
 
-            <div className="grid" style={{ gridTemplateColumns: 'repeat(4, minmax(0,1fr))' }}>
+            <div className="grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 150px), 1fr))' }}>
               <StatTile label="Педагогов работают" value={данные.active_teachers}
                         hint={`собрали документ за ${данные.window_days} дней`} icon="users" iconColor="var(--blue-700)" />
               <StatTile label="Вернулись" value={данные.returned_teachers}

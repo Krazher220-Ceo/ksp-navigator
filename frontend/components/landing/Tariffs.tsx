@@ -32,7 +32,7 @@ function Карточка({ ключ }: { ключ: string }) {
         {главный ? <Chip style={{ marginLeft: 'auto' }}>берут чаще всего</Chip> : null}
       </div>
       <div className="row" style={{ alignItems: 'baseline', gap: 8, marginTop: 16 }}>
-        <span style={{ fontSize: 38, fontWeight: 700, letterSpacing: '-0.04em' }}>{тариф.ценаВМесяц}</span>
+        <span style={{ fontSize: 'clamp(26px, 4.6vw, 38px)', fontWeight: 700, letterSpacing: '-0.04em' }}>{тариф.ценаВМесяц}</span>
         {тариф.ценаЗаГод ? <span className="muted" style={{ fontSize: 14 }}>/ мес</span> : null}
       </div>
       <p className="muted" style={{ fontSize: 13.5, marginTop: 7, lineHeight: 1.55 }}>
@@ -69,11 +69,11 @@ function Карточка({ ключ }: { ключ: string }) {
 
 export function Tariffs() {
   return (
-    <Reveal style={{ background: 'var(--paper)', boxShadow: 'inset 0 1px 0 var(--hair)', padding: '76px 56px' }}>
+    <Reveal style={{ background: 'var(--paper)', boxShadow: 'inset 0 1px 0 var(--hair)', padding: 'clamp(46px, 6.5vw, 76px) var(--pad-x)' }}>
       <div id="tarify" style={{ position: 'relative', top: -70 }} />
       <div style={{ textAlign: 'center', maxWidth: 640, margin: '0 auto' }}>
         <div className="lbl">Тарифы</div>
-        <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 38, lineHeight: 1.2, letterSpacing: '-0.025em', marginTop: 12 }}>
+        <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 'clamp(26px, 4.6vw, 38px)', lineHeight: 1.2, letterSpacing: '-0.025em', marginTop: 12 }}>
           Попробовать бесплатно. Дальше — по нагрузке.
         </h2>
         <p className="an d1" style={{ fontSize: 16, color: 'var(--ink-2)', lineHeight: 1.6, marginTop: 14 }}>
@@ -81,7 +81,7 @@ export function Tariffs() {
         </p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 18, marginTop: 40, alignItems: 'start' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 18, marginTop: 40, alignItems: 'start' }}>
         <div className="an d2"><Карточка ключ="free" /></div>
         <div className="an d3" style={{
           borderRadius: 24, padding: 8,
@@ -93,8 +93,8 @@ export function Tariffs() {
         <div className="an d4"><Карточка ключ="teacher_pro" /></div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.1fr) minmax(0,1fr)', gap: 18, marginTop: 18 }}>
-        <div className="card an d5" style={{ padding: '24px 26px', display: 'flex', alignItems: 'center', gap: 20, background: 'linear-gradient(140deg,#124066,#08203A)', color: '#fff', boxShadow: 'var(--lift-2)' }}>
+      <div className="split" style={{ display: 'grid', ['--split' as string]: 'minmax(0,1.1fr) minmax(0,1fr)', gap: 18, marginTop: 18 }}>
+        <div className="card an d5 school-row" style={{ padding: '24px 26px', display: 'flex', alignItems: 'center', gap: 20, background: 'linear-gradient(140deg,#124066,#08203A)', color: '#fff', boxShadow: 'var(--lift-2)' }}>
           <span id="shkola" style={{ position: 'relative', top: -70 }} />
           <span style={{ color: '#7FD9E8', flex: 'none' }}><Icon name="cap" size={26} /></span>
           <div>
@@ -129,7 +129,7 @@ export function Tariffs() {
             <span style={{ color: 'var(--blue-700)' }}><Icon name="userplus" size={20} /></span>
             <h3 style={{ fontSize: 17 }}>Тарифы учеников</h3>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 12, marginTop: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12, marginTop: 16 }}>
             {ТАРИФЫ_УЧЕНИКА.map((т) => (
               <div key={т.ключ} style={{
                 background: т.ключ === 'student' ? 'var(--blue-soft)' : 'rgba(11,26,43,.035)',

@@ -15,12 +15,12 @@ import { Reveal } from './Reveal';
  */
 export function Review() {
   return (
-    <Reveal style={{ padding: '70px 56px' }}>
+    <Reveal style={{ padding: 'clamp(44px, 6vw, 70px) var(--pad-x)' }}>
       <div className="card an" style={{ padding: 0, position: 'relative', overflow: 'hidden' }}>
-        <div aria-hidden style={{
+        <div className="split" aria-hidden style={{
           filter: 'blur(14px) saturate(.4)', opacity: 0.5, pointerEvents: 'none', userSelect: 'none',
-          padding: '46px 52px', display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 260px',
-          gap: 44, alignItems: 'center',
+          padding: '46px 52px', display: 'grid', ['--split' as string]: 'minmax(0,1fr) 260px',
+          gap: 'clamp(18px, 3.4vw, 44px)', alignItems: 'center',
         }}>
           <div>
             <span style={{ color: 'var(--line)', display: 'block' }}><Icon name="quote" size={30} /></span>

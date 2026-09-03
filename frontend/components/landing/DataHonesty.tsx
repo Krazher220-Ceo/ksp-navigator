@@ -36,12 +36,12 @@ const ПРО_МИКРОФОН = [
 
 export function DataHonesty() {
   return (
-    <Reveal style={{ background: 'var(--paper)', borderTop: '1px solid var(--line)', padding: '70px 56px' }}>
+    <Reveal style={{ background: 'var(--paper)', borderTop: '1px solid var(--line)', padding: 'clamp(44px, 6vw, 70px) var(--pad-x)' }}>
       <div id="dannye" style={{ position: 'relative', top: -70 }} />
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.1fr)', gap: 56, alignItems: 'center' }}>
+      <div className="split" style={{ display: 'grid', ['--split' as string]: 'minmax(0,1fr) minmax(0,1.1fr)', gap: 'clamp(24px, 3.4vw, 56px)', alignItems: 'center' }}>
         <div className="an">
           <div className="lbl">Честно о данных</div>
-          <h2 style={{ fontFamily: 'var(--serif)', fontSize: 34, lineHeight: 1.22, letterSpacing: '-0.02em', marginTop: 12 }}>
+          <h2 style={{ fontFamily: 'var(--serif)', fontSize: 'clamp(24px, 4.2vw, 34px)', lineHeight: 1.22, letterSpacing: '-0.02em', marginTop: 12 }}>
             Мы не обещаем того, чего не делаем.
           </h2>
           <p style={{ fontSize: 16, color: 'var(--ink-2)', lineHeight: 1.65, marginTop: 16 }}>
@@ -55,7 +55,7 @@ export function DataHonesty() {
             презентации.
           </p>
         </div>
-        <div className="an d1" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
+        <div className="an d1" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 14 }}>
           {ГАРАНТИИ.map((г) => (
             <div key={г.заголовок} className="card" style={{ padding: 18 }}>
               <span style={{ color: 'var(--green)' }}><Icon name={г.знак} size={20} /></span>
@@ -66,7 +66,7 @@ export function DataHonesty() {
         </div>
       </div>
 
-      <div className="card an d2" style={{ marginTop: 22, padding: '30px 34px', display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.25fr)', gap: 40, alignItems: 'start' }}>
+      <div className="card an d2 split" style={{ marginTop: 22, padding: '30px 34px', display: 'grid', ['--split' as string]: 'minmax(0,1fr) minmax(0,1.25fr)', gap: 'clamp(17px, 3.4vw, 40px)', alignItems: 'start' }}>
         <div>
           <div className="row" style={{ gap: 10 }}>
             <span style={{ color: 'var(--red)' }}><Icon name="mic" size={20} /></span>

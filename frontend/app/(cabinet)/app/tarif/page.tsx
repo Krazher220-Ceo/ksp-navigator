@@ -80,7 +80,7 @@ export default function TarifPage() {
           </CardBody>
         </Card>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 14, alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 14, alignItems: 'start' }}>
           {ТАРИФЫ_ПЕДАГОГА.map((тариф) => {
             const значок = ЗНАЧКИ[тариф.ключ];
             const главный = тариф.ключ === 'teacher';
@@ -137,7 +137,7 @@ export default function TarifPage() {
           </Card>
         ) : null}
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.1fr) minmax(0,1fr)', gap: 14 }}>
+        <div className="split" style={{ display: 'grid', ['--split' as string]: 'minmax(0,1.1fr) minmax(0,1fr)', gap: 14 }}>
           <Card style={{ padding: '22px 24px', display: 'flex', alignItems: 'center', gap: 20,
                          background: 'linear-gradient(140deg,#124066,#08203A)', color: '#fff' }}>
             <span style={{ color: '#7FD9E8', flex: 'none' }}><Icon name="cap" size={26} /></span>
@@ -156,7 +156,7 @@ export default function TarifPage() {
               <span style={{ color: 'var(--blue-700)' }}><Icon name="userplus" size={20} /></span>
               <h3 style={{ fontSize: 16 }}>Тарифы учеников</h3>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 12, marginTop: 16 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 12, marginTop: 16 }}>
               {ТАРИФЫ_УЧЕНИКА.map((т) => (
                 <div key={т.ключ} style={{
                   background: т.ключ === 'student' ? 'var(--blue-soft)' : 'rgba(11,26,43,.035)',

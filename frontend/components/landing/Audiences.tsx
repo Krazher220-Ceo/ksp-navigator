@@ -41,15 +41,15 @@ function Список({ пункты }: { пункты: Пункт[] }) {
 
 export function Audiences() {
   return (
-    <Reveal style={{ padding: '76px 56px' }}>
+    <Reveal style={{ padding: 'clamp(46px, 6.5vw, 76px) var(--pad-x)' }}>
       <div style={{ textAlign: 'center', maxWidth: 660, margin: '0 auto' }}>
         <div className="lbl">Кому это нужно</div>
-        <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 38, lineHeight: 1.2, letterSpacing: '-0.02em', marginTop: 12 }}>
+        <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 'clamp(26px, 4.6vw, 38px)', lineHeight: 1.2, letterSpacing: '-0.02em', marginTop: 12 }}>
           Педагог получает время. Ученик получает то, что не успел записать.
         </h2>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 40 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))', gap: 20, marginTop: 40 }}>
         <div className="card an d1" style={{ padding: 30 }}>
           <div className="row" style={{ gap: 11 }}>
             <span style={{ color: 'var(--blue-700)' }}><Icon name="doc" size={22} /></span>

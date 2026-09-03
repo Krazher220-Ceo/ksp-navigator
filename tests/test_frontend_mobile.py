@@ -17,7 +17,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 FRONTEND = PROJECT_ROOT / "frontend"
-MOBILE_CSS = FRONTEND / "app" / "mobile.css"
+MOBILE_CSS = FRONTEND / "app" / "adaptive.css"
 TABS_TSX = FRONTEND / "components" / "MobileTabs.tsx"
 LAYOUT_TSX = FRONTEND / "app" / "(cabinet)" / "layout.tsx"
 VHOD_TSX = FRONTEND / "app" / "(auth)" / "vhod" / "page.tsx"
@@ -27,7 +27,7 @@ API_TS = FRONTEND / "lib" / "api.ts"
 def _медиазапрос_телефона() -> str:
     css = MOBILE_CSS.read_text(encoding="utf-8")
     блок = re.search(r"@media \(max-width: \d+px\) \{(.+?)\n\}", css, re.S)
-    assert блок, "медиазапрос телефона пропал из mobile.css"
+    assert блок, "медиазапрос телефона пропал из adaptive.css"
     return блок.group(1)
 
 

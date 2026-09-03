@@ -7,12 +7,12 @@ import { Reveal } from './Reveal';
  */
 export function HowItWorks() {
   return (
-    <Reveal className="bg-kz" style={{ color: '#fff', padding: '76px 56px' }}>
+    <Reveal className="bg-kz" style={{ color: '#fff', padding: 'clamp(46px, 6.5vw, 76px) var(--pad-x)' }}>
       <div id="kak" style={{ position: 'relative', top: -70 }} />
       <div className="row" style={{ alignItems: 'flex-end' }}>
         <div style={{ maxWidth: 600 }}>
           <div className="lbl" style={{ color: 'var(--sky)' }}>Как это работает</div>
-          <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 38, lineHeight: 1.2, letterSpacing: '-0.02em', marginTop: 12, color: '#fff' }}>
+          <h2 className="an" style={{ fontFamily: 'var(--serif)', fontSize: 'clamp(26px, 4.6vw, 38px)', lineHeight: 1.2, letterSpacing: '-0.02em', marginTop: 12, color: '#fff' }}>
             Три действия педагога.<br />Остальное делает система.
           </h2>
         </div>
@@ -22,7 +22,7 @@ export function HowItWorks() {
         </p>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 20, marginTop: 44 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 200px), 1fr))', gap: 20, marginTop: 44 }}>
         <div className="an d2" style={{ borderTop: '2px solid var(--sky)', paddingTop: 20 }}>
           <div className="mono" style={{ color: 'var(--sky)', fontSize: 13 }}>01</div>
           <h3 style={{ fontSize: 20, marginTop: 10, color: '#fff' }}>Нажать «Записать» перед звонком</h3>
