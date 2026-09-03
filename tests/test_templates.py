@@ -36,12 +36,17 @@ def db_with_two_teachers(tmp_path):
     return db_path
 
 
-# --- Б4.1: формат structure_json одинаков во всех трёх файлах ---
+# --- Б4.1: формат structure_json встроенного файла ---
+#
+# До 03.09.2026 встроенных файлов было три; два (найденные в интернете
+# образцы без лицензии на переиспользование чужой формы КСП) сняты с
+# продукта решением автора. Остался один — официальная форма (приказ
+# №130), и именно её структуру этот тест проверяет.
 
 
-def test_builtin_template_files_share_the_same_block_format():
+def test_builtin_template_file_has_expected_block_format():
     files = sorted(BUILTIN_TEMPLATES_DIR.glob("*.json"))
-    assert len(files) == 3
+    assert len(files) == 1
 
     expected_block_keys = {"shapka", "tema", "celi", "hod_uroka", "primechanie"}
 
@@ -62,15 +67,15 @@ def test_builtin_template_files_share_the_same_block_format():
         )
 
 
-# --- Б4.2: ровно 3 встроенных шаблона, идемпотентность ---
+# --- Б4.2: ровно 1 встроенный шаблон, идемпотентность ---
 
 
-def test_load_builtin_templates_inserts_exactly_three(db_with_two_teachers):
+def test_load_builtin_templates_inserts_the_one_builtin_template(db_with_two_teachers):
     inserted = load_builtin_templates(db_path=db_with_two_teachers)
 
-    assert inserted == 3
+    assert inserted == 1
     rows = query("SELECT * FROM templates WHERE is_builtin = 1", db_path=db_with_two_teachers)
-    assert len(rows) == 3
+    assert len(rows) == 1
 
 
 def test_load_builtin_templates_is_idempotent(db_with_two_teachers):
@@ -79,14 +84,14 @@ def test_load_builtin_templates_is_idempotent(db_with_two_teachers):
 
     assert second_call_inserted == 0
     rows = query("SELECT * FROM templates WHERE is_builtin = 1", db_path=db_with_two_teachers)
-    assert len(rows) == 3, "повторный вызов load_builtin_templates не должен плодить дубли"
+    assert len(rows) == 1, "повторный вызов load_builtin_templates не должен плодить дубли"
 
 
 def test_load_builtin_templates_survives_three_calls(db_with_two_teachers):
     for _ in range(3):
         load_builtin_templates(db_path=db_with_two_teachers)
     rows = query("SELECT * FROM templates WHERE is_builtin = 1", db_path=db_with_two_teachers)
-    assert len(rows) == 3
+    assert len(rows) == 1
 
 
 def test_every_builtin_template_has_source_and_is_official(db_with_two_teachers):
@@ -110,7 +115,9 @@ def test_exactly_one_builtin_template_is_official(db_with_two_teachers):
 def test_builtin_templates_receive_categories(db_with_two_teachers):
     load_builtin_templates(db_path=db_with_two_teachers)
     rows = query("SELECT category FROM templates WHERE is_builtin = 1", db_path=db_with_two_teachers)
-    assert {row["category"] for row in rows} == {"official", "sample"}
+    # "sample" была у двух нелицензированных шаблонов, снятых 03.09.2026 —
+    # остался один встроенный, и он всегда "official".
+    assert {row["category"] for row in rows} == {"official"}
 
 
 # --- Б4.3: list_templates / get_template ---
@@ -120,7 +127,7 @@ def test_list_templates_shows_builtins_to_any_teacher(db_with_two_teachers):
     load_builtin_templates(db_path=db_with_two_teachers)
 
     templates = list_templates(teacher_id=1, db_path=db_with_two_teachers)
-    assert len(templates) == 3
+    assert len(templates) == 1
     assert all(t["structure_json"]["blocks"] for t in templates)  # уже распарсенный JSON, не строка
 
 
@@ -168,8 +175,8 @@ def test_save_user_template_visible_only_to_own_teacher(db_with_two_teachers):
     owner_templates = list_templates(teacher_id=1, db_path=db_with_two_teachers)
     other_teacher_templates = list_templates(teacher_id=2, db_path=db_with_two_teachers)
 
-    assert len(owner_templates) == 4  # 3 встроенных + свой
-    assert len(other_teacher_templates) == 3  # только встроенные, чужой не виден
+    assert len(owner_templates) == 2  # 1 встроенный + свой
+    assert len(other_teacher_templates) == 1  # только встроенный, чужой не виден
 
     other_names = {t["name"] for t in other_teacher_templates}
     owner_only_names = {t["name"] for t in owner_templates} - other_names

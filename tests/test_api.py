@@ -161,7 +161,7 @@ def test_templates_endpoint_returns_builtins_for_teacher_without_profile(isolate
     load_builtin_templates(db_path=isolated_api)
     response = client.get("/api/templates", headers=_headers(999))  # учителя с таким id нет
     assert response.status_code == 200
-    assert len(response.json()) == 3
+    assert len(response.json()) == 1
     assert all(template["structure_json"]["blocks"] for template in response.json())
 
 
@@ -184,6 +184,14 @@ def test_template_selection_endpoint_saves_latest_owned_template(isolated_api, c
         db_path=isolated_api,
     )
     load_builtin_templates(db_path=isolated_api)
+    # Встроенный шаблон теперь один — второй, между которым тест
+    # переключается, добавлен как свой шаблон учителя (то же самое видит
+    # /api/templates, что и настоящий загруженный).
+    execute(
+        "INSERT INTO templates (name, is_official, is_builtin, category, uploaded_by, structure_json) "
+        "VALUES ('Свой шаблон для теста', 0, 0, 'personal', 1, '{\"blocks\": []}')",
+        db_path=isolated_api,
+    )
     template_ids = [row["id"] for row in query("SELECT id FROM templates ORDER BY id", db_path=isolated_api)]
 
     first = client.post(

@@ -1,8 +1,15 @@
 """
 tests/test_docx_builder.py — тесты core/docx_builder.py.
 
-Использует реальные встроенные шаблоны из core/templates.py (блок Б4) —
-не придуманные структуры, а те самые три, что попадут в бота.
+Большинство тестов используют настоящий встроенный шаблон из
+core/templates.py (блок Б4) — тот самый, что попадёт в бота. Два теста
+на нестандартную форму structure_json (семь колонок «Хода урока»,
+шапка без части полей) раньше брали для этого два других встроенных
+шаблона; оба сняты с продукта 03.09.2026 (source в них честно значился
+"образец из интернета" — лицензии на чужую форму КСП не было). Эти два
+теста теперь собирают минимальный structure_json прямо в себе, не
+трогая диск и не завися от того, сколько встроенных шаблонов есть на
+самом деле.
 """
 
 import json
@@ -94,7 +101,7 @@ def _template_ids(db_path) -> list[int]:
 # --- Б5.1: build_docx на всех трёх встроенных шаблонах ---
 
 
-@pytest.mark.parametrize("template_index", [0, 1, 2])
+@pytest.mark.parametrize("template_index", [0])  # один встроенный шаблон остался после удаления двух нелицензированных (03.09.2026)
 def test_build_docx_produces_reopenable_file_for_every_builtin_template(
     db_with_builtins, tmp_path, template_index
 ):
@@ -133,7 +140,7 @@ def test_build_docx_accepts_structure_json_as_raw_string(db_with_builtins, tmp_p
 # --- Б5.2: пометка "черновик" — F7, обязательна в каждом файле ---
 
 
-@pytest.mark.parametrize("template_index", [0, 1, 2])
+@pytest.mark.parametrize("template_index", [0])  # один встроенный шаблон остался после удаления двух нелицензированных (03.09.2026)
 def test_draft_notice_present_as_first_paragraph(db_with_builtins, tmp_path, template_index):
     template_id = _template_ids(db_with_builtins)[template_index]
     template = get_template(template_id, db_path=db_with_builtins)
@@ -310,29 +317,56 @@ def test_empty_hod_uroka_produces_one_placeholder_row_not_crash(db_with_builtins
     assert len(document.tables[0].rows) == header_row_idx + 2  # заголовок + 1 пустая строка-заглушка
 
 
-def test_extended_template_has_seven_columns_in_hod_uroka(db_with_builtins, tmp_path):
-    extended = next(
-        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
-        if "Развёрнутый" in t["name"]
-    )
-    out_path = tmp_path / "extended.docx"
-    build_docx(SAMPLE_CONTENT, extended, out_path)
+# Оба шаблона ниже раньше приходили из storage/builtin_templates/
+# (extended_ktp.json, gymnasium_27.json) — оба сняты с продукта 03.09.2026
+# решением автора: source в них честно значился "образец из интернета",
+# лицензии на переиспользование чужой формы КСП не было. Собственно
+# структура этих тестов от того, откуда шаблон взялся, не зависит —
+# build_docx работает с любым structure_json, поэтому здесь минимальные
+# шаблоны собраны прямо в тесте, без обращения к какому-либо реальному
+# документу.
+
+
+def test_template_with_seven_hod_uroka_columns_renders_all_of_them(tmp_path):
+    seven_column_template = {
+        "structure_json": {
+            "blocks": [
+                {"key": "shapka", "fields": ["organizaciya", "razdel", "fio_pedagoga", "data", "klass", "prisutstvuet", "otsutstvuet"]},
+                {"key": "tema", "fields": ["tema_uroka"]},
+                {"key": "celi", "fields": ["celi_obucheniya", "celi_uroka"]},
+                {"key": "hod_uroka", "columns": [
+                    "etap_vremya", "deystviya_pedagoga", "deystviya_uchenika",
+                    "ocenivanie", "resursy", "domashnee_zadanie", "dop_literatura",
+                ]},
+                {"key": "primechanie", "fields": ["adaptaciya_oop"]},
+            ]
+        }
+    }
+    out_path = tmp_path / "seven_columns.docx"
+    build_docx(SAMPLE_CONTENT, seven_column_template, out_path)
 
     document = Document(str(out_path))
     assert len(document.tables[0].columns) == 7
 
 
-def test_gymnasium_template_omits_fields_it_does_not_declare(db_with_builtins, tmp_path):
-    gymnasium = next(
-        t for t in [get_template(i, db_path=db_with_builtins) for i in _template_ids(db_with_builtins)]
-        if "Гимназия" in t["name"]
-    )
-    out_path = tmp_path / "gymnasium.docx"
-    build_docx(SAMPLE_CONTENT, gymnasium, out_path)
+def test_template_omits_shapka_fields_it_does_not_declare(tmp_path):
+    minimal_shapka_template = {
+        "structure_json": {
+            "blocks": [
+                {"key": "shapka", "fields": ["razdel", "chasy", "data"]},
+                {"key": "tema", "fields": ["tema_uroka"]},
+                {"key": "celi", "fields": ["celi_obucheniya"]},
+                {"key": "hod_uroka", "columns": ["etap_vremya", "deystviya_pedagoga", "deystviya_uchenika", "ocenivanie", "resursy"]},
+                {"key": "primechanie", "fields": ["adaptaciya_oop"]},
+            ]
+        }
+    }
+    out_path = tmp_path / "minimal_shapka.docx"
+    build_docx(SAMPLE_CONTENT, minimal_shapka_template, out_path)
 
     document = Document(str(out_path))
     full_text = "\n".join(cell.text for row in document.tables[0].rows for cell in row.cells)
-    assert "ФИО педагога:" not in full_text
+    assert "ФИО педагога:" not in full_text  # shapka его не объявляла
     assert "Часы:" in full_text  # известная метка, не "Chasy:"
 
 
