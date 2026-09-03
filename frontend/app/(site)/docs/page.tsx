@@ -1,12 +1,15 @@
+import Link from 'next/link';
+import { КОНТАКТЫ } from '@/content/contacts';
 import type { Metadata } from 'next';
 import { Button } from '@/components/Button';
 import { Card } from '@/components/Card';
 import { Chip } from '@/components/Chip';
 import { Icon } from '@/components/Icon';
 import { DocsNav } from '@/components/landing/DocsNav';
+import { РазделыСлева } from '@/components/landing/РазделыСлева';
 import { Оглавление } from '@/components/landing/Оглавление';
 import {
-  ПОКАЗАТЕЛИ_АНАЛИТИКИ, РАЗДЕЛЫ_ДОКУМЕНТАЦИИ, ЧЕГО_НЕ_СЧИТАЕМ,
+  ПОКАЗАТЕЛИ_АНАЛИТИКИ, ЧЕГО_НЕ_СЧИТАЕМ,
 } from '@/content/docs';
 
 export const metadata: Metadata = {
@@ -37,21 +40,8 @@ export default function DocsPage() {
         display: 'grid',
         gap: 'clamp(17px, 3.4vw, 40px)', padding: 'clamp(24px, 4vw, 38px) var(--pad-x) clamp(40px, 6vw, 70px)',
       }}>
-      <aside style={{ fontSize: 13.5 }}>
-        <div className="lbl" style={{ marginBottom: 10 }}>Разделы</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          {РАЗДЕЛЫ_ДОКУМЕНТАЦИИ.map((р) => {
-            const открыт = р.ключ === 'analitika';
-            return (
-              <span key={р.ключ} style={{
-                padding: '7px 10px', borderRadius: 7,
-                color: открыт ? 'var(--blue-800)' : 'var(--ink-2)',
-                background: открыт ? 'var(--blue-soft)' : undefined,
-                fontWeight: открыт ? 600 : undefined,
-              }}>{р.название}</span>
-            );
-          })}
-        </div>
+      <div>
+        <РазделыСлева активный="analitika" />
         <Card style={{ marginTop: 22, padding: 13, background: 'var(--gold-soft)' }}>
           <div className="row" style={{ gap: 7 }}>
             <span style={{ color: '#7A5A12' }}><Icon name="lock" size={15} /></span>
@@ -62,7 +52,7 @@ export default function DocsPage() {
             и её может прочитать кто угодно.
           </p>
         </Card>
-      </aside>
+      </div>
 
       <main style={{ maxWidth: 720 }}>
         <div className="row" style={{ gap: 8 }}>
@@ -180,8 +170,16 @@ export default function DocsPage() {
             детях — мы отвечаем полностью и письменно. Это не коммерческая тайна.
           </p>
           <div className="row" style={{ gap: 10, marginTop: 14 }}>
-            <Button size="малая">Написать нам</Button>
-            <Button size="малая" variant="тихая">Данные и приватность</Button>
+            {/* Почта для заявок ещё не заведена (content/contacts.ts) —
+                кнопка выключена, а не ведёт в никуда. */}
+            {КОНТАКТЫ.почта ? (
+              <a href={`mailto:${КОНТАКТЫ.почта}`}><Button size="малая">Написать нам</Button></a>
+            ) : (
+              <Button size="малая" disabled aria-disabled="true" title="Почта для вопросов ещё не заведена">
+                Написать нам
+              </Button>
+            )}
+            <Link href="/docs/data"><Button size="малая" variant="тихая">Данные и приватность</Button></Link>
           </div>
         </Card>
       </main>

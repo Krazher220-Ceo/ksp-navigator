@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { Button } from '@/components/Button';
 import { Card, CardHead } from '@/components/Card';
 import { Chip } from '@/components/Chip';
@@ -46,7 +47,9 @@ export function УрокиБезПлана({ данные }: { данные: Д�
                       <span>из КТП</span>
                     </div>
                   </div>
-                  <Button size="малая" variant={i === 0 ? 'основная' : 'тихая'}>Собрать</Button>
+                  <Link href="/app/ksp">
+                    <Button size="малая" variant={i === 0 ? 'основная' : 'тихая'}>Собрать</Button>
+                  </Link>
                 </div>
               </div>
             );

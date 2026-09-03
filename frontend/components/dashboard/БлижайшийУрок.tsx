@@ -56,9 +56,11 @@ export function БлижайшийУрок({ данные }: { данные: Д�
                 Начать запись
               </Button>
             </Link>
-            <Button icon="doc" style={{ background: 'rgba(255,255,255,.09)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.13)' }}>
-              Собрать КСП заранее
-            </Button>
+            <Link href="/app/ksp">
+              <Button icon="doc" style={{ background: 'rgba(255,255,255,.09)', boxShadow: 'inset 0 0 0 1px rgba(255,255,255,.13)' }}>
+                Собрать КСП заранее
+              </Button>
+            </Link>
           </div>
         </>
       ) : (

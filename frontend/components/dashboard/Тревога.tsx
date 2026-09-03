@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { Button } from '@/components/Button';
 import { Icon } from '@/components/Icon';
 import type { Дэшборд } from '@/lib/api';
@@ -46,14 +47,22 @@ export function Тревога({ данные }: { данные: Дэшборд 
             </div>
           </>
         )}
+        {/* Обе кнопки ведут в историю: там лежат сами неудавшиеся
+            задачи с причиной и кнопкой повтора у каждой. Повторять
+            «всё разом» отсюда нельзя намеренно — задачи падают по
+            разным причинам, и лечатся они тоже по-разному. */}
         <div className="row" style={{ gap: 8, marginTop: 11 }}>
-          <Button
-            size="малая"
-            style={{ background: 'linear-gradient(180deg,#BC463C,#9C332B)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.2)' }}
-          >
-            Повторить
-          </Button>
-          <Button size="малая" variant="тихая">Что случилось</Button>
+          <Link href="/app/istoriya">
+            <Button
+              size="малая"
+              style={{ background: 'linear-gradient(180deg,#BC463C,#9C332B)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.2)' }}
+            >
+              Повторить
+            </Button>
+          </Link>
+          <Link href="/app/istoriya">
+            <Button size="малая" variant="тихая">Что случилось</Button>
+          </Link>
         </div>
       </div>
     </section>

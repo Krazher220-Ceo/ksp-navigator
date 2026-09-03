@@ -43,7 +43,7 @@ export const NAV: Group[] = [
     { key: 'classes', icon: 'users', label: 'Мои классы', href: '/app/klassy' },
   ] },
   { cap: 'Материалы', items: [
-    { key: 'templates', icon: 'layers', label: 'Шаблоны' },
+    { key: 'templates', icon: 'layers', label: 'Шаблоны', href: '/app/shablony' },
     { key: 'history', icon: 'file', label: 'История', href: '/app/istoriya' },
   ] },
   { cap: 'Аналитика', items: [
