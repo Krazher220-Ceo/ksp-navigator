@@ -52,12 +52,18 @@ def collect(db_path=None) -> dict:
 
     # 1. Сколько педагогов пользуются: собрали хотя бы один документ за
     # 30 дней. Считаем ИМЕННО документы, а не входы.
+    # Алиас documents_30d у подзапроса обязателен: Postgres отвергает
+    # "FROM (...)" без имени ("subquery in FROM must have an alias"), а
+    # SQLite такой запрос принимает молча. Это ровно тот класс
+    # расхождения, о котором говорит грабля 2.12: тесты идут на SQLite и
+    # не видят его, а прод — на Postgres. Сторожит статикой
+    # tests/test_sql_contract.py, пункт 6 контракта.
     активные = query(
         "SELECT COUNT(DISTINCT teacher_id) AS n FROM ("
         "  SELECT teacher_id FROM generated_ksp WHERE created_at >= ?"
         "  UNION ALL"
         "  SELECT teacher_id FROM konspekty WHERE created_at >= ?"
-        ")",
+        ") documents_30d",
         (за_30, за_30),
         db_path=db_path,
     )[0]["n"]

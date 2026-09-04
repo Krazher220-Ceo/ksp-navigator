@@ -32,6 +32,13 @@ from core.db import execute, query
 from core.llm_client import LLMClient
 
 
+# Префикс временной папки под результат конвертации .doc -> .docx.
+# Вынесен в константу, потому что по нему parse_ksp узнаёт СВОЮ папку и
+# только её удаляет: rmtree по "родителю разобранного файла" без такой
+# проверки однажды снёс бы storage/uploads целиком.
+_TEMP_DOCX_PREFIX = "ksp_navigator_docx_"
+
+
 class KSPConversionError(Exception):
     """Не удалось сконвертировать .doc в .docx."""
 
@@ -70,31 +77,40 @@ def ensure_docx(path: Path | str) -> Path:
             "Установите: brew install --cask libreoffice, или запустите scripts/setup_mac.sh."
         )
 
-    out_dir = Path(tempfile.mkdtemp(prefix="ksp_navigator_docx_"))
+    # Папка убирается на КАЖДОМ выходе с ошибкой: конвертация падает
+    # регулярно (сломанный профиль LibreOffice, таймаут, битый .doc), и
+    # без этого каждая неудача оставляла пустую папку на диске, а удачная
+    # — папку с полной копией КСП педагога. Убирает её parse_ksp, когда
+    # дочитает файл; за путь до успеха отвечает этот try.
+    out_dir = Path(tempfile.mkdtemp(prefix=_TEMP_DOCX_PREFIX))
     try:
-        result = subprocess.run(
-            ["soffice", "--headless", "--convert-to", "docx", "--outdir", str(out_dir), str(path)],
-            capture_output=True,
-            timeout=60,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise KSPConversionError(
-            f"конвертация {path.name} в .docx не уложилась в 60 секунд"
-        ) from exc
+        try:
+            result = subprocess.run(
+                ["soffice", "--headless", "--convert-to", "docx", "--outdir", str(out_dir), str(path)],
+                capture_output=True,
+                timeout=60,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise KSPConversionError(
+                f"конвертация {path.name} в .docx не уложилась в 60 секунд"
+            ) from exc
 
-    if result.returncode != 0:
-        stderr = result.stderr.decode("utf-8", errors="replace").strip()
-        raise KSPConversionError(
-            f"LibreOffice не смог сконвертировать {path.name} (код {result.returncode}): "
-            f"{stderr or 'без сообщения об ошибке'}"
-        )
+        if result.returncode != 0:
+            stderr = result.stderr.decode("utf-8", errors="replace").strip()
+            raise KSPConversionError(
+                f"LibreOffice не смог сконвертировать {path.name} (код {result.returncode}): "
+                f"{stderr or 'без сообщения об ошибке'}"
+            )
 
-    converted = out_dir / f"{path.stem}.docx"
-    if not converted.exists():
-        raise KSPConversionError(
-            f"LibreOffice отработал без ошибки, но файл {converted} не появился"
-        )
-    return converted
+        converted = out_dir / f"{path.stem}.docx"
+        if not converted.exists():
+            raise KSPConversionError(
+                f"LibreOffice отработал без ошибки, но файл {converted} не появился"
+            )
+        return converted
+    except BaseException:
+        shutil.rmtree(out_dir, ignore_errors=True)
+        raise
 
 
 # --- Б3.2: извлечение структуры документа ---
@@ -254,11 +270,25 @@ def parse_ksp(path: Path | str) -> dict:
     Единственное, что может кинуть исключение — сам файл нечитаем
     как .docx (битый файл, не Word-документ и т.п.)."""
     docx_path = ensure_docx(path)
+    # ensure_docx на .doc кладёт результат во временную папку и владельца
+    # ей не назначает. Пока её никто не убирал, каждый разобранный .doc
+    # оставлял на диске ПОЛНУЮ КОПИЮ КСП педагога — навсегда, и
+    # /delete_my_data о ней не знал: он удаляет то, на что ссылается
+    # база, а этот путь нигде не хранится. Убираем сразу после чтения:
+    # дальше нужен только разобранный текст.
+    временная_папка = (
+        docx_path.parent
+        if docx_path != Path(path) and docx_path.parent.name.startswith(_TEMP_DOCX_PREFIX)
+        else None
+    )
 
     try:
         document = Document(str(docx_path))
     except Exception as exc:  # python-docx кидает разные типы на битых файлах
         raise KSPParseError(f"не удалось открыть {path} как .docx: {exc}") from exc
+    finally:
+        if временная_папка is not None:
+            shutil.rmtree(временная_папка, ignore_errors=True)
 
     headings: list[str] = []
     paragraphs: list[str] = []

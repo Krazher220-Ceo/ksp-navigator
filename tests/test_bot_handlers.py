@@ -881,10 +881,52 @@ async def test_generate_full_flow_enqueues_task_with_correct_payload(isolated_en
             "mezhpredmetnye_svyazi": [],
             "page_orientation": "book",
         },
+        # Темы «Совершенно новая тема» в КТП нет — связывать не с чем, и
+        # выдумывать связь нельзя (2.7). Случай, когда тема в КТП есть,
+        # проверяет test_generate_links_ksp_to_ktp_entry_for_coverage.
+        "ktp_entry_id": None,
         "textbook_photo_paths": [],  # /skip на шаге Р6.1 -> пустой список
         "konspekt_text": None,  # К5: обычный /generate, не по кнопке конспекта
     }
     assert await state.get_state() is None
+
+
+async def test_generate_links_ksp_to_ktp_entry_for_coverage(isolated_env):
+    """Дашборд считает покрытие программы по generated_ksp.ktp_entry_id.
+    Бот это поле не заполнял вовсе, поэтому «покрыто» на дашборде
+    оставалось нулём у любого педагога, работающего через Telegram, а
+    «ближайшие уроки без КСП» показывали уроки, для которых КСП уже
+    собран. Кабинет то же поле присылал (web/api_v1.py), то есть числа
+    у двух дверей ещё и расходились."""
+    teacher_id = _create_teacher(4242)
+    template_id = query("SELECT id FROM templates WHERE is_builtin = 1")[0]["id"]
+    execute(
+        "INSERT INTO curriculum_objectives (code, grade, description) VALUES (?, ?, ?)",
+        ("10.4.2.1", 10, "Тестовая цель"),
+    )
+    entry_id = execute(
+        "INSERT INTO ktp_entries (teacher_id, section, topic, objective_code) VALUES (?, ?, ?, ?)",
+        (teacher_id, "Механика", "Импульс тела", "10.4.2.1"),
+    )
+    execute(
+        "INSERT INTO generated_ksp (id, teacher_id, template_id, content_json) VALUES (?, ?, ?, ?)",
+        ("prev", teacher_id, template_id, json.dumps({"klass": "10"})),
+    )
+
+    state = _state()
+    await cmd_generate(FakeMessage(text="/generate", user_id=4242), state)
+    # Быстрый путь: тема из КТП плюс прошлая генерация закрывают всё,
+    # диалог сразу выходит на карточку подтверждения.
+    message = FakeMessage(chat_id=4242, user_id=4242)
+    await generate_topic_received(FakeMessage(text="Импульс тела", user_id=4242), state)
+    assert await state.get_state() == Generate.waiting_for_confirmation.state
+
+    from bot.handlers import generate_confirmed
+
+    await generate_confirmed(FakeCallbackQuery(data="gen_confirm", message=message, user_id=4242), state)
+
+    payload = json.loads(query("SELECT payload FROM tasks WHERE type = 'generate_ksp'")[0]["payload"])
+    assert payload["ktp_entry_id"] == entry_id
 
 
 async def test_generate_fast_path_uses_ktp_and_previous_ksp_without_questions(isolated_env):
@@ -1818,6 +1860,27 @@ async def test_join_code_is_case_and_whitespace_insensitive(isolated_env):
     assert "9 Б" in code_message.sent[-1]["text"]
 
 
+async def test_join_accepts_code_written_down_from_dictation(isolated_env):
+    """Главный сценарий блока У2 — педагог диктует код вслух на уроке, а
+    ребёнок записывает его так, как ему удобно: с дефисом или пробелами.
+    Кабинет такие коды принимал (core/accounts.normalize_invite_code), а
+    бот — нет: у него лежала своя копия поиска, которая приводила ввод к
+    верхнему регистру, но разделители не выбрасывала. Ученик видел «код
+    не найден» на верном коде."""
+    code = await _create_class_and_get_code(816, name="11 В")
+
+    for написание in (f"{code[:2]}-{code[2:]}", f"{code[:2]} {code[2:]}", f" {code[:3].lower()} {code[3:].lower()} "):
+        state = _state()
+        await cmd_join(FakeMessage(text="/join", user_id=817), state)
+        code_message = FakeMessage(text=написание, user_id=817)
+        await student_join_code_received(code_message, state)
+
+        assert await state.get_state() == "StudentJoin:waiting_for_confirmation", (
+            f"код {написание!r}, записанный с голоса, не нашёлся"
+        )
+        assert "11 В" in code_message.sent[-1]["text"]
+
+
 async def test_join_confirm_creates_membership(isolated_env):
     code = await _create_class_and_get_code(814, name="10 А")
 
@@ -2625,6 +2688,26 @@ async def test_delete_my_data_confirm_deletes_rows_and_files_keeps_teacher(isola
     assert query("SELECT * FROM incidents")
 
     assert "Готово" in callback.message.sent[-1]["text"]
+
+
+async def test_delete_my_data_also_removes_pdf_built_from_konspekt(isolated_env, tmp_path):
+    """PDF конспекта собирается из .docx и своей строки в базе не имеет —
+    в konspekty лежит только docx_path. Пока его здесь не удаляли,
+    команда «удалить мои данные» оставляла на диске полностью читаемый
+    конспект урока: обещание статей 18/24/25 Закона о ПДн выполнялось не
+    до конца, а пользователю при этом отвечали «Готово»."""
+    paths = await _seed_personal_data(953, tmp_path)
+
+    # Такой файл на диске и появляется рядом с .docx после отправки
+    # конспекта (bot/handlers.py, _try_send_pdf).
+    pdf = paths["konspekt_docx"].with_suffix(".pdf")
+    pdf.write_bytes(b"%PDF-1.4 konspekt")
+
+    callback = FakeCallbackQuery(data="delete_my_data_confirm", message=FakeMessage(), user_id=953)
+    await delete_my_data_confirmed(callback)
+
+    assert not paths["konspekt_docx"].exists()
+    assert not pdf.exists(), "PDF конспекта пережил удаление данных"
 
 
 async def test_delete_my_data_confirm_also_revokes_consent(isolated_env, tmp_path):
@@ -3739,19 +3822,32 @@ async def test_notify_unresolved_incidents_sends_multiple_separately(isolated_en
 
 
 async def test_dashboard_text_shows_uptime_with_resolved_incident(isolated_env):
+    """Дата инцидента — ОТНОСИТЕЛЬНАЯ, а не зашитая.
+
+    Раньше здесь стояло '2026-08-25', и тест был зелёным ровно до тех
+    пор, пока эта дата попадала в окно последних семи дней
+    (core/dashboard.py считает недоступность только за 7 дней). С
+    01.09.2026 он падал каждый прогон, и падал бы дальше всегда: срок
+    годности у него был меньше недели. Красный тест, который «просто
+    всегда красный», — это способ приучить не смотреть на прогон.
+    """
+    from datetime import datetime, timedelta
+
     from bot.handlers import cmd_dashboard
 
     _create_teacher(904)
+    начало = datetime.now() - timedelta(days=2)
+    конец = начало + timedelta(hours=1, minutes=57)
     execute(
-        "INSERT INTO incidents (started_at, ended_at, reason) VALUES "
-        "('2026-08-25 10:00:00', '2026-08-25 11:57:00', 'dns_fail')"
+        "INSERT INTO incidents (started_at, ended_at, reason) VALUES (?, ?, 'dns_fail')",
+        (начало.strftime("%Y-%m-%d %H:%M:%S"), конец.strftime("%Y-%m-%d %H:%M:%S")),
     )
     message = FakeMessage(text="/dashboard", user_id=904)
     await cmd_dashboard(message)
     text = message.sent[0]["text"]
     assert "не резолвился DNS" in text
-    assert "10:00" in text
-    assert "11:57" in text
+    assert начало.strftime("%H:%M") in text
+    assert конец.strftime("%H:%M") in text
     assert "1 ч 57 мин" in text  # суммарная недоступность за 7 дней
 
 
@@ -5014,7 +5110,15 @@ async def test_konspekt_handler_sends_docx_and_pdf(isolated_env, monkeypatch, tm
 
     monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
 
-    def fake_convert_docx_to_pdf(docx_path):
+    # Второй аргумент — папка назначения. Раньше конвертация звалась без
+    # неё, и результат уходил в tempfile.mkdtemp, который никто никогда
+    # не убирал: на диске оставалась вечная копия конспекта урока, о
+    # которой не знал и /delete_my_data. Теперь PDF кладётся рядом с
+    # .docx и живёт по тем же правилам, что сам документ.
+    переданная_папка = {}
+
+    def fake_convert_docx_to_pdf(docx_path, output_dir=None):
+        переданная_папка["значение"] = output_dir
         pdf_path = tmp_path / "konspekt.pdf"
         pdf_path.write_bytes(b"fake pdf")
         return pdf_path
@@ -5046,6 +5150,10 @@ async def test_konspekt_handler_sends_docx_and_pdf(isolated_env, monkeypatch, tm
     assert len(bot.sent_messages) == 1
     assert _SAMPLE_KONSPEKT_CONTENT["tema"] in bot.sent_messages[0][1]
 
+    assert переданная_папка["значение"] == Path(result["docx_path"]).parent, (
+        "PDF снова собирается во временную папку — копия конспекта останется на диске навсегда"
+    )
+
 
 async def test_konspekt_handler_survives_optional_pdf_failure(isolated_env, monkeypatch):
     """П1: ошибка необязательного PDF не отменяет готовый конспект."""
@@ -5059,7 +5167,7 @@ async def test_konspekt_handler_survives_optional_pdf_failure(isolated_env, monk
     async def fake_generate_konspekt(transcript_text, *, llm_client=None, **kwargs):
         return dict(_SAMPLE_KONSPEKT_CONTENT)
 
-    def fail_pdf_conversion(docx_path):
+    def fail_pdf_conversion(docx_path, output_dir=None):
         raise PdfExportError("LibreOffice недоступен")
 
     monkeypatch.setattr("bot.handlers.generate_konspekt", fake_generate_konspekt)
@@ -5437,3 +5545,111 @@ def test_texts_about_parts_show_the_actual_limit():
 
     reached = texts.KONSPEKT_MAX_PARTS_REACHED.format(max=MAX_KONSPEKT_PARTS)
     assert "частей: 2" in reached
+
+
+# =====================================================================
+# /analytics — закрытая аналитика продукта в Telegram
+# =====================================================================
+
+
+async def _открыть_аналитику(user_id: int):
+    """Снимает оба замка: флаг окружения и запись в admin_access."""
+    from core.limits import grant_admin_access
+
+    grant_admin_access(user_id)
+    return user_id
+
+
+async def test_analytics_command_is_invisible_without_the_env_flag(isolated_env):
+    """Флаг выключен — команда отвечает как несуществующая, а не «нет
+    доступа»: отказ по правам рассказывает о существовании закрытого
+    экрана тому, кому знать о нём незачем (тот же принцип, что у
+    /api/v1/analytics — 404, а не 403)."""
+    from bot.handlers import cmd_analytics
+    from core.config import settings as core_settings
+
+    await _открыть_аналитику(970)
+    было = core_settings.analytics_enabled
+    object.__setattr__(core_settings, "analytics_enabled", False)
+    try:
+        message = FakeMessage(text="/analytics", user_id=970)
+        await cmd_analytics(message)
+        assert message.sent[-1]["text"] == texts.ANALYTICS_UNAVAILABLE
+    finally:
+        object.__setattr__(core_settings, "analytics_enabled", было)
+
+
+async def test_analytics_command_is_invisible_without_admin_access(isolated_env):
+    """Флага одного мало: без записи в admin_access команда молчит так
+    же. Два замка сразу — доступ по одному из них это уже случайно
+    открытая аналитика, то есть инцидент."""
+    from bot.handlers import cmd_analytics
+    from core.config import settings as core_settings
+
+    было = core_settings.analytics_enabled
+    object.__setattr__(core_settings, "analytics_enabled", True)
+    try:
+        message = FakeMessage(text="/analytics", user_id=971)  # admin_access не выдан
+        await cmd_analytics(message)
+        assert message.sent[-1]["text"] == texts.ANALYTICS_UNAVAILABLE
+    finally:
+        object.__setattr__(core_settings, "analytics_enabled", было)
+
+
+async def test_analytics_command_shows_the_same_numbers_as_the_web_screen(isolated_env):
+    """Расчёт один на обе двери (core/analytics.py) — бот и кабинет не
+    имеют права разойтись в числах, ровно как в М5.1 для дашборда."""
+    from core.analytics import collect as collect_analytics
+    from bot.handlers import cmd_analytics, format_analytics_text
+    from core.config import settings as core_settings
+
+    teacher_id = _create_teacher(972)
+    execute(
+        "INSERT INTO generated_ksp (id, teacher_id, content_json) VALUES ('a-1', ?, '{}')",
+        (teacher_id,),
+    )
+
+    await _открыть_аналитику(972)
+    было = core_settings.analytics_enabled
+    object.__setattr__(core_settings, "analytics_enabled", True)
+    try:
+        message = FakeMessage(text="/analytics", user_id=972)
+        await cmd_analytics(message)
+        text = message.sent[-1]["text"]
+    finally:
+        object.__setattr__(core_settings, "analytics_enabled", было)
+
+    assert text == format_analytics_text(collect_analytics())
+    assert texts.ANALYTICS_HEADER in text
+    assert "черновиков КСП: 1" in text
+
+
+async def test_analytics_text_never_names_a_teacher(isolated_env):
+    """Рейтинга педагогов нет и не появится: как только аналитика
+    учебного процесса превращается в оценку человека, доступ в школы
+    закрывается (MASTER.md, раздел 11). Здесь это проверяется на
+    результате: имени педагога и темы урока в тексте быть не может."""
+    from core.analytics import collect as collect_analytics
+    from bot.handlers import format_analytics_text
+
+    teacher_id = _create_teacher(973, name="Дмитрий Александрович")
+    execute(
+        "INSERT INTO ktp_entries (teacher_id, section, topic) VALUES (?, 'Механика', 'Закон сохранения')",
+        (teacher_id,),
+    )
+    execute(
+        "INSERT INTO generated_ksp (id, teacher_id, content_json) VALUES ('a-2', ?, '{}')",
+        (teacher_id,),
+    )
+
+    text = format_analytics_text(collect_analytics())
+
+    assert "Дмитрий" not in text
+    assert "Закон сохранения" not in text
+
+
+def test_analytics_command_is_not_advertised_in_the_command_list():
+    """В подсказках Telegram её быть не должно — иначе закрытый экран
+    показан всем, кто открыл список команд (тот же принцип, что у /join
+    и /sverka)."""
+    assert "analytics" not in [имя for имя, _ in texts.BOT_COMMANDS]

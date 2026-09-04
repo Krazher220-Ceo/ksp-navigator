@@ -19,11 +19,19 @@ def collect(teacher_id: int, topic: str, db_path=None) -> dict:
     normalized_topic = _normalized(topic)
 
     ktp_rows = query(
-        "SELECT topic, section, objective_code FROM ktp_entries WHERE teacher_id = ?",
+        "SELECT id, topic, section, objective_code FROM ktp_entries WHERE teacher_id = ?",
         (teacher_id,), db_path=db_path,
     )
     for row in ktp_rows:
         if _normalized(row["topic"] or "") == normalized_topic:
+            # id найденной строки КТП — не удобство, а то, чем дашборд
+            # считает покрытие программы: core/dashboard.py берёт
+            # covered из generated_ksp.ktp_entry_id IS NOT NULL. Пока
+            # бот его не проставлял, «покрыто» оставалось нулём даже у
+            # учителя, собравшего КСП по каждой теме своего КТП, а
+            # «ближайшие уроки без КСП» показывали уже закрытые уроки.
+            result["ktp_entry_id"] = row["id"]
+            result["sources"]["ktp_entry_id"] = "КТП"
             if row["section"]:
                 result["razdel"] = row["section"]
                 result["sources"]["razdel"] = "КТП"

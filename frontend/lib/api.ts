@@ -162,17 +162,21 @@ export type Конспект = {
 };
 
 /**
- * Отправка записи урока. Идёт телом запроса, а не multipart: так не
- * понадобилась отдельная зависимость на сервере, а браузер отдаёт Blob
- * как есть.
+ * Заголовки загрузки файла: тип, имя и та дверь, которой вошёл человек.
+ *
+ * Один сборщик на все три загрузки (запись урока, КТП, фото тетради).
+ * Раньше каждая собирала их сама, и результат разошёлся: у записи блок
+ * входа через Telegram оказался скопирован дважды, а у фото тетради его
+ * не было вовсе — ученик, вошедший на сайте виджетом Telegram, получал
+ * 401 на главной своей функции (сверке тетради).
  */
-export async function отправитьЗапись(
-  файл: Blob, имя: string, режим: 'student' | 'teacher',
-): Promise<{ task_id: string; status: string; size_bytes: number }> {
+async function заголовкиЗагрузки(
+  файл: Blob, имя: string, типПоУмолчанию: string, дополнительные: Record<string, string> = {},
+): Promise<Record<string, string>> {
   const шапка: Record<string, string> = {
-    'Content-Type': файл.type || 'application/octet-stream',
+    'Content-Type': файл.type || типПоУмолчанию,
     'X-Filename': имя,
-    'X-Konspekt-Mode': режим,
+    ...дополнительные,
   };
   if (входПоПочтеНастроен()) {
     const { data } = await supabase().auth.getSession();
@@ -182,10 +186,20 @@ export async function отправитьЗапись(
     const телеграм = входTelegram();
     if (телеграм) шапка['X-Telegram-Login'] = телеграм;
   }
-  if (!шапка.Authorization) {
-    const телеграм = входTelegram();
-    if (телеграм) шапка['X-Telegram-Login'] = телеграм;
-  }
+  return шапка;
+}
+
+/**
+ * Отправка записи урока. Идёт телом запроса, а не multipart: так не
+ * понадобилась отдельная зависимость на сервере, а браузер отдаёт Blob
+ * как есть.
+ */
+export async function отправитьЗапись(
+  файл: Blob, имя: string, режим: 'student' | 'teacher',
+): Promise<{ task_id: string; status: string; size_bytes: number }> {
+  const шапка = await заголовкиЗагрузки(файл, имя, 'application/octet-stream', {
+    'X-Konspekt-Mode': режим,
+  });
 
   let ответ: Response;
   try {
@@ -301,18 +315,7 @@ export type РезультатСверки = {
 export async function отправитьКтп(
   файл: Blob, имя: string,
 ): Promise<{ inserted: number; replaced: number }> {
-  const шапка: Record<string, string> = {
-    'Content-Type': файл.type || 'application/octet-stream',
-    'X-Filename': имя,
-  };
-  if (входПоПочтеНастроен()) {
-    const { data } = await supabase().auth.getSession();
-    if (data.session?.access_token) шапка.Authorization = `Bearer ${data.session.access_token}`;
-  }
-  if (!шапка.Authorization) {
-    const телеграм = входTelegram();
-    if (телеграм) шапка['X-Telegram-Login'] = телеграм;
-  }
+  const шапка = await заголовкиЗагрузки(файл, имя, 'application/octet-stream');
   let ответ: Response;
   try {
     ответ = await fetch(`${БАЗА}/api/v1/ktp/upload`, { method: 'POST', headers: шапка, body: файл });
@@ -331,15 +334,9 @@ export async function отправитьКтп(
 export async function отправитьФотоТетради(
   фото: Blob, имя: string, transcript_id: string,
 ): Promise<{ task_id: string; status: string }> {
-  const шапка: Record<string, string> = {
-    'Content-Type': фото.type || 'image/jpeg',
-    'X-Filename': имя,
+  const шапка = await заголовкиЗагрузки(фото, имя, 'image/jpeg', {
     'X-Transcript-Id': transcript_id,
-  };
-  if (входПоПочтеНастроен()) {
-    const { data } = await supabase().auth.getSession();
-    if (data.session?.access_token) шапка.Authorization = `Bearer ${data.session.access_token}`;
-  }
+  });
   let ответ: Response;
   try {
     ответ = await fetch(`${БАЗА}/api/v1/student/sverka`, { method: 'POST', headers: шапка, body: фото });

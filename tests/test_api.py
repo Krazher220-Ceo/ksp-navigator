@@ -134,6 +134,27 @@ def test_download_of_someone_elses_ksp_returns_404(isolated_api, client, tmp_pat
     assert foreign_response.status_code == 404
 
 
+def test_download_of_ksp_without_file_path_returns_404_not_500(isolated_api, client):
+    """docx_path в базе пустой — так выглядит строка, если генерация
+    упала между записью в generated_ksp и сборкой файла.
+
+    Path(None) кидает TypeError, то есть Mini App получал 500 и
+    техническую ошибку вместо честного «не найдено». В /api/v1/download
+    это уже сделано правильно (Path(... or "")) — здесь две копии одного
+    правила разошлись."""
+    execute(
+        "INSERT INTO teachers (id, name, subject, telegram_user_id) VALUES (3, 'Владелец', 'физика', 333)",
+        db_path=isolated_api,
+    )
+    execute(
+        "INSERT INTO generated_ksp (id, teacher_id, content_json, docx_path) VALUES ('ksp-3', 3, '{}', NULL)",
+        db_path=isolated_api,
+    )
+
+    response = client.get("/api/download/ksp-3", headers=_headers(333))
+    assert response.status_code == 404
+
+
 def test_nonexistent_and_foreign_ksp_give_identical_error_shape(isolated_api, client):
     """Дополнительная проверка духа "не подтверждаем существование":
     ответы на "нет такого id" и "это не твой id" должны быть

@@ -48,7 +48,12 @@ from core.ksp_generator import (
     guess_objective_code,
 )
 from core.analytics import collect as collect_analytics
-from core.limits import WEB_AUDIO_MAX_BYTES, has_admin_access
+from core.limits import (
+    WEB_AUDIO_MAX_BYTES,
+    LimitExceeded,
+    check_student_sverka_limit,
+    has_admin_access,
+)
 from core.pdf_export import convert_docx_to_pdf
 from core.queue import SOURCE_WEB, enqueue
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
@@ -1241,7 +1246,12 @@ async def download(
         # В отдельном потоке: сервер однопоточный и на это время перестал
         # бы отвечать всем остальным.
         try:
-            pdf = await asyncio.to_thread(convert_docx_to_pdf, путь)
+            # Рядом с .docx, а не во временную папку: иначе каждое
+            # скачивание заводило новый tempfile.mkdtemp, который никто
+            # не убирал, и заодно заново гоняло LibreOffice на уже
+            # собранный документ — проверка pdf.exists() выше не
+            # срабатывала никогда.
+            pdf = await asyncio.to_thread(convert_docx_to_pdf, путь, путь.parent)
         except Exception:
             # LibreOffice может быть не установлен — это не повод падать.
             raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.API_SERVER_UNAVAILABLE) from None
@@ -1282,10 +1292,9 @@ async def retry_task(task_id: str, человек: CurrentUser = Depends(current
 # пожелание, и держится оно на коде, а не на формулировке промпта.
 # =====================================================================
 
-# Тот же предел, что у записи урока: фото тетради весит куда меньше, но
-# отдельное число здесь означало бы второе место, где его правят.
-СНИМКОВ_ТЕТРАДИ_ЗА_РАЗ = 1
-
+# Предел размера — тот же, что у записи урока (WEB_AUDIO_MAX_BYTES):
+# фото тетради весит куда меньше, но отдельное число здесь означало бы
+# второе место, где его правят.
 РАСШИРЕНИЯ_ФОТО = {".jpg", ".jpeg", ".png", ".heic", ".webp"}
 
 
@@ -1403,6 +1412,30 @@ async def student_sverka(
 
     ученик = query("SELECT telegram_id FROM students WHERE id = ?", (student_id,))
     chat_id = ученик[0]["telegram_id"] if ученик else None
+
+    # Тот же лимит, что и в боте (bot/handlers.py,
+    # _check_and_report_student_limit). Пока STUDENT_TARIFFS_ENABLED
+    # выключен, проверка гарантированно ничего не бросает и в базу не
+    # ходит — но место вызова заводится сейчас: ровно на его отсутствии
+    # держалась Находка 8 AUDIT.md, когда включение флага не изменило бы
+    # ничего. Здесь эта же дыра была второй раз, уже в вебе.
+    #
+    # Расход ключуется аккаунтом Telegram (core/limits.py): у ученика,
+    # пришедшего только с сайта, его нет — считать нечего, и это не
+    # ошибка, а честное следствие того, что счётчик привязан к Telegram.
+    if chat_id is not None:
+        try:
+            check_student_sverka_limit(chat_id)
+        except LimitExceeded as превышен:
+            raise ApiError(
+                429,
+                CODE_BAD_REQUEST,
+                texts.SVERKA_LIMIT_EXCEEDED.format(
+                    used=превышен.used,
+                    limit=превышен.limit,
+                    reset_time=превышен.reset_at.strftime("%H:%M"),
+                ),
+            ) from None
 
     task_id = enqueue(
         "sverka_tetradi",

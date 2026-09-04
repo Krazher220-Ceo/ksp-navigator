@@ -151,8 +151,12 @@ async def api_download(ksp_id: str, auth: AuthenticatedUser = Depends(verify_ini
     teacher_id = _resolve_teacher_id(auth.telegram_user_id)
     row = _get_owned_generated_ksp(ksp_id, teacher_id)
 
-    docx_path = Path(row["docx_path"])
-    if not docx_path.exists():
+    # Path(None) кидает TypeError, а не 404: генерация могла упасть между
+    # записью строки и сборкой файла, и тогда Mini App получал 500 вместо
+    # понятного «не найдено». В /api/v1/download это уже сделано правильно
+    # (Path(... or "")), здесь копия правила разошлась.
+    docx_path = Path(row["docx_path"] or "")
+    if not docx_path.name or not docx_path.exists():
         raise HTTPException(status_code=404, detail="файл не найден на диске")
 
     return FileResponse(docx_path, filename=docx_path.name, media_type=DOCX_MEDIA_TYPE)

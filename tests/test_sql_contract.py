@@ -16,6 +16,11 @@ ksp_execute_sql в storage/schema_supabase.sql:
 первом же шаге, а блок Э1 этого не поймал: тогда проверялись только
 четыре пункта выше.
 
+Пункт 6: подзапрос в FROM/JOIN обязан иметь алиас. Postgres отвергает
+"FROM (SELECT ...)" без имени ("subquery in FROM must have an alias"),
+SQLite выполняет молча. Найдено в core/analytics.py: запрос прошёл весь
+обычный прогон и упал бы на первом же открытии экрана аналитики в проде.
+
 Два источника проверяемого SQL:
   - литералы, переданные первым аргументом в query()/execute()/executemany()
     — ищутся по всему core/, bot/, web/ через ast, без импорта модулей
@@ -46,6 +51,51 @@ _START_RE = re.compile(r"^(select|with|insert|update|delete)\s", re.IGNORECASE)
 # слова обязательны: без них сюда попадал бы, например, "lastrowid".
 _SQLITE_PSEUDOCOLUMN_RE = re.compile(r"\b(rowid|_rowid_|oid)\b", re.IGNORECASE)
 
+# Пункт 6: подзапрос в FROM обязан иметь алиас. Postgres отвергает
+# "FROM (SELECT ...)" без имени ошибкой "subquery in FROM must have an
+# alias", SQLite такой запрос выполняет молча — то же расхождение, что
+# в граблях 2.12, и найдено оно было ровно так же: код прошёл все тесты
+# на SQLite и упал бы на первом вызове в проде (core/analytics.py).
+#
+# Ищем закрывающую скобку подзапроса: за ней должно идти имя, а не
+# конец запроса, запятая или ключевое слово. Открывающая скобка
+# определяется как "FROM (" / "JOIN (" — вызовы функций вида
+# "COUNT(" под это не подпадают, потому что перед скобкой стоит имя.
+_SUBQUERY_IN_FROM_RE = re.compile(r"\b(?:from|join)\s*\(", re.IGNORECASE)
+# Слова, которые могут стоять сразу за закрывающей скобкой и алиасом НЕ
+# являются. "as" здесь не нужен: "…) AS x" всё равно даёт алиас "x".
+_NOT_AN_ALIAS = {
+    "on", "where", "group", "order", "limit", "offset", "union", "having",
+    "join", "left", "right", "inner", "outer", "cross", "using", "and", "or",
+}
+
+
+def _subqueries_without_alias(sql: str) -> list[str]:
+    """Подзапросы в FROM/JOIN, за закрывающей скобкой которых нет имени."""
+    problems: list[str] = []
+    for открывающая in _SUBQUERY_IN_FROM_RE.finditer(sql):
+        позиция = открывающая.end() - 1  # индекс самой "("
+        глубина = 0
+        закрывающая = None
+        for индекс in range(позиция, len(sql)):
+            if sql[индекс] == "(":
+                глубина += 1
+            elif sql[индекс] == ")":
+                глубина -= 1
+                if глубина == 0:
+                    закрывающая = индекс
+                    break
+        if закрывающая is None:
+            continue  # скобки не сбалансированы — это не наша проверка
+        хвост = sql[закрывающая + 1 :].strip()
+        первое_слово = re.match(r"[A-Za-z_][A-Za-z_0-9]*", хвост)
+        if первое_слово is None or первое_слово.group(0).lower() in _NOT_AN_ALIAS:
+            problems.append(
+                "подзапрос в FROM/JOIN без алиаса — Postgres отвергает такой запрос "
+                '("subquery in FROM must have an alias"), SQLite принимает'
+            )
+    return problems
+
 
 def _contract_violations(sql: str, param_count: int | None) -> list[str]:
     """param_count=None — число параметров не определить статически
@@ -64,6 +114,7 @@ def _contract_violations(sql: str, param_count: int | None) -> list[str]:
         problems.append(
             f"использует псевдоколонку SQLite '{pseudocolumn.group(0)}', которой нет в Postgres"
         )
+    problems.extend(_subqueries_without_alias(sql))
     return problems
 
 
@@ -173,6 +224,40 @@ def test_contract_violations_does_not_confuse_lastrowid_with_rowid():
 
 def test_contract_violations_accepts_clean_query():
     assert _contract_violations("SELECT * FROM t WHERE a = ? AND b = ?", 2) == []
+
+
+def test_contract_violations_catches_subquery_without_alias():
+    """core/analytics.py: "FROM (SELECT ... UNION ALL SELECT ...)" без
+    алиаса. На SQLite (а значит и во всём обычном прогоне) запрос
+    работает, на боевом Postgres — 42601 «subquery in FROM must have an
+    alias», то есть экран аналитики отвечал бы 500 при первом же
+    открытии."""
+    проблемы = _contract_violations(
+        "SELECT COUNT(*) AS n FROM (SELECT a FROM t UNION ALL SELECT a FROM u)", 0
+    )
+    assert проблемы and "без алиаса" in проблемы[0]
+
+
+def test_contract_violations_accepts_subquery_with_alias():
+    assert _contract_violations("SELECT COUNT(*) AS n FROM (SELECT a FROM t) x", 0) == []
+
+
+def test_contract_violations_does_not_confuse_function_call_with_subquery():
+    """Страховка от жадности: COUNT(...)/COALESCE(...) — не подзапросы,
+    алиас им не нужен, и требовать его было бы ложным срабатыванием на
+    доброй половине запросов проекта."""
+    assert _contract_violations(
+        "SELECT COALESCE(SUM(count), 0) AS total FROM usage_daily WHERE day >= ?", 1
+    ) == []
+
+
+def test_contract_violations_accepts_correlated_subquery_in_select():
+    """Подзапрос в списке колонок (core/accounts.py, list_classes) алиаса
+    не требует — проверка не должна на него срабатывать."""
+    assert _contract_violations(
+        "SELECT c.id, (SELECT COUNT(*) FROM class_members m WHERE m.class_id = c.id) AS n FROM classes c",
+        0,
+    ) == []
 
 
 # =====================================================================

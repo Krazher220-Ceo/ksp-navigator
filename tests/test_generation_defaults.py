@@ -37,9 +37,51 @@ def test_collect_uses_only_ktp_and_previous_generation(tmp_path):
     assert result["klass"] == "10А"
     assert result["template_id"] == 7
     assert result["sources"] == {
-        "razdel": "КТП", "objective_code": "КТП",
+        "ktp_entry_id": "КТП", "razdel": "КТП", "objective_code": "КТП",
         "template_id": "прошлая генерация", "klass": "прошлая генерация",
     }
+
+
+def test_collect_returns_ktp_entry_id_for_dashboard_coverage(tmp_path):
+    """Без ktp_entry_id дашборд считает покрытие программы по пустому
+    множеству: core/dashboard.py берёт covered из
+    "generated_ksp WHERE ktp_entry_id IS NOT NULL", и у педагога,
+    собравшего КСП по каждой теме своего КТП, покрытие оставалось нулём,
+    а «ближайшие уроки без КСП» показывали уже закрытые уроки."""
+    db_path = tmp_path / "app.db"
+    init_db(db_path)
+    teacher_id = execute(
+        "INSERT INTO teachers (name, subject, telegram_user_id) VALUES (?, ?, ?)",
+        ("Тест", "физика", 3), db_path=db_path,
+    )
+    entry_id = execute(
+        "INSERT INTO ktp_entries (teacher_id, section, topic) VALUES (?, ?, ?)",
+        (teacher_id, "Механика", "Импульс тела"), db_path=db_path,
+    )
+
+    result = collect(teacher_id, "импульс тела", db_path=db_path)
+
+    assert result["ktp_entry_id"] == entry_id
+    assert result["sources"]["ktp_entry_id"] == "КТП"
+
+
+def test_collect_leaves_ktp_entry_id_out_when_topic_is_not_in_ktp(tmp_path):
+    """Темы нет в КТП — связывать не с чем, и выдумывать её нельзя
+    (2.7): поля в ответе просто нет."""
+    db_path = tmp_path / "app.db"
+    init_db(db_path)
+    teacher_id = execute(
+        "INSERT INTO teachers (name, subject, telegram_user_id) VALUES (?, ?, ?)",
+        ("Тест", "физика", 4), db_path=db_path,
+    )
+    execute(
+        "INSERT INTO ktp_entries (teacher_id, section, topic) VALUES (?, ?, ?)",
+        (teacher_id, "Механика", "Импульс тела"), db_path=db_path,
+    )
+
+    result = collect(teacher_id, "Совершенно другая тема", db_path=db_path)
+
+    assert "ktp_entry_id" not in result
 
 
 def test_collect_does_not_invent_missing_ktp_fields(tmp_path):

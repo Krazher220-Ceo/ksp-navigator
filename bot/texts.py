@@ -658,6 +658,45 @@ BOT_COMMANDS = [
     ("cancel", "Отменить текущий диалог"),
 ]
 
+# --- Закрытая аналитика продукта в Telegram ---
+#
+# Те же шесть чисел, что показывает экран кабинета (core/analytics.py),
+# и под теми же двумя замками: флаг ANALYTICS_ENABLED и запись в
+# admin_access. Нет любого из них — команда отвечает как несуществующая
+# (текст ниже), а не «у вас нет прав»: отказ по правам рассказывает о
+# существовании закрытого экрана тому, кому знать о нём незачем — тот же
+# принцип, что у /api/v1/analytics (404, не 403).
+#
+# Рейтинга педагогов здесь нет и не будет; ни имён, ни тем уроков — в
+# core/analytics.py их просто нечему вернуть.
+ANALYTICS_UNAVAILABLE = "Не знаю такой команды. Меню — /menu."
+ANALYTICS_HEADER = "📊 Аналитика продукта"
+ANALYTICS_TEACHERS = (
+    "\n\nПедагоги:\n"
+    "  собрали хотя бы один документ за {window_days} дней: {active}\n"
+    "  вернулись (и за 7 дней, и раньше): {returned}"
+)
+ANALYTICS_DOCUMENTS = (
+    "\n\nСобрано документов:\n"
+    "  конспектов: {konspekt}\n"
+    "  черновиков КСП: {ksp}"
+)
+ANALYTICS_ACTIONS_HEADER = "\n\nДействия (готово / провалено):"
+ANALYTICS_ACTION_ROW = "\n  {label}: {done} / {failed}"
+ANALYTICS_ACTIONS_EMPTY = "\n  пока ничего не запускали"
+ANALYTICS_WEEKDAYS_HEADER = "\n\nКогда работают (задач за {window_days} дней):"
+ANALYTICS_WEEKDAY_ROW = "\n  {day}: {count}"
+ANALYTICS_TASK_LABELS = {
+    "generate_ksp": "черновики КСП",
+    "generate_ktp": "КТП на год",
+    "generate_konspekt": "конспекты",
+    "transcribe": "расшифровки",
+    "sverka_tetradi": "сверки тетради",
+    "parse_ksp": "разбор КСП педагога",
+}
+ANALYTICS_WEEKDAY_NAMES = ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")
+
+
 # --- М5.2: дашборд в боте ---
 
 MENU_BUTTON_DASHBOARD = "📈 Дашборд"

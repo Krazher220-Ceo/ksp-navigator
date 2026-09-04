@@ -64,14 +64,18 @@ from bot.states import (
     UploadTemplate,
 )
 from core.config import settings
-from core.accounts import generate_invite_code as accounts_generate_invite_code
+from core.accounts import (
+    find_class_by_invite_code as accounts_find_class_by_invite_code,
+    generate_invite_code as accounts_generate_invite_code,
+)
+from core.analytics import collect as collect_analytics
 from core.dashboard import collect as collect_dashboard
 from core.db import SupabaseDatabaseError, execute, query
 from core.generation_defaults import collect as collect_generation_defaults
 from core.limits import (
     DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_student_sverka_limit,
-    check_token_limit, get_usage_today, grant_admin_access, record_student_usage,
-    record_usage,
+    check_token_limit, get_usage_today, grant_admin_access, has_admin_access,
+    record_student_usage, record_usage,
 )
 from core.konspekt_compare import (
     KonspektCompareError,
@@ -766,14 +770,18 @@ async def cmd_join(message: Message, state: FSMContext) -> None:
 
 
 def _find_class_by_invite_code(code: str, db_path=None) -> dict | None:
-    rows = query(
-        "SELECT c.id, c.name, c.subject, t.name AS teacher_name "
-        "FROM classes c JOIN teachers t ON t.id = c.teacher_id "
-        "WHERE c.invite_code = ?",
-        (code,),
-        db_path=db_path,
-    )
-    return dict(rows[0]) if rows else None
+    """Поиск класса по коду — один на бота и кабинет (core/accounts.py).
+
+    Раньше здесь лежала своя копия запроса, и она отличалась ровно
+    одним: приводила ввод к верхнему регистру, но не выбрасывала
+    пробелы и дефисы. А главный сценарий блока У2 — педагог диктует код
+    вслух на уроке, и ребёнок записывает его так, как ему удобно:
+    «KZ-4H7M», «kz 4h7m». Через сайт такой код срабатывал
+    (accounts.normalize_invite_code), через бота — нет, и ученик видел
+    «код не найден» на верном коде. Две копии правила разошлись, поэтому
+    копия убрана, а не подправлена.
+    """
+    return accounts_find_class_by_invite_code(code, db_path=db_path)
 
 
 @router.message(StudentJoin.waiting_for_code)
@@ -2546,6 +2554,12 @@ async def generate_confirmed(callback: CallbackQuery, state: FSMContext) -> None
         "klass": data["klass"],
         "duration_minutes": data["duration_minutes"],
         "objective_code": data.get("objective_code"),
+        # Связь со строкой КТП, если тема нашлась в КТП этого педагога
+        # (core/generation_defaults.py). Именно по ней core/dashboard.py
+        # считает покрытие программы и «ближайшие уроки без КСП»: без неё
+        # оба показателя оставались бы такими, будто учитель не собрал ни
+        # одного КСП. Кабинет присылает то же поле сам (web/api_v1.py).
+        "ktp_entry_id": data.get("ktp_entry_id"),
         "options": data.get("options"),  # Р5.2/Р5.3, словарь полей LessonOptions или None
         "textbook_photo_paths": data.get("textbook_photo_paths") or [],  # Р6.1
         "konspekt_text": data.get("konspekt_text"),  # К5
@@ -3115,12 +3129,21 @@ def _count_student_personal_data(telegram_id: int) -> dict:
 
 
 def _unlink_quietly(path_str: str | None) -> None:
+    """Удаляет файл и собранный из него PDF, если тот рядом.
+
+    В базе хранится только docx_path: PDF конспекта собирается из него
+    LibreOffice и своей строки не имеет. Пока его здесь не удаляли,
+    команда «удалить мои данные» оставляла на диске читаемый конспект
+    урока — то есть обещание статей 18/24/25 Закона о ПДн выполнялось
+    не до конца."""
     if not path_str:
         return
-    try:
-        Path(path_str).unlink(missing_ok=True)
-    except OSError:
-        logger.warning("/delete_my_data: не удалось удалить файл %s", path_str)
+    путь = Path(path_str)
+    for кандидат in (путь, путь.with_suffix(".pdf")) if путь.suffix else (путь,):
+        try:
+            кандидат.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("/delete_my_data: не удалось удалить файл %s", кандидат)
 
 
 def _delete_personal_data(teacher_id: int, telegram_user_id: int) -> dict:
@@ -3374,6 +3397,77 @@ async def cmd_dashboard(message: Message) -> None:
 
 
 # =====================================================================
+# /analytics — закрытая аналитика продукта в Telegram.
+#
+# Тот же расчёт, что у экрана кабинета: core/analytics.py, и никакого
+# второго. Числа обязаны совпадать у обеих дверей — ровно тем же
+# принципом, по которому дашборд считается один раз в core/dashboard.py
+# (М5.1), а бот и Mini App только показывают посчитанное.
+#
+# Два замка, как у /api/v1/analytics: флаг ANALYTICS_ENABLED и запись в
+# admin_access (её выдаёт /admin по паролю, на сутки). Нет любого из них
+# — отвечаем как на несуществующую команду, а не «нет доступа»: отказ по
+# правам рассказывает о существовании закрытого экрана тому, кому знать
+# о нём незачем.
+#
+# В BOT_COMMANDS команда намеренно НЕ добавлена — по той же причине, что
+# /join и /sverka: подсказка Telegram показала бы её всем. Команда
+# работает при прямом наборе, список подсказок для этого не нужен.
+#
+# Рейтинга педагогов здесь нет и не появится: в core/analytics.py его
+# нечему вернуть — оттуда приходят только числа, без имён и тем уроков.
+# =====================================================================
+
+
+def _analytics_available(telegram_user_id: int) -> bool:
+    if not settings.analytics_enabled:
+        return False
+    return has_admin_access(telegram_user_id)
+
+
+def format_analytics_text(data: dict) -> str:
+    """Форматирование текста — здесь, а не в core/analytics.py: там
+    только расчёт, текст для конкретного канала — дело вызывающего кода
+    (тот же принцип, что у format_dashboard_text выше)."""
+    text = texts.ANALYTICS_HEADER
+    text += texts.ANALYTICS_TEACHERS.format(
+        window_days=data["window_days"],
+        active=data["active_teachers"],
+        returned=data["returned_teachers"],
+    )
+    text += texts.ANALYTICS_DOCUMENTS.format(
+        konspekt=data["documents"]["konspekt"], ksp=data["documents"]["ksp"]
+    )
+
+    text += texts.ANALYTICS_ACTIONS_HEADER
+    actions = data["actions"]
+    if actions:
+        for task_type, counts in sorted(actions.items()):
+            text += texts.ANALYTICS_ACTION_ROW.format(
+                label=texts.ANALYTICS_TASK_LABELS.get(task_type, task_type),
+                done=counts.get("done", 0),
+                failed=counts.get("failed", 0),
+            )
+    else:
+        text += texts.ANALYTICS_ACTIONS_EMPTY
+
+    text += texts.ANALYTICS_WEEKDAYS_HEADER.format(window_days=data["window_days"])
+    for index, count in enumerate(data["by_weekday"]):
+        text += texts.ANALYTICS_WEEKDAY_ROW.format(
+            day=texts.ANALYTICS_WEEKDAY_NAMES[index], count=count
+        )
+    return text
+
+
+@router.message(Command("analytics"))
+async def cmd_analytics(message: Message) -> None:
+    if not _analytics_available(message.from_user.id):
+        await message.answer(texts.ANALYTICS_UNAVAILABLE)
+        return
+    await message.answer(format_analytics_text(collect_analytics()), reply_markup=keyboards.MAIN_MENU)
+
+
+# =====================================================================
 # М2.1 — таблица «текст кнопки меню -> обработчик», для menu_button_pressed
 # выше. Три из восьми обработчиков (cmd_templates, cmd_status, cmd_history)
 # принимают только message, без state — под них тонкие обёртки с общей
@@ -3568,9 +3662,16 @@ async def _try_send_pdf(bot: Bot, chat_id: int, docx_path: Path, caption: str) -
     ловушка, что уже была у core.ksp_parser.ensure_docx).
 
     Мягкий отказ: .docx конспекта уже отправлен — если LibreOffice
-    недоступен или упал, просто не шлём PDF и не роняем всю задачу."""
+    недоступен или упал, просто не шлём PDF и не роняем всю задачу.
+
+    PDF кладётся РЯДОМ с .docx, а не во временную папку. Раньше
+    convert_docx_to_pdf звался без output_dir и на каждый конспект
+    заводил свой tempfile.mkdtemp, который никто никогда не убирал: на
+    диске оставалась вечная копия конспекта урока, о которой не знал ни
+    /delete_my_data, ни сам автор. Рядом с .docx она, наоборот, живёт по
+    тем же правилам, что и сам документ, и удаляется вместе с ним."""
     try:
-        pdf_path = await asyncio.to_thread(convert_docx_to_pdf, docx_path)
+        pdf_path = await asyncio.to_thread(convert_docx_to_pdf, docx_path, docx_path.parent)
     except PdfExportError as exc:
         logger.warning("не удалось собрать PDF для %s: %s", docx_path, exc)
         return None

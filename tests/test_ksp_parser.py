@@ -315,3 +315,95 @@ def test_save_style_profile_updates_not_duplicates(db_with_teacher):
     rows = query("SELECT * FROM style_profiles WHERE teacher_id = 1", db_path=db_with_teacher)
     assert len(rows) == 1, "повторная загрузка КСП тем же учителем не должна плодить дубли"
     assert rows[0]["raw_samples_count"] == 5
+
+
+# =====================================================================
+# Временная копия .doc -> .docx не остаётся на диске.
+#
+# ensure_docx кладёт результат конвертации в tempfile.mkdtemp и владельца
+# ей не назначает. Пока её никто не убирал, каждый разобранный .doc
+# оставлял на диске ПОЛНУЮ КОПИЮ КСП педагога — навсегда: путь к ней
+# нигде не хранится, значит /delete_my_data о ней не знает.
+# =====================================================================
+
+import shutil
+import tempfile as _tempfile
+
+
+def _временные_папки_конвертации() -> set:
+    from core.ksp_parser import _TEMP_DOCX_PREFIX
+
+    корень = Path(_tempfile.gettempdir())
+    return {p for p in корень.glob(f"{_TEMP_DOCX_PREFIX}*") if p.is_dir()}
+
+
+def test_неудачная_конвертация_не_оставляет_временную_папку(tmp_path, monkeypatch):
+    """Конвертация падает регулярно — сломанный профиль LibreOffice,
+    таймаут, битый .doc. Каждая неудача оставляла пустую папку на диске,
+    и на машине, которая работает круглосуточно, их накапливались сотни."""
+    from core import ksp_parser
+
+    было = _временные_папки_конвертации()
+    monkeypatch.setattr(ksp_parser.shutil, "which", lambda _: "/usr/bin/soffice")
+
+    class _Провал:
+        returncode = 1
+        stderr = b"profile is locked"
+
+    monkeypatch.setattr(ksp_parser.subprocess, "run", lambda *a, **k: _Провал())
+
+    исходник = tmp_path / "старый.doc"
+    исходник.write_bytes(b"not really a doc")
+    with pytest.raises(KSPConversionError):
+        ksp_parser.ensure_docx(исходник)
+
+    assert not (_временные_папки_конвертации() - было), (
+        "после неудачной конвертации осталась временная папка"
+    )
+
+
+def test_разбор_doc_не_оставляет_копию_во_временной_папке(tmp_path, monkeypatch):
+    """Удачная конвертация оставляла на диске ПОЛНУЮ КОПИЮ КСП педагога —
+    навсегда: путь к ней нигде не хранится, значит /delete_my_data о ней
+    не знает, и обещание удалить данные выполнялось не до конца.
+
+    LibreOffice здесь не нужен: подменяем саму конвертацию, потому что
+    проверяется уборка за ней, а не она сама (её проверяет
+    test_ensure_docx_converts_real_doc_file)."""
+    from core import ksp_parser
+
+    было = _временные_папки_конвертации()
+
+    настоящий_docx = (FIXTURES_DIR / "ksp_sample_1_single_table.docx").read_bytes()
+
+    def _поддельная_конвертация(path):
+        папка = Path(_tempfile.mkdtemp(prefix=ksp_parser._TEMP_DOCX_PREFIX))
+        итог = папка / f"{Path(path).stem}.docx"
+        итог.write_bytes(настоящий_docx)
+        return итог
+
+    monkeypatch.setattr(ksp_parser, "ensure_docx", _поддельная_конвертация)
+
+    исходник = tmp_path / "старый.doc"
+    исходник.write_bytes(b"not really a doc")
+    результат = ksp_parser.parse_ksp(исходник)
+
+    assert результат["tables"], "разбор ничего не прочитал — тест проверяет не то"
+    assert not (_временные_папки_конвертации() - было), (
+        "после разбора .doc осталась временная папка с копией документа педагога"
+    )
+
+
+def test_разбор_docx_не_трогает_папку_исходника(tmp_path):
+    """Страховка от слишком жадной уборки: у .docx конвертации нет, и
+    удалять родителя исходного файла нельзя ни при каких условиях —
+    это storage/uploads со всеми файлами пользователя."""
+    свой = tmp_path / "ksp.docx"
+    свой.write_bytes((FIXTURES_DIR / "ksp_sample_1_single_table.docx").read_bytes())
+    сосед = tmp_path / "не_трогать.txt"
+    сосед.write_text("важное", encoding="utf-8")
+
+    parse_ksp(свой)
+
+    assert свой.exists(), "исходный .docx удалён — этого делать нельзя"
+    assert сосед.exists(), "снесена папка исходника вместе с чужими файлами"
