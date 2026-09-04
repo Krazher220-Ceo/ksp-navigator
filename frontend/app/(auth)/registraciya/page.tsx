@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AuthShell } from '@/components/auth/AuthShell';
 import { RoleSwitch, type Роль } from '@/components/auth/RoleSwitch';
 import { Соглашение } from '@/components/auth/Соглашение';
@@ -12,6 +12,7 @@ import { Input } from '@/components/Input';
 import { ТЕКСТЫ } from '@/content/texts.generated';
 import { ОшибкаApi, апи } from '@/lib/api';
 import { supabase, адресВозврата, входПоПочтеНастроен } from '@/lib/supabase';
+import { входTelegram } from '@/lib/telegramLogin';
 
 /**
  * Регистрация педагога по макету Registraciya.
@@ -39,25 +40,43 @@ export default function RegistraciyaPage() {
   const [занято, setЗанято] = useState(false);
   const [подтвердитеПочту, setПодтвердитеПочту] = useState(false);
 
+  // Человек уже вошёл — любой из дверей, — и ему не хватает только
+  // профиля педагога. Так выглядит вход через Telegram: аккаунта по
+  // почте у него нет и никогда не будет, а личность уже подтверждена.
+  // Без этой ветки кабинет отправлял его сюда (role === null), а форма
+  // требовала почту и пароль, которых у него нет, — человек упирался в
+  // тупик и выглядело это как «выкидывает из кабинета».
+  const [ужеВошёл, setУжеВошёл] = useState(false);
+
+  useEffect(() => {
+    let актуально = true;
+    (async () => {
+      if (входTelegram()) {
+        if (актуально) setУжеВошёл(true);
+        return;
+      }
+      if (!входПоПочтеНастроен()) return;
+      const { data } = await supabase().auth.getSession();
+      if (актуально && data.session) setУжеВошёл(true);
+    })();
+    return () => {
+      актуально = false;
+    };
+  }, []);
+
   const менять = (ключ: keyof typeof поля) => (е: React.ChangeEvent<HTMLInputElement>) =>
     setПоля((прежние) => ({ ...прежние, [ключ]: е.target.value }));
 
   async function создать(событие: React.FormEvent) {
     событие.preventDefault();
     setОшибка(null);
-    if (!входПоПочтеНастроен()) {
-      setОшибка('Регистрация по почте ещё не настроена на этом сервере.');
-      return;
-    }
     setЗанято(true);
     try {
-      const клиент = supabase();
-
-      // Человек мог уже войти — например, подтвердил почту по ссылке из
-      // письма и вернулся. Тогда аккаунт есть, а профиля нет, и заводить
-      // второй аккаунт не нужно: достаточно дозаполнить профиль.
-      const { data: текущая } = await клиент.auth.getSession();
-      if (текущая.session) {
+      // Уже вошёл — значит аккаунт есть, не хватает только профиля.
+      // Две двери приводят сюда: вход через Telegram (аккаунта по почте
+      // у такого человека нет вовсе) и возврат по ссылке из письма.
+      // Заводить второй аккаунт в обоих случаях нечему.
+      if (ужеВошёл) {
         await апи.согласие();
         await апи.регистрацияПедагога({
           name: поля.name, subject: поля.subject, school: поля.school, city: поля.city,
@@ -65,6 +84,12 @@ export default function RegistraciyaPage() {
         router.push('/app');
         return;
       }
+
+      if (!входПоПочтеНастроен()) {
+        setОшибка('Регистрация по почте ещё не настроена на этом сервере.');
+        return;
+      }
+      const клиент = supabase();
 
       // Аккаунт заводит наш сервер и сразу помечает почту
       // подтверждённой (/api/v1/auth/register). Письма в этом пути нет
@@ -149,9 +174,15 @@ export default function RegistraciyaPage() {
         <Соглашение роль={роль} сохранять={false} onПринято={() => setУсловияПриняты(true)} />
       ) : (
         <>
-          <h1 style={{ fontSize: 26, letterSpacing: '-0.025em' }}>Создать аккаунт</h1>
+          <h1 style={{ fontSize: 26, letterSpacing: '-0.025em' }}>
+            {ужеВошёл ? 'Осталось заполнить профиль' : 'Создать аккаунт'}
+          </h1>
           <p className="muted" style={{ fontSize: 14, marginTop: 6 }}>
-            Уже есть? <Link href="/vhod" style={{ fontWeight: 600 }}>Войти</Link>
+            {ужеВошёл ? (
+              'Вы уже вошли — почта и пароль не нужны. Скажите, как вас зовут и что вы ведёте, и кабинет откроется.'
+            ) : (
+              <>Уже есть? <Link href="/vhod" style={{ fontWeight: 600 }}>Войти</Link></>
+            )}
           </p>
 
           <div style={{ marginTop: 22 }}>
@@ -171,11 +202,19 @@ export default function RegistraciyaPage() {
               <Input id="reg-city" label="Город" placeholder="Костанай"
                      value={поля.city} onChange={менять('city')} />
             </div>
-            <Input id="reg-mail" label="Почта" type="email" required autoComplete="email"
-                   placeholder="вы@почта.kz" value={поля.email} onChange={менять('email')} />
-            <Input id="reg-pass" label="Пароль" type="password" required autoComplete="new-password"
-                   minLength={8} placeholder="••••••••••"
-                   value={поля.password} onChange={менять('password')} />
+            {/* Вошедшему через Telegram почту и пароль показывать нельзя:
+                аккаунта по почте у него нет, а required-поля просто не
+                дали бы отправить форму — ровно тот тупик, из-за которого
+                кабинет выглядел «выкидывающим». */}
+            {ужеВошёл ? null : (
+              <>
+                <Input id="reg-mail" label="Почта" type="email" required autoComplete="email"
+                       placeholder="вы@почта.kz" value={поля.email} onChange={менять('email')} />
+                <Input id="reg-pass" label="Пароль" type="password" required autoComplete="new-password"
+                       minLength={8} placeholder="••••••••••"
+                       value={поля.password} onChange={менять('password')} />
+              </>
+            )}
 
             <div className="row" style={{ gap: 11, marginTop: 5, alignItems: 'flex-start' }}>
               <div style={{ width: 19, height: 19, borderRadius: 6, background: 'linear-gradient(180deg,#2C86CE,#14548C)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flex: 'none', marginTop: 1, boxShadow: 'inset 0 1px 0 rgba(255,255,255,.3)' }}>
@@ -189,7 +228,7 @@ export default function RegistraciyaPage() {
             {ошибка ? <p style={{ color: 'var(--red)', fontSize: 13 }}>{ошибка}</p> : null}
 
             <Button type="submit" size="крупная" arrow disabled={занято} style={{ width: '100%', justifyContent: 'center', marginTop: 5 }}>
-              Создать аккаунт и записать урок
+              {ужеВошёл ? 'Сохранить профиль и открыть кабинет' : 'Создать аккаунт и записать урок'}
             </Button>
           </form>
         </>
