@@ -57,7 +57,7 @@ def collect(db_path=None) -> dict:
     # SQLite такой запрос принимает молча. Это ровно тот класс
     # расхождения, о котором говорит грабля 2.12: тесты идут на SQLite и
     # не видят его, а прод — на Postgres. Сторожит статикой
-    # tests/test_sql_contract.py, пункт 6 контракта.
+    # tests/infra/test_sql_contract.py, пункт 6 контракта.
     активные = query(
         "SELECT COUNT(DISTINCT teacher_id) AS n FROM ("
         "  SELECT teacher_id FROM generated_ksp WHERE created_at >= ?"

@@ -13,8 +13,8 @@
 
 На что опирается: `core.config.settings` — `frozen`-датакласс, поэтому
 подмена идёт через `object.__setattr__`, тем же приёмом, каким это уже
-делают `tests/test_bot_handlers.py`, `tests/test_api.py` и
-`tests/test_miniapp_flow.py`.
+делают `tests/bot/test_bot_handlers.py`, `tests/web/test_api.py` и
+`tests/scenarios/test_miniapp_flow.py`.
 """
 
 from pathlib import Path
@@ -48,7 +48,7 @@ def _clear_process_caches() -> None:
     «согласие дано») и `_gate_role_cache` (Находка 1 AUDIT.md, кэширует
     роль для `_student_gate`). Оба переживают смену базы, потому что
     живут в модуле, а не в ней, — и один тест мог бы молча решить
-    судьбу следующего. `tests/test_bot_handlers.py` чистит первый из них
+    судьбу следующего. `tests/bot/test_bot_handlers.py` чистит первый из них
     сам, но тест, забывший фикстуру, ровно так же забыл бы и это.
     """
     from bot.handlers import _consent_given_cache, _gate_role_cache
