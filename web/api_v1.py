@@ -59,8 +59,15 @@ from core.queue import SOURCE_WEB, enqueue
 from core.ktp_parser import KTPParseError, parse_ktp_file, save_ktp_entries
 from core.templates import list_templates
 from core.values import VALUES
-from web.auth import ROLE_STUDENT, ROLE_TEACHER, CurrentUser, current_user, require_consent
+from web.auth import (
+    ROLE_STUDENT, ROLE_TEACHER, CurrentUser, current_user, подписать_данные_входа,
+    require_consent,
+)
 from web.supabase_users import UserCreateError, создать_подтверждённого
+from core.login_codes import (
+    LoginCodeError, выдать_код, забрать_подтверждённый, построить_ссылку,
+    убрать_протухшие,
+)
 from web.errors import (
     CODE_BAD_REQUEST,
     CODE_CONSENT_REQUIRED,
@@ -84,7 +91,17 @@ router = APIRouter(prefix="/api/v1")
 # /auth/register — заводит аккаунт, то есть авторизацию и создаёт;
 #   требовать её от него значило бы «зарегистрируйтесь, чтобы
 #   зарегистрироваться». Пароль проверяет Supabase, не мы.
-PUBLIC_PATHS = frozenset({"/api/v1/health", "/api/v1/auth/register"})
+# /auth/telegram/start и /auth/telegram/poll — вход подтверждением в
+#   боте. Требовать авторизацию от эндпоинта, который её выдаёт, —
+#   то же «зарегистрируйтесь, чтобы зарегистрироваться». Опасности
+#   нет: start отдаёт только случайный талон, а poll без
+#   подтверждения в боте не отдаёт ничего.
+PUBLIC_PATHS = frozenset({
+    "/api/v1/health",
+    "/api/v1/auth/register",
+    "/api/v1/auth/telegram/start",
+    "/api/v1/auth/telegram/poll",
+})
 
 
 def _database_state() -> tuple[bool, str]:
@@ -198,6 +215,71 @@ async def auth_register(
     except UserCreateError as ошибка:
         raise ApiError(422, CODE_BAD_REQUEST, str(ошибка)) from None
     return {"created": создан is not None}
+
+
+@router.post("/auth/telegram/start")
+async def auth_telegram_start() -> dict:
+    """
+    Начинает вход через Telegram БЕЗ номера телефона.
+
+    Зачем этот путь появился. Telegram Login Widget открывает
+    oauth.telegram.org, и тот просит номер телефона, если человек не
+    залогинен в Telegram Web в этом самом браузере — на телефоне это
+    почти всегда. Педагог видел форму ввода номера вместо входа, вводил
+    номер, ждал код и часто не доходил до конца. Здесь номер не
+    спрашивается ни разу: человек открывает бота по ссылке, а бот и так
+    знает, кто ему пишет.
+
+    Отдаёт одноразовый талон и ссылку на бота. Сам по себе талон никуда
+    не пускает — он становится входом только после подтверждения кнопкой
+    в боте (bot/handlers.py, cmd_start_login).
+    """
+    if not settings.telegram_bot_name:
+        raise ApiError(503, CODE_SERVER_UNAVAILABLE, texts.LOGIN_BOT_NOT_CONFIGURED)
+    убрать_протухшие()
+    выдан = выдать_код()
+    return {
+        "code": выдан["код"],
+        "deep_link": построить_ссылку(выдан["код"], settings.telegram_bot_name),
+        "check_digits": выдан["контрольные_знаки"],
+        "expires_in": выдан["живёт_секунд"],
+    }
+
+
+@router.get("/auth/telegram/poll")
+async def auth_telegram_poll(code: str) -> dict:
+    """
+    Спрашивает, подтвердил ли человек вход в боте.
+
+    Три ответа, и только три: «ещё ждём», «вот подписанные данные входа»
+    и ошибка на мёртвый талон. Подписанные данные отдаются РОВНО ОДИН
+    раз — талон гасится в тот же момент (core/login_codes), иначе один
+    подтверждённый вход можно было бы забрать дважды.
+
+    Формат ответа — тот же, что отдаёт Login Widget, и подпись та же
+    (web/auth.подписать_данные_входа). Браузер кладёт его тем же кодом,
+    что и раньше, а сервер проверяет тем же verify_login_widget_string:
+    второй двери в кабинет здесь не появляется.
+    """
+    try:
+        строка = забрать_подтверждённый(code)
+    except LoginCodeError:
+        # Одинаковый ответ на «не найден», «просрочен» и «уже использован»:
+        # человеку все три означают «начните заново», а перебирающему коды
+        # они рассказывали бы, какой из них существовал.
+        raise ApiError(404, CODE_NOT_FOUND, texts.LOGIN_CODE_EXPIRED) from None
+    if строка is None:
+        return {"status": "pending"}
+    return {
+        "status": "confirmed",
+        "login": подписать_данные_входа(
+            {
+                "id": строка["telegram_user_id"],
+                "first_name": строка.get("first_name") or "",
+                "username": строка.get("username") or "",
+            }
+        ),
+    }
 
 
 @router.post("/consent")

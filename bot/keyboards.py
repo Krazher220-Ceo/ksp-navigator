@@ -108,6 +108,24 @@ def consent_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def login_confirm_keyboard(код: str) -> InlineKeyboardMarkup:
+    """Подтверждение входа в кабинет из бота (core/login_codes.py).
+
+    Код едет в callback_data: у Telegram на неё 64 байта, код занимает 12
+    знаков плюс префикс — помещается с запасом. Класть код в состояние
+    FSM вместо этого было бы хуже: человек может открыть две ссылки
+    подряд, и состояние помнит только последнюю.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Это я", callback_data=f"login_ok:{код}"),
+                InlineKeyboardButton(text="🚫 Это не я", callback_data=f"login_no:{код}"),
+            ]
+        ]
+    )
+
+
 def role_choice_keyboard() -> InlineKeyboardMarkup:
     """У3: первый /start незнакомого человека — педагог или ученик."""
     return InlineKeyboardMarkup(

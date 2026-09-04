@@ -180,7 +180,18 @@ def test_список_публичных_путей_закрытый():
     «зарегистрируйтесь, чтобы зарегистрироваться». Пароль при этом
     проверяет Supabase, а не мы — см. web/supabase_users.py.
     """
-    assert api_v1.PUBLIC_PATHS == frozenset({"/api/v1/health", "/api/v1/auth/register"})
+    assert api_v1.PUBLIC_PATHS == frozenset(
+        {
+            "/api/v1/health",
+            "/api/v1/auth/register",
+            # Вход подтверждением в боте: start выдаёт случайный талон,
+            # poll без подтверждения в Telegram не отдаёт ничего. Оба
+            # открыты по той же причине, что и register, — они выдают
+            # авторизацию, а не пользуются ею.
+            "/api/v1/auth/telegram/start",
+            "/api/v1/auth/telegram/poll",
+        }
+    )
 
 
 def test_маршруты_v1_зарегистрированы_до_статики():

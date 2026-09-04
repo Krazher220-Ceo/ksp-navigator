@@ -140,7 +140,18 @@ def test_регистрация_единственная_открытая_две
     """
     from web import api_v1
 
-    assert api_v1.PUBLIC_PATHS == frozenset({"/api/v1/health", "/api/v1/auth/register"})
+    assert api_v1.PUBLIC_PATHS == frozenset(
+        {
+            "/api/v1/health",
+            "/api/v1/auth/register",
+            # Вход подтверждением в боте: start выдаёт случайный талон,
+            # poll без подтверждения в Telegram не отдаёт ничего. Оба
+            # открыты по той же причине, что и register, — они выдают
+            # авторизацию, а не пользуются ею.
+            "/api/v1/auth/telegram/start",
+            "/api/v1/auth/telegram/poll",
+        }
+    )
 
 
 def test_пароль_нигде_не_логируется():

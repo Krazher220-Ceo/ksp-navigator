@@ -15,6 +15,8 @@ tests/web/test_api_v1.py (список allow_headers у CORS).
 import re
 from pathlib import Path
 
+from tests.frontend.test_frontend_landing import _без_комментариев
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = PROJECT_ROOT / "frontend"
 MOBILE_CSS = FRONTEND / "app" / "adaptive.css"
@@ -98,17 +100,39 @@ def test_у_каждой_вкладки_есть_адрес():
 
 # --- вход через Telegram ---
 
-def test_на_экране_входа_стоит_настоящий_виджет():
+def test_вход_через_telegram_не_спрашивает_номер_телефона():
     """
-    Кнопка-ссылка в бота из кабинета не пускала: она просто открывала
-    чат. Настоящий вход — виджет Telegram, чьи данные проверяет сервер.
+    Переписан 04.09.2026 вместе с самим экраном.
+
+    Раньше тест сторожил обратное — что на экране стоит Telegram Login
+    Widget. Виджет действительно пускал в кабинет, но открывал
+    oauth.telegram.org, а тот просит НОМЕР ТЕЛЕФОНА у всякого, кто не
+    залогинен в Telegram Web в этом же браузере. На телефоне это почти
+    всегда, то есть кнопка «Войти через Telegram» на практике означала
+    «введите номер и ждите код» — причём код приходил в Telegram, куда
+    человек в этом браузере как раз и не мог зайти.
+
+    Теперь вход подтверждается в нашем боте, и номер не спрашивается ни
+    разу. Тест сторожит именно это: виджета на экране нет, а вход идёт
+    через одноразовый талон и ссылку на бота.
     """
     вход = VHOD_TSX.read_text(encoding="utf-8")
-    assert "<ВходTelegram" in вход, "виджет Telegram с экрана входа пропал"
+    assert "<ВходTelegram" in вход, "вход через Telegram пропал с экрана"
 
-    виджет = (FRONTEND / "components" / "auth" / "ВходTelegram.tsx").read_text(encoding="utf-8")
-    assert "telegram-widget.js" in виджет
-    assert "data-telegram-login" in виджет and "data-onauth" in виджет
+    # Комментарии убираются: шапка компонента как раз ОБЪЯСНЯЕТ, почему
+    # виджета и oauth.telegram.org там быть не должно, — без чистки тест
+    # падал бы на собственном объяснении (тот же приём, что в
+    # tests/frontend/test_frontend_landing.py).
+    компонент = _без_комментариев(
+        (FRONTEND / "components" / "auth" / "ВходTelegram.tsx").read_text(encoding="utf-8")
+    )
+    assert "telegram-widget.js" not in компонент, (
+        "виджет вернулся — вместе с ним вернётся и запрос номера телефона"
+    )
+    assert "oauth.telegram.org" not in компонент
+    assert "/api/v1/auth/telegram/start" in компонент
+    assert "/api/v1/auth/telegram/poll" in компонент
+    assert "check_digits" in компонент, "контрольные знаки не показываются — сверять человеку нечего"
 
 
 def test_кабинет_присылает_данные_входа_telegram():

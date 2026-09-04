@@ -72,6 +72,10 @@ from core.analytics import collect as collect_analytics
 from core.dashboard import collect as collect_dashboard
 from core.db import SupabaseDatabaseError, execute, query
 from core.generation_defaults import collect as collect_generation_defaults
+from core.login_codes import (
+    DEEP_LINK_PREFIX, LoginCodeError, код_ждёт_подтверждения, контрольные_знаки,
+    подтвердить,
+)
 from core.limits import (
     DAILY_COUNT_LIMITS, LimitExceeded, check_count_limit, check_student_sverka_limit,
     check_token_limit, get_usage_today, grant_admin_access, has_admin_access,
@@ -520,6 +524,71 @@ async def _student_gate(handler, event, data):
 
 
 router.message.outer_middleware(_student_gate)
+
+
+# =====================================================================
+# Вход в кабинет подтверждением в боте (core/login_codes.py).
+#
+# Зачем: единственной дверью «войти через Telegram» был Login Widget. Он
+# открывает oauth.telegram.org, и тот просит НОМЕР ТЕЛЕФОНА, если человек
+# не залогинен в Telegram Web в этом самом браузере — на телефоне это
+# почти всегда. Педагог видит форму ввода номера вместо входа. Здесь
+# номер не спрашивается: Telegram уже подтвердил, кто это, самим фактом
+# сообщения от него.
+#
+# ⚠️ ГРАБЛЯ 2.4: этот хендлер обязан стоять ВЫШЕ cmd_start. aiogram
+# матчит сверху вниз, и обычный /start, зарегистрированный первым, съел
+# бы «/start vhod_КОД» вместе с кодом — вход бы молча не работал.
+#
+# Подтверждение спрашивается кнопкой, а не делается по факту открытия
+# ссылки. Иначе достаточно уговорить человека нажать на ссылку, чтобы
+# войти его аккаунтом.
+# =====================================================================
+
+
+@router.message(Command("start"), F.text.startswith(f"/start {DEEP_LINK_PREFIX}"))
+async def cmd_start_login(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    код = message.text.split(maxsplit=1)[1][len(DEEP_LINK_PREFIX):].strip()
+    try:
+        код_ждёт_подтверждения(код)
+    except LoginCodeError:
+        # Причину наружу не называем: «просрочен», «использован» и «не
+        # найден» человеку одинаково означают «начните заново», а вот
+        # тому, кто перебирает коды, они рассказывали бы разное.
+        await message.answer(texts.LOGIN_CODE_INVALID, reply_markup=keyboards.MAIN_MENU)
+        return
+    await message.answer(
+        texts.LOGIN_CONFIRM_ASK.format(знаки=контрольные_знаки(код)),
+        reply_markup=keyboards.login_confirm_keyboard(код),
+    )
+
+
+@router.callback_query(F.data.startswith("login_ok:"))
+async def login_confirmed(callback: CallbackQuery) -> None:
+    код = callback.data.split(":", 1)[1]
+    try:
+        подтвердить(
+            код,
+            callback.from_user.id,
+            first_name=callback.from_user.first_name,
+            username=callback.from_user.username,
+        )
+    except LoginCodeError:
+        await callback.message.answer(texts.LOGIN_CODE_INVALID)
+        await callback.answer()
+        return
+    await callback.message.answer(texts.LOGIN_CONFIRM_DONE, reply_markup=keyboards.MAIN_MENU)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("login_no:"))
+async def login_rejected(callback: CallbackQuery) -> None:
+    # Код не подтверждаем и не гасим: он протухнет сам через пять минут.
+    # Гасить его здесь значило бы дать тому, кто прислал чужую ссылку,
+    # мгновенный сигнал «этот человек нажал "это не я"».
+    await callback.message.answer(texts.LOGIN_CONFIRM_REJECTED, reply_markup=keyboards.MAIN_MENU)
+    await callback.answer()
 
 
 @router.message(Command("start"))

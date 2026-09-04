@@ -149,6 +149,32 @@ def verify_init_data_string(
 MAX_LOGIN_AGE_SECONDS = 86400
 
 
+def подписать_данные_входа(поля: dict[str, str], bot_token: str | None = None) -> dict[str, str]:
+    """Собирает подписанные данные входа в формате Login Widget.
+
+    Зачем это здесь, а не «ещё один способ пускать в кабинет»: вход
+    подтверждением в боте (core/login_codes.py) личность уже установил —
+    Telegram прислал сообщение от конкретного аккаунта, подделать
+    отправителя нельзя. Но дальше по коду стоит одна-единственная
+    проверка входа, verify_login_widget_string, и заводить рядом вторую
+    дверь с собственной логикой означало бы удвоить место, где можно
+    ошибиться. Поэтому подтверждённый вход упаковывается в тот же формат
+    и той же подписью — ниже по стеку он неотличим от виджета и
+    проверяется тем же кодом.
+
+    Подписывать этим что-либо, пришедшее СНАРУЖИ, нельзя: функция
+    выдаёт пропуск в кабинет. Единственный законный вызов — сразу после
+    подтверждения в боте.
+    """
+    bot_token = bot_token if bot_token is not None else settings.telegram_bot_token
+    поля = {имя: str(значение) for имя, значение in поля.items() if значение not in (None, "")}
+    поля.setdefault("auth_date", str(int(time.time())))
+    строка = _build_data_check_string(поля)
+    секрет = hashlib.sha256(bot_token.encode("utf-8")).digest()
+    поля["hash"] = hmac.new(секрет, строка.encode("utf-8"), hashlib.sha256).hexdigest()
+    return поля
+
+
 def verify_login_widget_string(
     login_data: str,
     bot_token: str | None = None,

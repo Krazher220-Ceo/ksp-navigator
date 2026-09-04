@@ -215,8 +215,14 @@ def _create_teacher(telegram_user_id: int, name: str = "Тестов Тест", 
 
 
 class FakeUser:
-    def __init__(self, user_id: int):
+    def __init__(self, user_id: int, first_name: str = "Тест", username: str | None = None):
         self.id = user_id
+        # У настоящего aiogram.types.User first_name обязателен, username —
+        # необязателен (у человека его может не быть вовсе). Оба появились
+        # здесь вместе с входом в кабинет через бота: он кладёт имя в
+        # подписанные данные входа, чтобы кабинет здоровался не «id 4242».
+        self.first_name = first_name
+        self.username = username
 
 
 class FakeChat:

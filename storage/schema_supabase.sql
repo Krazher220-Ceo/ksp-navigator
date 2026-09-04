@@ -290,5 +290,20 @@ begin
 end;
 $$;
 
+-- Одноразовые талоны входа в кабинет через подтверждение в боте
+-- (core/login_codes.py). Заводятся, чтобы у входа через Telegram
+-- перестал спрашиваться номер телефона: Telegram Login Widget уводит на
+-- oauth.telegram.org, а тот на телефоне почти всегда просит номер.
+-- Строка живёт пять минут и гасится сразу после обмена на вход.
+create table if not exists public.login_codes (
+    code text primary key,
+    status text not null default 'pending' check (status in ('pending', 'confirmed', 'used')),
+    telegram_user_id bigint,
+    first_name text,
+    username text,
+    expires_at text not null,
+    created_at timestamptz default current_timestamp
+);
+
 revoke all on function public.ksp_execute_sql(text, jsonb) from public, anon, authenticated;
 grant execute on function public.ksp_execute_sql(text, jsonb) to service_role;

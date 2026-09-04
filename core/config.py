@@ -64,6 +64,13 @@ class Settings:
 
     telegram_bot_token: str
 
+    # Имя бота без «@» — из него собирается ссылка t.me/<имя>?start=... для
+    # входа в кабинет подтверждением в боте (core/login_codes.py). Токен
+    # для этого не годится: в ссылке нужно публичное имя, а не секрет. Не
+    # задано — вход через бота честно отвечает, что не настроен, и
+    # остальные двери работают как работали.
+    telegram_bot_name: str | None
+
     # Цепочка провайдеров LLM, в порядке попыток (core/llm_client.py, блок Б2).
     # llm_providers[имя] = {"api_key": ..., "model": ..., "base_url": ...}.
     # base_url может быть None — тогда llm_client.py берёт свой дефолт.
@@ -218,6 +225,7 @@ def _build_settings() -> Settings:
         supabase_service_role_key=supabase_service_role_key,
         supabase_jwt_secret=_env("SUPABASE_JWT_SECRET"),
         telegram_bot_token=telegram_bot_token,
+        telegram_bot_name=(_env("TELEGRAM_BOT_NAME") or "").lstrip("@") or None,
         llm_provider_order=llm_provider_order,
         llm_providers=_build_provider_settings(llm_provider_order),
         webapp_url=_env("WEBAPP_URL"),

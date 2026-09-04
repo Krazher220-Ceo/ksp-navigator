@@ -275,6 +275,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_class_members_unique ON class_members(clas
 CREATE INDEX IF NOT EXISTS idx_classes_teacher ON classes(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_class_members_student ON class_members(student_id);
 
+-- Одноразовые талоны входа в кабинет через подтверждение в боте
+-- (core/login_codes.py). Та же таблица, что в schema_supabase.sql:
+-- тесты идут на SQLite, прод на Postgres, и разойтись им нельзя.
+CREATE TABLE IF NOT EXISTS login_codes (
+    code TEXT PRIMARY KEY,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'confirmed', 'used')),
+    telegram_user_id INTEGER,
+    first_name TEXT,
+    username TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Индексы сверх документа (PLAN_STAGE1.md, задача Б1.1)
 CREATE INDEX IF NOT EXISTS idx_ktp_teacher ON ktp_entries(teacher_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
